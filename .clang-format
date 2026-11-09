@@ -1,0 +1,28 @@
+---
+BasedOnStyle: Google
+IndentWidth: 2
+ColumnLimit: 100
+Standard: Latest
+
+# Indent contents inside namespaces
+NamespaceIndentation: All
+
+# Align '=' signs across consecutive assignments
+AlignConsecutiveAssignments:
+  Enabled: true
+  AcrossEmptyLines: true
+  AcrossComments: true
+
+# Do NOT align function declarations with variables or with each other
+AlignConsecutiveDeclarations: None
+
+# Align macros
+AlignConsecutiveMacros:
+  Enabled: true
+  AcrossEmptyLines: false
+  AcrossComments: true
+
+# Align trailing comments
+AlignTrailingComments:
+  Kind: Always
+  OverEmptyLines: 1
