@@ -1,44 +1,63 @@
 .DEFAULT_GOAL := help
 
-ENV_C3 ?= esp32-c3-supermini
-ENV_S3 ?= esp32-s3-bench
+ENV_NODE    ?= esp32-c3-supermini
+ENV_GATEWAY ?= esp32-s3-gateway
 
-# Source and header files to format
 CPP_FILES := $(wildcard src/*.cpp include/*.h)
 
-.PHONY: help build build-s3 upload upload-s3 monitor flash lsp compiledb format clean
+.PHONY: help build upload monitor flash build-gateway upload-gateway flash-gateway lsp compiledb format clean
 
 help: ## Show available shortcut commands
-	@echo "Smart Chair — Build & Development Shortcuts"
-	@echo ""
-	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
-	@echo ""
+	@echo -e "Smart Chair Monorepo — Build & Development Shortcuts"
+	@echo -e ""
+	@echo -e "  \033[33mChair Sensor Node (ESP32-C3 SuperMini):\033[0m"
+	@echo -e "    \033[36mmake build\033[0m         Build sensor node firmware"
+	@echo -e "    \033[36mmake upload\033[0m        Upload firmware to ESP32-C3"
+	@echo -e "    \033[36mmake flash\033[0m         Upload and open monitor on ESP32-C3"
+	@echo -e "    \033[36mmake monitor\033[0m       Open serial monitor (115200 baud)"
+	@echo -e ""
+	@echo -e "  \033[33mDesk Gateway (ESP32-S3 DevKit):\033[0m"
+	@echo -e "    \033[36mmake build-gateway\033[0m  Build gateway firmware"
+	@echo -e "    \033[36mmake upload-gateway\033[0m Upload firmware to ESP32-S3"
+	@echo -e "    \033[36mmake flash-gateway\033[0m  Upload and open monitor on ESP32-S3"
+	@echo -e ""
+	@echo -e "  \033[33mGeneral / Developer Utilities:\033[0m"
+	@echo -e "    \033[36mmake lsp\033[0m           Regenerate compile_commands.json for Neovim"
+	@echo -e "    \033[36mmake format\033[0m        Run clang-format on all C/C++ files"
+	@echo -e "    \033[36mmake clean\033[0m         Clean PlatformIO build output"
+	@echo -e ""
 
-build: ## Build firmware for ESP32-C3 SuperMini
-	pio run -e $(ENV_C3)
+# Chair Sensor Node (C3)
+build:
+	pio run -e $(ENV_NODE)
 
-build-s3: ## Build firmware for ESP32-S3 bench board
-	pio run -e $(ENV_S3)
+upload:
+	pio run -e $(ENV_NODE) -t upload
 
-upload: ## Upload firmware to ESP32-C3 SuperMini
-	pio run -e $(ENV_C3) -t upload
+flash:
+	pio run -e $(ENV_NODE) -t upload -t monitor
 
-upload-s3: ## Upload firmware to ESP32-S3 bench board
-	pio run -e $(ENV_S3) -t upload
-
-monitor: ## Open serial monitor at 115200 baud
+monitor:
 	pio device monitor
 
-flash: ## Upload and open serial monitor
-	pio run -e $(ENV_C3) -t upload -t monitor
+# Desk Gateway (S3)
+build-gateway:
+	pio run -e $(ENV_GATEWAY)
 
-compiledb: ## Regenerate compile_commands.json for Neovim LSP / clangd
-	pio run -e $(ENV_C3) -t compiledb
+upload-gateway:
+	pio run -e $(ENV_GATEWAY) -t upload
 
-lsp: compiledb ## Alias for compiledb
+flash-gateway:
+	pio run -e $(ENV_GATEWAY) -t upload -t monitor
 
-format: ## Run clang-format on all C/C++ source and header files
+# Tooling
+compiledb:
+	pio run -e $(ENV_NODE) -t compiledb
+
+lsp: compiledb
+
+format:
 	clang-format -i $(CPP_FILES)
 
-clean: ## Clean PlatformIO build output
+clean:
 	pio run -t clean

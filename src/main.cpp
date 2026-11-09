@@ -7,14 +7,15 @@
 
 /**
  * Smart Chair — Deep Sleep & Seat Sensor Wakeup Demo
+ * Target: ESP32-C3 SuperMini
  *
  * Hardware Wiring:
- *   - Seat contact wire 1 -> GPIO%d (Pins::SEAT_SENSOR)
+ *   - Seat contact wire 1 -> GPIO3 (Pins::SEAT_SENSOR)
  *   - Seat contact wire 2 -> GND
  *
  * Logic:
- *   - Vacant (Switch OPEN)    : GPIO is pulled HIGH (3.3V) -> Deep Sleep (~5-10 uA)
- *   - Seated (Switch CLOSED)  : GPIO is pulled LOW  (0V)   -> Instant Hardware Wakeup
+ *   - Vacant (Switch OPEN)    : GPIO3 is pulled HIGH (3.3V) -> Deep Sleep (~5-10 uA)
+ *   - Seated (Switch CLOSED)  : GPIO3 is pulled LOW  (0V)   -> Instant Hardware Wakeup
  */
 
 RTC_DATA_ATTR static uint32_t bootCount = 0;
@@ -31,13 +32,8 @@ void enterDeepSleep() {
   gpio_pulldown_dis((gpio_num_t)Pins::SEAT_SENSOR);
   gpio_hold_en((gpio_num_t)Pins::SEAT_SENSOR);
 
-#if defined(BOARD_C3_SUPERMINI)
-  // ESP32-C3 RTC GPIO wakeup (GPIO0-GPIO5 supported)
+  // ESP32-C3 RTC GPIO wakeup (GPIO0-GPIO5 supported on LOW)
   esp_deep_sleep_enable_gpio_wakeup(1ULL << Pins::SEAT_SENSOR, ESP_GPIO_WAKEUP_GPIO_LOW);
-#elif defined(BOARD_S3_BENCH)
-  // ESP32-S3 EXT0 wakeup
-  esp_sleep_enable_ext0_wakeup((gpio_num_t)Pins::SEAT_SENSOR, 0);
-#endif
 
   esp_deep_sleep_start();
 }
@@ -52,13 +48,9 @@ void setup() {
   bootCount++;
 
   esp_sleep_source_t wakeCause = esp_sleep_get_wakeup_cause();
-  const char* causeStr;
-
-  if (wakeCause == ESP_SLEEP_WAKEUP_GPIO || wakeCause == ESP_SLEEP_WAKEUP_EXT0) {
-    causeStr = "Seat Contact Closed (GPIO Wakeup on LOW)";
-  } else {
-    causeStr = "Power-on / Cold Reset (Cold Boot)";
-  }
+  const char* causeStr         = (wakeCause == ESP_SLEEP_WAKEUP_GPIO)
+                                     ? "Seat Contact Closed (GPIO3 Wakeup on LOW)"
+                                     : "Power-on / Cold Reset (Cold Boot)";
 
   Serial.println();
   Serial.println("==================================================");
