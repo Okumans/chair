@@ -2,6 +2,7 @@
 CompileFlags:
   Remove:
     - -mlongcalls
+    - -mdisable-hardware-atomics
     - -fno-tree-switch-conversion
     - -fstrict-volatile-bitfields
 
