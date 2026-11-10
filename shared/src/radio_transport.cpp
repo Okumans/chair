@@ -49,7 +49,9 @@ namespace Transport {
           static_cast<unsigned>(MAX_PAYLOAD));
     }
 
-    void receiveCallback(const uint8_t* mac, const uint8_t* data, int size) {
+    void receiveCallback(const esp_now_recv_info_t* info, const uint8_t* data, int size) {
+      if (!info) return;
+      const uint8_t* mac = info->src_addr;
       if (!mac || !data || memcmp(mac, peer, 6) || size <= 0 || size > MAX_PAYLOAD) return;
       Received packet{};
       packet.size = size;
@@ -59,7 +61,7 @@ namespace Transport {
       xQueueSend(receivedQueue, &packet, 0);
     }
 
-    void sentCallback(const uint8_t*, esp_now_send_status_t status) {
+    void sentCallback(const esp_now_send_info_t*, esp_now_send_status_t status) {
       xQueueSend(sentQueue, &status, 0);
     }
 
@@ -125,7 +127,7 @@ namespace Transport {
     uint8_t digest[32];
     memcpy(keys, pmk, 16);
     memcpy(keys + 16, lmk, 16);
-    if (mbedtls_sha256_ret(keys, sizeof(keys), digest, 0) != 0) {
+    if (mbedtls_sha256(keys, sizeof(keys), digest, 0) != 0) {
       error("key_fingerprint_failed");
       hello();
       return;

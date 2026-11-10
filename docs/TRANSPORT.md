@@ -104,6 +104,13 @@ The planned application protocol is in [PROTOCOL_SPEC.md](PROTOCOL_SPEC.md). Eve
 ACKs, persistence, configuration commands, downstream communication windows, MQTT,
 and a systemd service remain outside this transport implementation.
 
+## Build stack
+
+Both nodes use C++23 with pioarduino `55.03.312-1` and Arduino-ESP32 `3.3.12`,
+pinned in `platformio.ini` (GCC 14.2, ESP-IDF 5.5.5). The migration updates ESP-NOW callbacks and the SHA-256
+API. Recheck radio delivery and contact/timer wake on hardware after flashing this
+stack; the earlier bring-up results were recorded with Arduino-ESP32 2.0.17.
+
 ## Development checks
 
 Five automated tests cover transport and sensor sleep sequencing using hardware stubs.

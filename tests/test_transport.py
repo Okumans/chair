@@ -41,7 +41,7 @@ class TransportTests(unittest.TestCase):
     def test_native_codec(self):
         with tempfile.TemporaryDirectory() as directory:
             binary = Path(directory) / "codec-test"
-            subprocess.run(["c++", "-std=c++17", "-Wall", "-Wextra", "-Werror",
+            subprocess.run(["c++", "-std=c++23", "-Wall", "-Wextra", "-Werror",
                             "-I", str(ROOT / "shared/include"),
                             str(ROOT / "tests/transport_codec_test.cpp"), "-o", str(binary)],
                            check=True)
@@ -50,7 +50,7 @@ class TransportTests(unittest.TestCase):
     def test_sensor_sleep(self):
         with tempfile.TemporaryDirectory() as directory:
             binary = Path(directory) / "sensor-sleep-test"
-            subprocess.run(["c++", "-std=c++17", "-Wall", "-Wextra", "-Werror",
+            subprocess.run(["c++", "-std=c++23", "-Wall", "-Wextra", "-Werror",
                             "-I", str(ROOT / "tests/fakes"),
                             "-I", str(ROOT / "sensor/include"),
                             "-I", str(ROOT / "shared/include"),
