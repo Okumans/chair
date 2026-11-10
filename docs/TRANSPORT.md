@@ -5,8 +5,25 @@ Computer / Pi <-- USB --> S3 gateway <-- encrypted ESP-NOW --> C3 chair
 ```
 
 The transport forwards arbitrary 1–250 byte payloads without interpreting them. Both
-nodes expose the same USB interface and stay awake. The chair sends GPIO5 seat state
-and uptime after startup, on debounced changes, and every 5 seconds.
+nodes expose the same USB interface. The gateway stays awake; the chair sleeps while
+vacant and stays awake while occupied. It reports GPIO5 seat state, uptime, and
+`wake_reason` after boot/wake, on debounced changes, and at the heartbeat interval.
+
+## Chair deep sleep
+
+After reporting vacancy, the chair waits for radio completion, then sleeps. GPIO5
+LOW (seat contact closes) or the 900-second (15-minute) heartbeat timer wakes it. Each wake
+reads/debounces the current contact and sends a fresh snapshot. Send completion waits
+at most 1 second; delivery remains best effort without retries or persistence.
+
+The SDK supplies the internal pull-up for LOW-level wake. Wake reliability and actual
+current need physical verification. `HEARTBEAT_INTERVAL_MS` in `sensor/include/config.h`
+uses the protocol specification default of 900 seconds.
+
+The chair cannot receive radio/USB data while asleep. Its USB connection may disappear;
+use the gateway console to observe wake reports. Downstream communication windows and
+command queues remain outside scope. A local `sleep` message precedes sleep; forwarded
+snapshots identify `wake_reason` as `reset`, `gpio`, or `timer`.
 
 ## Bring-up results — 11 November 2026
 
@@ -84,10 +101,14 @@ means modem sleep is disabled; `ready:true` confirms local initialization only.
 ## Scope
 
 The planned application protocol is in [PROTOCOL_SPEC.md](PROTOCOL_SPEC.md). Event
-ACKs, persistence, configuration commands, sleep scheduling, MQTT, and a systemd
-service remain outside this transport implementation.
+ACKs, persistence, configuration commands, downstream communication windows, MQTT,
+and a systemd service remain outside this transport implementation.
 
 ## Development checks
+
+Five automated tests cover transport and sensor sleep sequencing using hardware stubs.
+The sleep checks include debounce, send completion/timeout, late seat closure, and
+wake-setup failure. Physical wake cycles and sleep current are not covered.
 
 ```sh
 pio run -e sensor -e gateway

@@ -47,6 +47,18 @@ class TransportTests(unittest.TestCase):
                            check=True)
             subprocess.run([str(binary)], check=True)
 
+    def test_sensor_sleep(self):
+        with tempfile.TemporaryDirectory() as directory:
+            binary = Path(directory) / "sensor-sleep-test"
+            subprocess.run(["c++", "-std=c++17", "-Wall", "-Wextra", "-Werror",
+                            "-I", str(ROOT / "tests/fakes"),
+                            "-I", str(ROOT / "sensor/include"),
+                            "-I", str(ROOT / "shared/include"),
+                            str(ROOT / "tests/sensor_sleep_test.cpp"), "-o", str(binary)],
+                           check=True)
+            subprocess.run([str(binary)], check=True)
+        self.assertEqual(transport.received(b'{"kind":"sleep","wake_pin":5}')["kind"], "sleep")
+
     def test_console_over_simulated_usb(self):
         master, slave = pty.openpty()
         process = subprocess.Popen(

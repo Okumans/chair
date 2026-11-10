@@ -172,6 +172,8 @@ namespace Transport {
     return true;
   }
 
+  bool busy() { return sending; }
+
   void poll() {
     const bool connected = static_cast<bool>(Serial);
     if (connected != wasConnected) {

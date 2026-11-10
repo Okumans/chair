@@ -11,11 +11,11 @@ namespace Config {
     // Contact debounce duration to filter mechanical chatter on sit/stand
     constexpr uint32_t DEBOUNCE_MS           = 50;
 
-    // Periodic heartbeat / telemetry interval in active state
-    constexpr uint32_t HEARTBEAT_INTERVAL_MS = 5000;
+    // Wakes a vacant sleeping node
+    constexpr uint32_t HEARTBEAT_INTERVAL_MS = 900000;
 
-    // Wait time for native USB CDC attachment after power on
-    constexpr uint32_t SERIAL_ATTACH_WAIT_MS = 1500;
+    // Bound awake time if a radio completion callback never arrives.
+    constexpr uint32_t TX_WAIT_TIMEOUT_MS    = 1000;
   }  // namespace Timing
 
   namespace Sensor {

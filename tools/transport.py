@@ -60,7 +60,7 @@ def command(text, request_id):
 def received(line):
     message = json.loads(line)
     if not isinstance(message, dict) or message.get("kind") not in {
-        "hello", "rx", "tx_result", "error"
+        "hello", "rx", "tx_result", "error", "sleep"
     }:
         raise ValueError("unknown USB message")
     if message["kind"] == "rx":
