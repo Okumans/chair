@@ -7,7 +7,7 @@
 #include "pins.h"
 #include "radio_transport.h"
 
-static_assert(Pins::SEAT_SENSOR <= 5, "C3 deep-sleep wake requires GPIO0–5");
+static_assert(static_cast<uint8_t>(Pins::SEAT_SENSOR) == 5, "C3 deep-sleep wake requires GPIO0–5");
 
 namespace {
   int candidate          = HIGH;
