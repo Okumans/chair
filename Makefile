@@ -1,27 +1,17 @@
 .DEFAULT_GOAL := help
 
-# Default target environment
-# Override on command line: `make build ENV=gateway`
-# or export in your shell: `export ENV=gateway`
-ENV ?= esp32-c3-supermini
+# Target environment: `sensor` (ESP32-C3 SuperMini) or `gateway` (ESP32-S3 DevKit)
+ENV ?= sensor
 
-# Friendly aliases: sensor -> esp32-c3-supermini, gateway -> esp32-s3-gateway
-ifeq ($(ENV),sensor)
-  override ENV := esp32-c3-supermini
-endif
-ifeq ($(ENV),gateway)
-  override ENV := esp32-s3-gateway
-endif
-
-CPP_FILES := $(wildcard src/*.cpp include/*.h)
+CPP_FILES := $(shell find sensor gateway shared -name '*.cpp' -o -name '*.h' 2>/dev/null)
 
 .PHONY: help build upload monitor flash lsp compiledb format clean
 
 help:
-	@echo -e "Smart Chair — Build & Development Shortcuts"
+	@echo -e "Smart Chair Monorepo — Build & Development Shortcuts"
 	@echo -e ""
 	@echo -e "  \033[33mActive Target:\033[0m \033[32m$(ENV)\033[0m"
-	@echo -e "  (Change with \033[36mENV=sensor\033[0m [default] or \033[36mENV=gateway\033[0m)"
+	@echo -e "  (Toggle with \033[36mENV=sensor\033[0m [default] or \033[36mENV=gateway\033[0m)"
 	@echo -e ""
 	@echo -e "  \033[36mmake build\033[0m   [ENV=...]   Build firmware"
 	@echo -e "  \033[36mmake upload\033[0m  [ENV=...]   Upload firmware"
@@ -32,9 +22,11 @@ help:
 	@echo -e "  \033[36mmake clean\033[0m               Clean PlatformIO build output"
 	@echo -e ""
 	@echo -e "  \033[33mExamples:\033[0m"
-	@echo -e "    make build                 # Builds sensor (default)"
-	@echo -e "    make build ENV=gateway     # Builds S3 gateway"
-	@echo -e "    make flash ENV=gateway     # Flashes S3 gateway & monitors"
+	@echo -e "    make build                 # Builds sensor node (default)"
+	@echo -e "    make build ENV=gateway     # Builds desk gateway"
+	@echo -e "    make flash ENV=gateway     # Flashes gateway & opens monitor"
+	@echo -e "    make lsp                   # Updates LSP database for sensor"
+	@echo -e "    make lsp ENV=gateway       # Updates LSP database for gateway"
 	@echo -e ""
 
 build:
@@ -50,7 +42,16 @@ monitor:
 	pio device monitor
 
 compiledb:
-	pio run -e $(ENV) -t compiledb
+	@python3 -c "import json, subprocess; \
+	cmds = []; \
+	subprocess.run(['pio', 'run', '-e', 'sensor', '-t', 'compiledb'], check=True, stdout=subprocess.DEVNULL); \
+	cmds.extend(json.load(open('compile_commands.json'))); \
+	subprocess.run(['pio', 'run', '-e', 'gateway', '-t', 'compiledb'], check=True, stdout=subprocess.DEVNULL); \
+	cmds.extend(json.load(open('compile_commands.json'))); \
+	seen = set(); unique = []; \
+	[unique.append(c) for c in cmds if c['file'] not in seen and not seen.add(c['file'])]; \
+	json.dump(unique, open('compile_commands.json', 'w'), indent=2); \
+	print('Regenerated compile_commands.json for both sensor and gateway!')"
 
 lsp: compiledb
 
