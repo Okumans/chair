@@ -40,13 +40,17 @@ namespace Transport {
       char peerMac[18];
       snprintf(peerMac, sizeof(peerMac), "%02x:%02x:%02x:%02x:%02x:%02x", peer[0], peer[1], peer[2],
                peer[3], peer[4], peer[5]);
-      printJson(glz::obj{"kind",        "hello",    "role",
-                         nodeRole,      "mac",      WiFi.macAddress().c_str(),
-                         "peer_mac",    peerMac,    "key_id",
-                         keyId,         "channel",  channel,
-                         "power_save",  sleepMode,  "tx_power_dbm",
-                         txPower / 4.0, "ready",    ready,
-                         "max_payload", MAX_PAYLOAD});
+      printJson(HelloMessage{
+          .role         = nodeRole,
+          .mac          = WiFi.macAddress().c_str(),
+          .peer_mac     = peerMac,
+          .key_id       = keyId,
+          .channel      = channel,
+          .power_save   = sleepMode,
+          .tx_power_dbm = txPower / 4.0,
+          .ready        = ready,
+          .max_payload  = MAX_PAYLOAD,
+      });
     }
 
     void receiveCallback(const esp_now_recv_info_t* info, const uint8_t* data, int size) {
@@ -66,7 +70,7 @@ namespace Transport {
     }
 
     void error(const char* reason, uint32_t requestId = 0) {
-      printJson(glz::obj{"kind", "error", "request_id", requestId, "reason", reason});
+      printJson(ErrorMessage{.request_id = requestId, .reason = reason});
     }
 
     void handleLine(const char* line) {
@@ -190,8 +194,10 @@ namespace Transport {
     if (!ready) return;
     esp_now_send_status_t status;
     if (xQueueReceive(sentQueue, &status, 0) == pdTRUE) {
-      printJson(glz::obj{"kind", "tx_result", "request_id", pendingId, "mac_delivered",
-                         status == ESP_NOW_SEND_SUCCESS});
+      printJson(TxResultMessage{
+          .request_id    = pendingId,
+          .mac_delivered = status == ESP_NOW_SEND_SUCCESS,
+      });
       sending = false;
     }
 
@@ -202,7 +208,7 @@ namespace Transport {
       char peerMac[18];
       snprintf(peerMac, sizeof(peerMac), "%02x:%02x:%02x:%02x:%02x:%02x", peer[0], peer[1], peer[2],
                peer[3], peer[4], peer[5]);
-      printJson(glz::obj{"kind", "rx", "source_mac", peerMac, "data_hex", hex});
+      printJson(RxMessage{.source_mac = peerMac, .data_hex = hex});
     }
   }
 }  // namespace Transport

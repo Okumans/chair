@@ -7,10 +7,10 @@
 
 FakeSerial Serial;
 
-struct Rx {
+struct Error {
   std::string kind;
-  std::string data_hex;
-  std::string text;
+  uint32_t request_id;
+  std::string reason;
 };
 
 int main() {
@@ -39,10 +39,45 @@ int main() {
   assert(!Transport::decodeHex(*command.data_hex, data, sizeof(data), size));
 
   const std::string text = "quote\" slash\\ newline\n tab\t ไทย";
-  Transport::printJson(glz::obj{"kind", "rx", "data_hex", "6869", "text", text});
+  Transport::printJson(Transport::ErrorMessage{.request_id = 42, .reason = text});
   assert(Serial.output.back() == '\n');
   assert(Serial.output.find('\n') == Serial.output.size() - 1);
-  Rx rx;
+  Error error;
+  assert(!glz::read_json(error, Serial.output));
+  assert(error.kind == "error" && error.request_id == 42 && error.reason == text);
+
+  Serial.output.clear();
+  Transport::printJson(Transport::HelloMessage{
+      .role         = "gateway",
+      .mac          = "44:1B:F6:8D:B7:9C",
+      .peer_mac     = "48:f6:ee:12:a0:d8",
+      .key_id       = "test-key",
+      .channel      = 1,
+      .power_save   = 0,
+      .tx_power_dbm = 8.5,
+      .ready        = true,
+      .max_payload  = 250,
+  });
+  Transport::HelloMessage hello;
+  assert(!glz::read_json(hello, Serial.output));
+  assert(hello.kind == "hello" && hello.role == "gateway" && hello.channel == 1);
+  assert(hello.ready && hello.tx_power_dbm == 8.5 && hello.max_payload == 250);
+
+  Serial.output.clear();
+  Transport::printJson(Transport::RxMessage{.source_mac = "peer", .data_hex = "00ff"});
+  Transport::RxMessage rx;
   assert(!glz::read_json(rx, Serial.output));
-  assert(rx.kind == "rx" && rx.data_hex == "6869" && rx.text == text);
+  assert(rx.kind == "rx" && rx.source_mac == "peer" && rx.data_hex == "00ff");
+
+  Serial.output.clear();
+  Transport::printJson(Transport::TxResultMessage{.request_id = 7, .mac_delivered = true});
+  Transport::TxResultMessage result;
+  assert(!glz::read_json(result, Serial.output));
+  assert(result.kind == "tx_result" && result.request_id == 7 && result.mac_delivered);
+
+  Serial.output.clear();
+  Transport::printJson(Transport::SleepMessage{.wake_pin = 5, .heartbeat_ms = 900000});
+  Transport::SleepMessage sleep;
+  assert(!glz::read_json(sleep, Serial.output));
+  assert(sleep.kind == "sleep" && sleep.wake_pin == 5 && sleep.heartbeat_ms == 900000);
 }

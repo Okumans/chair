@@ -112,7 +112,8 @@ API. Recheck radio delivery and contact/timer wake on hardware after flashing th
 stack; the earlier bring-up results were recorded with Arduino-ESP32 2.0.17.
 
 Glaze v9.1.0 headers and license are vendored under `third_party/glaze`; firmware uses
-Glaze for USB parsing/output and seat snapshots. USB field names and radio payload
+Glaze for USB parsing/output and seat snapshots. Message structs are defined in
+`shared/include/json_messages.h`. USB field names and radio payload
 limits are unchanged. Invalid field types or out-of-range IDs are rejected. Serialization
 may change JSON whitespace/number formatting; consumers must parse JSON rather than
 compare raw text.
