@@ -12,7 +12,7 @@ namespace Config {
     constexpr uint32_t DEBOUNCE_MS           = 50;
 
     // Periodic heartbeat / telemetry interval in active state
-    constexpr uint32_t HEARTBEAT_INTERVAL_MS = 2000;
+    constexpr uint32_t HEARTBEAT_INTERVAL_MS = 5000;
 
     // Wait time for native USB CDC attachment after power on
     constexpr uint32_t SERIAL_ATTACH_WAIT_MS = 1500;

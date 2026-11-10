@@ -2,3 +2,7 @@
 compile_commands.json
 smart_chair_project_handoff.md
 *.log
+
+shared/include/link_config.local.h
+.venv/
+__pycache__/
