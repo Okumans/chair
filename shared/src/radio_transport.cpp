@@ -95,15 +95,23 @@ namespace Transport {
     Serial.begin(115200);
     // Arduino's asynchronous STA_START handler reapplies this preference to the driver.
     WiFi.setSleep(false);
-    WiFi.mode(WIFI_STA);
+    if (!WiFi.STA.begin(false)) {
+      error("wifi_start_failed");
+      hello();
+      return;
+    }
     WiFi.disconnect();
 
     uint8_t own[6];
     uint8_t pmk[16];
     uint8_t lmk[16];
     size_t size = 0;
-    uint8_t actualMac[6];
-    WiFi.macAddress(actualMac);
+    uint8_t actualMac[6]{};
+    if (esp_wifi_get_mac(WIFI_IF_STA, actualMac) != ESP_OK) {
+      error("station_mac_failed");
+      hello();
+      return;
+    }
     if (!decodeMac(ownMac, own) || !decodeMac(peerMac, peer) || memcmp(own, actualMac, 6) ||
         !memcmp(own, peer, 6) || !decodeHex(LinkConfig::PMK, pmk, sizeof(pmk), size) ||
         size != 16 || !decodeHex(LinkConfig::LMK, lmk, sizeof(lmk), size) || size != 16) {
