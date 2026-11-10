@@ -3,12 +3,10 @@
 #include <Arduino.h>
 #include <WiFi.h>
 
-#include <cmath>
-
-#include "cJSON.h"
 #include "esp_now.h"
 #include "esp_wifi.h"
 #include "freertos/queue.h"
+#include "json_messages.h"
 #include "link_config.h"
 #include "mbedtls/sha256.h"
 #include "transport_codec.h"
@@ -39,14 +37,16 @@ namespace Transport {
       if (esp_wifi_get_max_tx_power(&txPower) != ESP_OK) txPower = -4;
       wifi_ps_type_t powerSave;
       const int sleepMode = esp_wifi_get_ps(&powerSave) == ESP_OK ? powerSave : -1;
-      Serial.printf(
-          "{\"kind\":\"hello\",\"role\":\"%s\",\"mac\":\"%s\","
-          "\"peer_mac\":\"%02x:%02x:%02x:%02x:%02x:%02x\",\"key_id\":\"%s\","
-          "\"channel\":%u,\"power_save\":%d,\"tx_power_dbm\":%.2f,\"ready\":%s,\"max_payload\":%u}"
-          "\n",
-          nodeRole, WiFi.macAddress().c_str(), peer[0], peer[1], peer[2], peer[3], peer[4], peer[5],
-          keyId, channel, sleepMode, txPower / 4.0, ready ? "true" : "false",
-          static_cast<unsigned>(MAX_PAYLOAD));
+      char peerMac[18];
+      snprintf(peerMac, sizeof(peerMac), "%02x:%02x:%02x:%02x:%02x:%02x", peer[0], peer[1], peer[2],
+               peer[3], peer[4], peer[5]);
+      printJson(glz::obj{"kind",        "hello",    "role",
+                         nodeRole,      "mac",      WiFi.macAddress().c_str(),
+                         "peer_mac",    peerMac,    "key_id",
+                         keyId,         "channel",  channel,
+                         "power_save",  sleepMode,  "tx_power_dbm",
+                         txPower / 4.0, "ready",    ready,
+                         "max_payload", MAX_PAYLOAD});
     }
 
     void receiveCallback(const esp_now_recv_info_t* info, const uint8_t* data, int size) {
@@ -66,38 +66,27 @@ namespace Transport {
     }
 
     void error(const char* reason, uint32_t requestId = 0) {
-      Serial.printf("{\"kind\":\"error\",\"request_id\":%lu,\"reason\":\"%s\"}\n",
-                    static_cast<unsigned long>(requestId), reason);
+      printJson(glz::obj{"kind", "error", "request_id", requestId, "reason", reason});
     }
 
     void handleLine(const char* line) {
-      // cJSON strings cannot represent embedded NULs; reject their escaped form too.
-      cJSON* document =
-          strstr(line, "\\u0000") ? nullptr : cJSON_ParseWithOpts(line, nullptr, true);
-      if (!document || !cJSON_IsObject(document)) {
-        cJSON_Delete(document);
+      UsbCommand command;
+      if (glz::read<UsbReadOptions{}>(command, std::string_view{line})) {
         error("invalid_json");
         return;
       }
-      const cJSON* kind = cJSON_GetObjectItemCaseSensitive(document, "kind");
-      if (cJSON_IsString(kind) && !strcmp(kind->valuestring, "hello")) {
+      if (command.kind == "hello") {
         hello();
-        cJSON_Delete(document);
         return;
       }
-      const cJSON* id   = cJSON_GetObjectItemCaseSensitive(document, "request_id");
-      const cJSON* data = cJSON_GetObjectItemCaseSensitive(document, "data_hex");
       uint8_t payload[MAX_PAYLOAD];
       size_t size = 0;
-      if (!cJSON_IsString(kind) || strcmp(kind->valuestring, "tx") || !cJSON_IsNumber(id) ||
-          !std::isfinite(id->valuedouble) || id->valuedouble < 1 || id->valuedouble > UINT32_MAX ||
-          floor(id->valuedouble) != id->valuedouble || !cJSON_IsString(data) ||
-          !decodeHex(data->valuestring, payload, MAX_PAYLOAD, size) || !size) {
+      if (command.kind != "tx" || !command.request_id || *command.request_id == 0 ||
+          !command.data_hex || !decodeHex(*command.data_hex, payload, MAX_PAYLOAD, size) || !size) {
         error("invalid_tx");
-      } else {
-        send(payload, size, static_cast<uint32_t>(id->valuedouble));
+        return;
       }
-      cJSON_Delete(document);
+      send(payload, size, *command.request_id);
     }
   }  // namespace
 
@@ -193,9 +182,8 @@ namespace Transport {
     if (!ready) return;
     esp_now_send_status_t status;
     if (xQueueReceive(sentQueue, &status, 0) == pdTRUE) {
-      Serial.printf("{\"kind\":\"tx_result\",\"request_id\":%lu,\"mac_delivered\":%s}\n",
-                    static_cast<unsigned long>(pendingId),
-                    status == ESP_NOW_SEND_SUCCESS ? "true" : "false");
+      printJson(glz::obj{"kind", "tx_result", "request_id", pendingId, "mac_delivered",
+                         status == ESP_NOW_SEND_SUCCESS});
       sending = false;
     }
 
@@ -203,10 +191,10 @@ namespace Transport {
     while (xQueueReceive(receivedQueue, &packet, 0) == pdTRUE) {
       char hex[MAX_PAYLOAD * 2 + 1];
       encodeHex(packet.data, packet.size, hex);
-      Serial.printf(
-          "{\"kind\":\"rx\",\"source_mac\":\"%02x:%02x:%02x:%02x:%02x:%02x\","
-          "\"data_hex\":\"%s\"}\n",
-          peer[0], peer[1], peer[2], peer[3], peer[4], peer[5], hex);
+      char peerMac[18];
+      snprintf(peerMac, sizeof(peerMac), "%02x:%02x:%02x:%02x:%02x:%02x", peer[0], peer[1], peer[2],
+               peer[3], peer[4], peer[5]);
+      printJson(glz::obj{"kind", "rx", "source_mac", peerMac, "data_hex", hex});
     }
   }
 }  // namespace Transport

@@ -111,9 +111,16 @@ pinned in `platformio.ini` (GCC 14.2, ESP-IDF 5.5.5). The migration updates ESP-
 API. Recheck radio delivery and contact/timer wake on hardware after flashing this
 stack; the earlier bring-up results were recorded with Arduino-ESP32 2.0.17.
 
+Glaze v9.1.0 headers and license are vendored under `third_party/glaze`; firmware uses
+Glaze for USB parsing/output and seat snapshots. USB field names and radio payload
+limits are unchanged. Invalid field types or out-of-range IDs are rejected. Serialization
+may change JSON whitespace/number formatting; consumers must parse JSON rather than
+compare raw text.
+
 ## Development checks
 
-Five automated tests cover transport and sensor sleep sequencing using hardware stubs.
+Six automated tests cover transport and sensor sleep sequencing using hardware stubs.
+JSON checks cover malformed/trailing input, integer bounds, embedded nulls, and escaping.
 The sleep checks include debounce, send completion/timeout, late seat closure, and
 wake-setup failure. Physical wake cycles and sleep current are not covered.
 

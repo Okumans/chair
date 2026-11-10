@@ -3,6 +3,7 @@
 #include "config.h"
 #include "esp_sleep.h"
 #include "esp_wifi.h"
+#include "json_messages.h"
 #include "link_config.h"
 #include "pins.h"
 #include "radio_transport.h"
@@ -22,18 +23,20 @@ namespace {
             ESP_OK ||
         esp_sleep_enable_timer_wakeup(static_cast<uint64_t>(Config::Timing::HEARTBEAT_INTERVAL_MS) *
                                       1000) != ESP_OK) {
-      Serial.println("{\"kind\":\"error\",\"request_id\":0,\"reason\":\"sleep_setup_failed\"}");
+      Transport::printJson(
+          glz::obj{"kind", "error", "request_id", 0, "reason", "sleep_setup_failed"});
       reportQueued = false;
       return;
     }
 
-    Serial.printf("{\"kind\":\"sleep\",\"wake_pin\":%u,\"heartbeat_ms\":%lu}\n", Pins::SEAT_SENSOR,
-                  static_cast<unsigned long>(Config::Timing::HEARTBEAT_INTERVAL_MS));
+    Transport::printJson(glz::obj{"kind", "sleep", "wake_pin", Pins::SEAT_SENSOR, "heartbeat_ms",
+                                  Config::Timing::HEARTBEAT_INTERVAL_MS});
     Serial.flush();
     // A closure during sleep preparation must still be reported before going back to sleep.
     if (digitalRead(Pins::SEAT_SENSOR) != Config::Sensor::LEVEL_VACANT) return;
     if (esp_wifi_stop() != ESP_OK) {
-      Serial.println("{\"kind\":\"error\",\"request_id\":0,\"reason\":\"radio_stop_failed\"}");
+      Transport::printJson(
+          glz::obj{"kind", "error", "request_id", 0, "reason", "radio_stop_failed"});
       reportQueued = false;
       return;
     }
@@ -64,16 +67,20 @@ void loop() {
 
   if (now - changedAt >= Config::Timing::DEBOUNCE_MS &&
       (stable != candidate || now - lastReport >= Config::Timing::HEARTBEAT_INTERVAL_MS)) {
-    char info[160];
-    const int size =
-        snprintf(info, sizeof(info),
-                 "{\"seat_pin\":%u,\"occupancy\":\"%s\",\"uptime_ms\":%lu,\"wake_reason\":\"%s\"}",
-                 Pins::SEAT_SENSOR, candidate == LOW ? "occupied" : "vacant",
-                 static_cast<unsigned long>(now), wakeReason);
-
-    reportQueued = Transport::send(reinterpret_cast<const uint8_t*>(info), size);
-    stable       = candidate;
-    lastReport   = now;
+    std::string info;
+    const auto message = glz::obj{"seat_pin",    Pins::SEAT_SENSOR,
+                                  "occupancy",   candidate == LOW ? "occupied" : "vacant",
+                                  "uptime_ms",   now,
+                                  "wake_reason", wakeReason};
+    if (glz::write_json(message, info)) {
+      reportQueued = false;
+      Transport::printJson(
+          glz::obj{"kind", "error", "request_id", 0, "reason", "json_encode_failed"});
+    } else {
+      reportQueued = Transport::send(reinterpret_cast<const uint8_t*>(info.data()), info.size());
+    }
+    stable     = candidate;
+    lastReport = now;
   }
 
   if (reportQueued && stable == Config::Sensor::LEVEL_VACANT && candidate == stable &&
@@ -81,7 +88,8 @@ void loop() {
     if (!Transport::busy()) {
       sleepWhileVacant();
     } else if (now - lastReport >= Config::Timing::TX_WAIT_TIMEOUT_MS) {
-      Serial.println("{\"kind\":\"error\",\"request_id\":0,\"reason\":\"radio_send_timeout\"}");
+      Transport::printJson(
+          glz::obj{"kind", "error", "request_id", 0, "reason", "radio_send_timeout"});
       sleepWhileVacant();
     }
   }

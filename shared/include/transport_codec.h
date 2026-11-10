@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <string_view>
 
 namespace Transport {
   constexpr size_t MAX_PAYLOAD = 250;
@@ -15,8 +16,8 @@ namespace Transport {
     return -1;
   }
 
-  inline bool decodeHex(const char* text, uint8_t* bytes, size_t capacity, size_t& size) {
-    const size_t length = strlen(text);
+  inline bool decodeHex(std::string_view text, uint8_t* bytes, size_t capacity, size_t& size) {
+    const size_t length = text.size();
     if (length % 2 || length / 2 > capacity) return false;
 
     for (size_t i = 0; i < length / 2; ++i) {

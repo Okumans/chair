@@ -43,7 +43,19 @@ class TransportTests(unittest.TestCase):
             binary = Path(directory) / "codec-test"
             subprocess.run(["c++", "-std=c++23", "-Wall", "-Wextra", "-Werror",
                             "-I", str(ROOT / "shared/include"),
+                            "-I", str(ROOT / "third_party/glaze/include"),
                             str(ROOT / "tests/transport_codec_test.cpp"), "-o", str(binary)],
+                           check=True)
+            subprocess.run([str(binary)], check=True)
+
+    def test_glaze_messages(self):
+        with tempfile.TemporaryDirectory() as directory:
+            binary = Path(directory) / "json-messages-test"
+            subprocess.run(["c++", "-std=c++23", "-Wall", "-Wextra", "-Werror",
+                            "-I", str(ROOT / "tests/fakes"),
+                            "-I", str(ROOT / "shared/include"),
+                            "-I", str(ROOT / "third_party/glaze/include"),
+                            str(ROOT / "tests/json_messages_test.cpp"), "-o", str(binary)],
                            check=True)
             subprocess.run([str(binary)], check=True)
 
@@ -54,6 +66,7 @@ class TransportTests(unittest.TestCase):
                             "-I", str(ROOT / "tests/fakes"),
                             "-I", str(ROOT / "sensor/include"),
                             "-I", str(ROOT / "shared/include"),
+                            "-I", str(ROOT / "third_party/glaze/include"),
                             str(ROOT / "tests/sensor_sleep_test.cpp"), "-o", str(binary)],
                            check=True)
             subprocess.run([str(binary)], check=True)
