@@ -1,179 +1,99 @@
-# Smart Chair protocol specification
+# Smart Chair protocol
 
-Revision: 0.1.2 draft, 11 November 2026
+Revision 1, 12 November 2026. This is the implementation contract. Physical acceptance is separate from build and native-test evidence.
 
-Draft contract; defaults are proposed and not yet implemented.
+## Ownership and defaults
 
-## 1. Architecture and responsibilities
+Chair → encrypted unicast ESP-NOW → gateway → USB JSON → Pi SQLite.
+The Pi owns logical sessions. The chair owns physical occupancy, sensing, configuration and power. MQTT, systemd, battery measurement, actual occupied light sleep and scheduled radio windows are deferred.
 
-```text
-Chair node <-- ESP-NOW --> ESP gateway <-- USB --> Raspberry Pi bridge <-- MQTT --> broker / application
+Seat GPIO5 is active low with 50 ms debounce. MPU6050 uses SDA6/SCL7; INT21 is optional and unused by the polling adapter. Poll at 25 Hz, ±2 g and ±250 degrees/s. Preserve raw readings. Local classification uses acceleration magnitude deviation from 1 g and maximum absolute gyro axis: start above 0.15 g or 15 degrees/s; quiet below 0.08 g and 8 degrees/s; 100 ms debounce on start and stop. Initial gravity is the calibration reference; thresholds require physical tuning.
+
+Configuration is complete and atomic: revision uint32, heartbeat_s and movement_batch_s uint32 in 1..4294967295, movement_enabled boolean. Defaults: revision 0, 900 s, 3 s, true. Recommended batch interval 1–3 s is not a validation limit. Convert seconds using 64-bit arithmetic. occupied_sleep_ms is zero; awake radio stays open.
+
+## Binary contract
+
+All integers are explicitly little endian. No native structure layouts are sent.
+Maximum ESP-NOW v2 payload: 1470 bytes. Node ID: 1–15 ASCII alphanumeric/underscore/hyphen bytes followed by zero padding to 16. Boot ID: nonzero uint64 random on cold boot, retained through deep sleep. Sequence uint32 starts at 1; identity is (node_id, boot_id, seq). Retries preserve bytes and identity. Before wrap a new boot ID is required.
+
+Header (32 bytes): version u8=1 at 0, type u8 at 1, payload length u16 at 2, node ID at 4, boot ID u64 at 20, sequence u32 at 28.
+
+Common telemetry (12 bytes): uptime_ms u32, occupied u8 (0/1), battery_mv u16 (65535 unavailable), config_revision u32, health_flags u8 (bit0 IMU unavailable, bit1 battery unavailable). Uptime is diagnostic and wraps at 32 bits.
+
+Types and payloads:
+
+| Code | Type | Payload after header | Delivery |
+|---|---|---|---|
+|1|OCCUPIED|common|reliable|
+|2|VACATED|common|reliable|
+|3|HEARTBEAT|common|reliable|
+|4|STATE_SYNC|common|reliable|
+|5|BATTERY_LOW|common|reliable|
+|6|COMMAND_RESULT|common, UUID 16 bytes, status u8|reliable|
+|7|MOVEMENT_BATCH|common, metadata, samples|best effort|
+|8|READY|common, reason u8, listen_remaining_ms u32 (0xffffffff = null)|best effort|
+|9|EVENT_ACK|target boot u64, target seq u32|control|
+|10|CONFIG_SET|UUID 16 bytes, revision u32, heartbeat_s u32, movement_batch_s u32, enabled u8|control|
+|11|COMMAND_RECEIPT|UUID 16 bytes, status u8|best effort control|
+
+UUIDs are nonzero 16-byte values, represented as canonical UUID strings in JSON. Status: 0 applied, 1 already_applied, 2 revision_conflict, 3 stale_revision, 4 busy, 5 received, 6 command_conflict. READY reasons: 0 seat_occupied, 1 movement_started, 2 scheduled. Never persist, replay or application-ACK READY. Generate it afresh when occupied communication opens or movement starts. Null listen remaining means no scheduled close; timed windows compute remaining time when sent. There is no UTC clock or listen_until on the chair.
+
+Movement metadata (14 bytes): batch_start_ms u32, duration_ms u32, sample_count u16 (0..75), accel_range u8=0, gyro_range u8=0, end_reason u8, reserved u8=0. End reasons: 0 interval, 1 capacity, 2 stopped, 3 vacant, 4 disabled. Each sample (14 bytes): offset_ms u16 and ax, ay, az, gx, gy, gz signed i16. Default full batch: 32+12+14+75*14=1108 bytes. Offsets are actual acquisition times. Candidate and stop-debounce samples are included. Flush at interval or capacity; confirmed stop takes priority. Final boundaries may be empty after a preceding flush. No idle-only batches. A buffer flush starts the next interval; gaps exceeding u16 offsets trigger an early flush.
+
+Validate sender MAC, node ID, version, type, exact lengths, enums, occupancy, nonzero identities, sample counts, ordered offsets, ranges and configuration before processing. A gateway serves the single provisioned encrypted chair peer. Reject malformed data without changing state.
+
+## Cooperative state engine
+
+Time is supplied explicitly in uint64 milliseconds. Callbacks only enqueue data. The loop samples, debounces, processes controls and requests sends; reporting never waits for ACKs in a sensing loop.
+
+```mermaid
+stateDiagram-v2
+ [*] --> STARTING
+ STARTING --> OCCUPIED_IDLE: occupied
+ STARTING --> PREPARE_SLEEP: vacant
+ OCCUPIED_IDLE --> SAMPLE_CHECK: sample due
+ SAMPLE_CHECK --> OCCUPIED_IDLE: quiet
+ SAMPLE_CHECK --> MOTION_START_CHECK: active
+ MOTION_START_CHECK --> MOVING: 100 ms active
+ MOTION_START_CHECK --> OCCUPIED_IDLE: activity disappears
+ MOVING --> MOTION_STOP_CHECK: quiet
+ MOTION_STOP_CHECK --> MOVING: activity resumes
+ MOTION_STOP_CHECK --> OCCUPIED_IDLE: 100 ms quiet, final batch
+ OCCUPIED_IDLE --> PREPARE_SLEEP: seat released
+ MOVING --> PREPARE_SLEEP: seat released, final batch
+ PREPARE_SLEEP --> OCCUPIED_IDLE: reseated
+ PREPARE_SLEEP --> DEEP_SLEEP: work finished or deadline
+ DEEP_SLEEP --> STARTING: seat or heartbeat
 ```
 
-- Chair: debounce the seat contact, maintain physical occupancy, aggregate movement, report health, apply configuration, and acknowledge commands.
-- ESP gateway: validate and forward packets between radio and USB. It does not connect to MQTT or decide session behavior.
-- Pi bridge: run as a systemd service, validate USB messages, persist reliable events, publish MQTT, and queue commands.
-- Pi application: own sessions and their storage; issue device configuration commands through MQTT.
+Seat release applies from every occupied state. Sampling remains at 40 ms with zero occupied sleep, with no catch-up busy loop. Future OCCUPIED_LIGHT_SLEEP is allowed only when communication is closed; quiet sampling does not open it.
 
-USB uses bidirectional CDC ACM serial, subject to confirmation of the S3 connector/peripheral. Identify the device by a stable identity rather than a fixed `/dev/ttyACM0` path.
-
-## 2. Physical state and application sessions
-
-Occupancy is `occupied` or `vacant` from the debounced contact. Use 50 ms debounce for both edges and stabilize the initial reading before reporting it. On boot, report `STATE_SYNC` rather than inventing a transition.
-
-Every telemetry message includes current occupancy. Neither ESP stores session state or handles session commands. The Pi application decides session boundaries, absence tolerance, and movement attribution. Ending a session does not change chair sensing or power behavior.
-
-## 3. Identity, ordering, and time
-
-| Field             | Proposed meaning                                                                                                 |
-| ----------------- | ---------------------------------------------------------------------------------------------------------------- |
-| `version`         | Protocol version, initially `1`                                                                                  |
-| `node_id`         | Provisioned name, 1–15 ASCII letters, digits, `_` or `-`; unique within the installation                         |
-| `boot_id`         | 64-bit random identifier created on cold boot, encoded as 16 hex characters in JSON; retained through deep sleep |
-| `seq`             | Unsigned 32-bit event counter within a boot ID; retained through deep sleep                                      |
-| `uptime_ms`       | Milliseconds since the current wake, unsigned 32-bit; diagnostic only                                            |
-| `config_revision` | Last successfully persisted configuration revision                                                               |
-
-An event's identity is `(node_id, boot_id, seq)`. Retransmission preserves the identity and payload. New events increment `seq`; start a new boot ID before sequence wrap. Delayed events from an earlier boot must not overwrite newer reconciled state.
-
-The Pi adds UTC `received_at` on first acceptance and preserves it across retries. Reception time and arrival order may differ from event occurrence time and order.
-
-## 4. Chair-to-Pi messages
-
-All telemetry carries the common identity fields, `occupancy`, `battery_mv`, and `config_revision`. Battery voltage is an integer in millivolts or `null` when unavailable; never use zero to mean unknown.
-
-| Type             | Trigger / additional payload                                                    | Delivery    |
-| ---------------- | ------------------------------------------------------------------------------- | ----------- |
-| `OCCUPIED`       | Stable seat closure                                                             | Reliable    |
-| `VACATED`        | Stable seat release                                                             | Reliable    |
-| `STATE_SYNC`     | Cold boot, reconnect, or recovery; includes `reason` and any known event loss   | Reliable    |
-| `MOVEMENT_BATCH` | Completed sampling window: `window_ms`, `motion_count`, `motion_active_ms`      | Best effort |
-| `HEARTBEAT`      | Scheduled wake/status; includes wake reason and pending/lost event counts       | Best effort |
-| `BATTERY_LOW`    | Measured voltage crosses a configured threshold                                 | Reliable    |
-| `COMMAND_RESULT` | Command applied, rejected, or already applied; includes `command_id` and result | Reliable    |
-
-A motion episode begins after activity exceeds a threshold for the configured debounce interval; activity must fall below the threshold before another episode. Units, filtering, and thresholds await IMU selection.
-
-Low-battery detection requires valid measurements and hysteresis; thresholds await battery testing.
-
-## 5. Reliable delivery and acknowledgments
-
-Only reliable messages receive `EVENT_ACK`; best-effort messages have no ACK or retry. Radio send success is not Pi acceptance.
-
-1. The chair assigns an event identity and retains the reliable event in an outbox.
-2. The gateway forwards it to the Pi over USB.
-3. The Pi validates and commits it to a durable local outbox before returning `EVENT_ACK` through USB and ESP-NOW.
-4. The chair removes the acknowledged event from its outbox.
-5. The Pi publishes it with MQTT QoS 1 and removes it from its outbox after broker acknowledgment.
-
-`EVENT_ACK` identifies the exact event. Acknowledge duplicates again without creating another logical event. Delivery is at least once; consumers must deduplicate MQTT redelivery too.
-
-Chair retries at 0, 250, 750, and 1750 ms with an ACK deadline of 2500 ms. If unacknowledged, keep the event pending and retry on the next wake or contact event.
-
-The chair persists up to 32 reliable messages before transmission, surviving deep sleep and ordinary resets. On overflow, preserve unacknowledged command results, coalesce older occupancy history into the latest `STATE_SYNC` where possible, and report a loss counter. Overflow can lose history; retention priorities remain to be finalized.
-
-The Pi must not ACK when durable storage is full or unavailable. The gateway uses a bounded transient queue; the chair retries dropped reliable events.
-
-## 6. Downstream commands
-
-Commands follow MQTT → Pi durable queue → USB → gateway → ESP-NOW → chair. Delivery requires the chair to be awake and receiving; this revision defines no downstream communication-window schedule or latency guarantee.
-
-Commands include `version`, `node_id`, a globally unique `command_id`, and UTC `expires_at`. The Pi rejects expired commands and stops retries; the chair requires no wall clock.
-
-| Command      | Proposed behavior                                                                                                     |
-| ------------ | --------------------------------------------------------------------------------------------------------------------- |
-| `CONFIG_SET` | Apply a complete validated configuration with a monotonically increasing `revision`; persist before reporting success |
-
-`CONFIG_SET` supports `heartbeat_s`, `movement_batch_s` (both in seconds), and movement enable/disable. Motion thresholds await IMU selection. Pin assignments and firmware updates are excluded.
-
-Validate configuration as one transaction: reject the whole command on missing, unknown, or invalid fields. Proposed bounds: heartbeat 60–86400 seconds; movement batch 1–3600 seconds and no longer than heartbeat. Reject a lower revision. The same revision with identical values returns `already_applied`; different values at the same revision return `revision_conflict`.
-
-Persist configuration and command-result state before success so retries remain idempotent across resets.
-
-Command statuses: `queued`, `delivered`, `applied`, `rejected`, `expired`. `delivered` requires chair receipt; `applied`/`rejected` require `COMMAND_RESULT`. Final statuses never regress. Allow one in-flight command per node; deduplicate `command_id` and reject reuse with different content.
-
-## 7. Sleep and heartbeat
-
-The chair may sleep while vacant or occupied, waking for supported contact/motion events and a heartbeat timer. Verify hardware wake support for both contact transitions. Default heartbeat: 900 seconds.
-
-On seat release, attempt the pending movement batch and reliable `VACATED` event before sleeping. Keep unacknowledged reliable events pending without remaining awake indefinitely.
-
-## 8. ESP-NOW wire format
-
-Use compact binary messages with a fixed header and type-specific payloads, limited to 250 bytes per frame without fragmentation.
-
-The header contains `version`, `type`, `payload_length`, `node_id`, `boot_id`, and `seq`. Integer fields use explicitly encoded little-endian bytes. Occupancy, missing battery, message types, and command results need fixed numeric codes.
-
-Define byte offsets, widths, and optional-value encodings before implementation; native C++ struct layout is not the wire contract. `shared/include/protocol.h` does not yet implement this draft.
-
-Reject unsupported versions, unknown types, invalid lengths, invalid enum values, or identities inconsistent with the provisioned sender MAC. Use provisioned unicast peers and radio encryption; peer keys and node assignments are installation configuration, never telemetry. Discovery/pairing UI is outside v1.
-
-## 9. USB framing
-
-Use UTF-8 newline-delimited JSON, one object per line in each direction. Maximum line length: 2048 bytes excluding newline. Send LF; accept LF or CRLF. JSON strings must escape embedded newlines.
-
-- Gateway → Pi: `hello`, `telemetry`, `command_receipt`, and `gateway_status`.
-- Pi → gateway: `event_ack` and `command`.
-- `hello` identifies gateway ID, protocol version, firmware version, and radio channel on every USB connection.
-- `telemetry` wraps the decoded radio message and source MAC; the Pi checks that mapping against its provisioned nodes.
-- No free-form debug prints on this stream. Use a separate debug interface or a structured `gateway_status` message.
-
-Readers accumulate partial reads, handle multiple lines per read, discard an overlong line through its next newline, and resume after malformed input. A partial line is discarded on disconnect. The Pi reconnects automatically; unacknowledged chair events and queued Pi commands recover delivery.
-
-Example gateway-to-Pi telemetry:
-
-```json
-{
-  "kind": "telemetry",
-  "gateway_id": "desk-01",
-  "source_mac": "02:00:00:00:00:01",
-  "message": {
-    "version": 1,
-    "type": "OCCUPIED",
-    "node_id": "chair-01",
-    "boot_id": "ae0172d986e43310",
-    "seq": 42,
-    "uptime_ms": 310,
-    "occupancy": "occupied",
-    "battery_mv": 3910,
-    "config_revision": 3
-  }
-}
+```mermaid
+stateDiagram-v2
+ COMM_CLOSED --> COMM_OPENING: startup, outgoing work, scheduled window
+ COMM_OPENING --> COMM_OPEN: radio ready, start window
+ COMM_OPEN --> COMM_SETTLING: sleep request or window expires
+ COMM_SETTLING --> COMM_OPEN: extension
+ COMM_SETTLING --> COMM_CLOSED: work finished or deadline
 ```
 
-## 10. MQTT contract
+The engine models timed opening and extension, including movement extension, without installing a hardware schedule or CONFIG_SET window fields. Open/opening/settling prevents occupied sleep. Vacant sleep adds no communication wake timer.
 
-Proposed prefix: `smartchair/v1`. Each chair is provisioned to one gateway/Pi bridge.
+## Durability and sleep
 
-| Topic suffix                      | Publisher   | QoS / retained | Purpose                                                                                      |
-| --------------------------------- | ----------- | -------------- | -------------------------------------------------------------------------------------------- |
-| `nodes/{node_id}/events`          | Pi          | 1 / no         | Telemetry events with identity and Pi `received_at`                                          |
-| `nodes/{node_id}/state`           | Pi          | 1 / yes        | Latest reconciled occupancy, battery, config revision, observation time, and loss indicators |
-| `nodes/{node_id}/commands`        | Application | 1 / no         | Commands with identity and expiry                                                            |
-| `nodes/{node_id}/command_results` | Pi          | 1 / no         | Command lifecycle statuses and chair results                                                 |
-| `gateways/{gateway_id}/status`    | Pi          | 1 / yes        | Bridge availability and USB connection state                                                 |
+Persist reliable events before transmission and persist exact ACK removal. Up to 32 events; reserve one slot for STATE_SYNC. Preserve command results. Overflow coalesces ordinary history into latest STATE_SYNC; this restores current state, not missing history. Reject commands busy if protected results leave no capacity. Configuration, command deduplication record and result are one durable transaction. Keep the most recent 32 command UUIDs; older revisions remain rejected after that bounded deduplication horizon. Same UUID with different content is a conflict. Same revision and identical config is already_applied; different values conflict. Failed storage never reports success or transmits an unpersisted event.
 
-Broker ACK does not prove application consumption. Historical replay must not roll retained state backwards. Display staleness separately from occupancy using observation age and heartbeat interval.
+Retry each pending event at 0, 250, 750, 1750 ms within a 2500 ms round. Start a new round on wake/contact and periodically while awake. Best effort queues are bounded RAM only. Cold boot sends STATE_SYNC; timer wake sends HEARTBEAT; retain old outbox identities through all resets. NVS holds a versioned atomic blob, RTC holds the active boot identity and sequence through deep sleep.
 
-Use a retained MQTT last will for bridge offline status; USB-connected status is a separate field. Do not retain commands. Reject commands received with the MQTT retained flag. Restrict broker permissions to the required topic directions and protect credentials in service configuration.
+PREPARE_SLEEP allows 2500 ms for delivery and persistence, cancels on reseating, then rechecks the physical pin before radio stop and deep sleep. Storage failure keeps the chair awake to avoid silently losing a new physical transition. Wake on low seat GPIO and configured heartbeat timer. All sleep timer multiplication is uint64.
 
-## 11. Acceptance scenarios
+## USB and Pi
 
-Before claiming the protocol works, verify:
+USB uses bounded UTF-8 JSON lines up to 8192 bytes excluding LF; accept CRLF. Discard malformed/overlong input through newline. Partial writes retain their cursor; messages never interleave. Bounded RAM output may drop messages; reliable radio retries recover them. Reset partial input/output on disconnect. Hello reports radio readiness. Structured errors only.
 
-1. Bouncing contact produces one stable occupancy transition.
-2. Lost radio packets, lost ACKs, and MQTT redelivery produce one logical event after deduplication.
-3. USB removal or Pi restart between durable commit and ACK causes safe replay.
-4. Broker outage retains acknowledged events on the Pi and publishes them on reconnect.
-5. Node reset/deep sleep preserves pending reliable events and does not reuse event identities.
-6. An awake, receiving node can receive a queued command; expired commands are not newly dispatched.
-7. Ending a session in the Pi application does not alter ESP occupancy, sensing, or sleep behavior.
-8. Repeated configuration commands remain safe across reset; invalid configurations change nothing.
-9. Malformed, truncated, oversized, unknown-version, and unauthorized-sender packets are rejected without stopping either bridge.
-10. Outbox overflow reports lost history and still permits current state recovery.
+Gateway telemetry: `{kind:"telemetry",source_mac:"...",message:{version:1,type:"...",node_id:"chair-01",boot_id:"16 hex",seq:1,uptime_ms:0,occupied:true,battery_mv:null,config_revision:0,health_flags:2,...}}`.
+Pi controls use `{kind:"command",request_id:1,message:{...CONFIG_SET fields...}}` or kind `event_ack` with EVENT_ACK fields. Bench kind `tx`/`rx` hexadecimal transport remains for diagnostics; protocol frames are decoded and validated in normal operation.
 
-## 12. Open details and scope
+Pi operation requires explicit serial path, node-to-MAC mapping and SQLite path. SQLite WAL + synchronous FULL. Commit reliable event before ACK; deduplicate by identity and ACK duplicates. Track observed boot generations; previously seen older boots and older sequences cannot replace current state. A previously unseen boot can only establish a new generation via STATE_SYNC. An unknown delayed STATE_SYNC cannot be chronologically ordered from random IDs alone; gateway ordering and prompt delivery are the installation assumption. Store late command results as facts without dispatching expired commands. Commands have UUID, complete config and UTC expiry, one pending dispatch per node. READY and regular retry attempts trigger dispatch while awake. Serial disconnect resets framing and reconnects automatically. Emit structured JSON for a future MQTT adapter.
 
-Finalize binary layouts/codes, IMU measurements, USB interface, configuration ranges, recovery ordering, and queue retention rules before implementation. Confirm Pi-storage acknowledgment and acceptable history loss on chair outbox overflow.
-
-Session rules belong to the Pi application. Downstream communication-window scheduling is outside this revision.
+See TRANSPORT.md for commands and validation. Physical acceptance must cover encrypted 1108-byte frames, sample timing, configuration, durable retries, and seat/timer deep-sleep wake. Build/native checks do not establish power use or radio reliability.
