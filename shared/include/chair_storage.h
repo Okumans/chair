@@ -13,6 +13,7 @@ namespace SmartChair {
   /// Atomic storage snapshot: configuration, up to 32 reliable events and 32 command records.
   struct Durable {
     Configuration config;
+    uint64_t boot_generation = 0;
     std::vector<Frame> outbox;
     std::vector<CommandRecord> commands;
   };

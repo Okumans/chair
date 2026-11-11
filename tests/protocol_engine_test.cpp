@@ -301,6 +301,7 @@ int main() {
   assert(e.durable.outbox.back().type == Type::STATE_SYNC);
   assert(e.durable.outbox.back().id.boot == 99 && e.durable.outbox.back().id.seq == 1);
   assert(e.identity.seq == 2);
+  assert(e.durable.boot_generation == 2 && e.durable.outbox.back().boot_generation == 2);
   e                     = engine();
   e.communication.state = Communication::CLOSED;
   e.tick(900050);
@@ -321,4 +322,28 @@ int main() {
   assert(e.durable.outbox.size() == pendingBeforeReplay);
   assert(e.durable.commands.size() == 32);
   assert(e.durable.config.revision == 40);
+  // Legacy NVS format upgrades without dropping outstanding event identities.
+  auto legacyState = e.durable;
+  std::erase_if(legacyState.outbox,
+                [](const auto& frame) { return frame.type == Type::STATE_SYNC; });
+  auto legacyStore = encodeDurable(legacyState);
+  legacyStore[0]   = 0x53;
+  legacyStore[1]   = 0x43;
+  legacyStore[2]   = 0x48;
+  legacyStore[3]   = 0x31;
+  legacyStore.erase(legacyStore.begin() + 4, legacyStore.begin() + 12);
+  assert(decodeDurable(legacyStore, restored) && restored.boot_generation == 0);
+  Engine upgraded(id(100), restored, save);
+  upgraded.seat(true, 0, Wake::seat);
+  upgraded.seat(true, 50, Wake::seat);
+  assert(upgraded.durable.boot_generation == 1);
+  assert(upgraded.durable.outbox.back().type == Type::STATE_SYNC);
+
+  Durable exhausted;
+  exhausted.boot_generation = MAX_BOOT_GENERATION;
+  Engine noWrap(id(101), exhausted, save);
+  noWrap.seat(false, 0);
+  noWrap.seat(false, 50);
+  assert(noWrap.storageFailed && noWrap.durable.outbox.empty());
+  assert(noWrap.durable.boot_generation == MAX_BOOT_GENERATION);
 }

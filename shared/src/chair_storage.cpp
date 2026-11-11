@@ -1,9 +1,15 @@
 #include "chair_storage.h"
 
 namespace SmartChair {
+  namespace {
+    constexpr uint32_t LEGACY_FORMAT  = 0x31484353;
+    constexpr uint32_t CURRENT_FORMAT = 0x32484353;
+  }  // namespace
+
   std::vector<uint8_t> encodeDurable(const Durable& d) {
     Writer w;
-    w.put(0x31484353, 4);
+    w.put(CURRENT_FORMAT, 4);
+    w.put(d.boot_generation, 8);
     w.put(d.config.revision, 4);
     w.put(d.config.heartbeat_s, 4);
     w.put(d.config.movement_batch_s, 4);
@@ -28,8 +34,12 @@ namespace SmartChair {
 
   bool decodeDurable(std::span<const uint8_t> bytes, Durable& out) {
     Reader r{bytes};
-    if (r.get(4) != 0x31484353) return false;
+    const auto format = r.get(4);
+    if (format != LEGACY_FORMAT && format != CURRENT_FORMAT) return false;
+
     Durable d;
+    if (format == CURRENT_FORMAT) d.boot_generation = r.get(8);
+    if (d.boot_generation > MAX_BOOT_GENERATION) return false;
     d.config.revision         = r.get(4);
     d.config.heartbeat_s      = r.get(4);
     d.config.movement_batch_s = r.get(4);

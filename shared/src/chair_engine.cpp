@@ -31,11 +31,18 @@ namespace SmartChair {
       occupied = candidate_;
       moving_ = stopping_ = candidateMotion_ = false;
       batch_.clear();
-      operating        = occupied ? Operating::OCCUPIED_IDLE : Operating::PREPARE_SLEEP;
-      sleepAt_         = now;
-      nextSample_      = now;
-      heartbeatAt_     = now;
-      const Type event = starting ? startupEvent(wake) : occupancyEvent();
+      operating    = occupied ? Operating::OCCUPIED_IDLE : Operating::PREPARE_SLEEP;
+      sleepAt_     = now;
+      nextSample_  = now;
+      heartbeatAt_ = now;
+      Type event   = occupancyEvent();
+      if (starting) {
+        event = startupEvent(wake);
+        if (wake == Wake::cold_boot || durable.boot_generation == 0) {
+          newBoot_ = true;
+          event    = Type::STATE_SYNC;
+        }
+      }
       queueEvent(event, now);
       if (occupied) {
         openingReason_ = Reason::seat_occupied;

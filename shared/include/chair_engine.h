@@ -48,8 +48,9 @@ namespace SmartChair {
     /// exhaustion.
     Frame frame(Type type, uint64_t now);
 
-    /// Start a fresh nonzero boot identity before sequence exhaustion and persist STATE_SYNC.
-    /// Existing outbox events keep their original identities; the adapter supplies the random ID.
+    /// Start a fresh identity before sequence exhaustion and atomically persist its generation and
+    /// STATE_SYNC. Existing outbox events keep their original identities; the adapter supplies the
+    /// random ID.
     void rotateBoot(uint64_t boot, uint64_t now);
 
     /// Complete radio opening and announce occupied availability with a fresh READY.
@@ -131,6 +132,7 @@ namespace SmartChair {
     std::vector<Sample> batch_;
     Save save_;
     bool statePending_    = false;
+    bool newBoot_         = false;
     Reason openingReason_ = Reason::scheduled;
     bool seatSeen_ = false, candidate_ = false, candidateMotion_ = false, moving_ = false,
          stopping_   = false;

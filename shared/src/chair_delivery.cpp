@@ -5,8 +5,9 @@
 namespace SmartChair {
   Frame Engine::frame(Type type, uint64_t now) {
     Frame f;
-    f.type = type;
-    f.id   = identity;
+    f.type            = type;
+    f.id              = identity;
+    f.boot_generation = durable.boot_generation;
     // The hardware adapter rotates boot identity before sequence exhaustion.
     if (identity.seq != UINT32_MAX) ++identity.seq;
     f.common = {uint32_t(now), occupied, UINT16_MAX, durable.config.revision,
@@ -19,6 +20,7 @@ namespace SmartChair {
 
     identity.boot = boot;
     identity.seq  = 1;
+    newBoot_      = true;
     queueEvent(Type::STATE_SYNC, now);
   }
 
@@ -182,19 +184,31 @@ namespace SmartChair {
     std::erase_if(d.outbox, [](const auto& f) { return f.type != Type::COMMAND_RESULT; });
     auto sync            = frame(Type::STATE_SYNC, now);
     sync.common.revision = d.config.revision;
+    sync.boot_generation = d.boot_generation;
     d.outbox.push_back(std::move(sync));
   }
 
   void Engine::queueEvent(Type type, uint64_t now) {
     Durable changed = durable;
+    if (newBoot_) {
+      if (changed.boot_generation == MAX_BOOT_GENERATION) {
+        statePending_ = storageFailed = true;
+        return;
+      }
+      ++changed.boot_generation;
+    }
+
     reserve(changed, now);
     if (changed.outbox.size() >= 32) {
       // Protected results must survive; replace only the reserved state snapshot.
       std::erase_if(changed.outbox, [](const auto& f) { return f.type == Type::STATE_SYNC; });
       type = Type::STATE_SYNC;
     }
-    changed.outbox.push_back(frame(type, now));
+    auto event            = frame(type, now);
+    event.boot_generation = changed.boot_generation;
+    changed.outbox.push_back(std::move(event));
     statePending_ = !commit(changed);
+    if (!statePending_) newBoot_ = false;
     storageFailed = statePending_;
     if (!statePending_ && communication.state == Communication::CLOSED) communication.open();
   }

@@ -67,10 +67,13 @@ error without an ACK. JSON output is structured for a future MQTT adapter.
 Bridge output includes `accepted` (with duplicate flag and reception time), `hello`,
 `tx_result`, `error` and `disconnected`. `mac_delivered` reports MAC delivery only.
 Reliable events remain in SQLite; movement and READY are streamed. READY is never stored
-as an event or retained as availability across reconnect. The current-state row tracks
-known boot generations and increasing sequence numbers. Only STATE_SYNC establishes a
-previously unseen boot. Previously unseen delayed boot snapshots cannot be ordered from
-random boot IDs alone; prompt/FIFO gateway delivery is the installation assumption.
+as an event or retained as availability across reconnect. The current-state row tracks the chair's durable boot-generation counter and increasing
+sequence numbers. Only STATE_SYNC establishes a previously unseen boot. Even an unseen
+older boot cannot roll current state back. Generations are 16-character hex strings in
+JSON and exact signed SQLite integers internally. A boot cannot change its generation
+or reuse another boot's generation. Legacy snapshots without the counter are stored as
+facts and ACKed, but cannot establish current state. Upgrading old Pi databases clears
+only derived ordering rows; durable events and queued commands remain intact.
 
 ## Submit and inspect configuration
 
@@ -124,8 +127,12 @@ final boundary, even when empty. A buffer gap that exceeds the 16-bit sample off
 flushes early. No idle-only batches are emitted.
 
 Reliable events and exact ACK removal use an atomic versioned NVS blob. Cold resets
-create a new boot ID and STATE_SYNC while retaining old pending identities. Deep sleep
-retains the active boot and next sequence in RTC memory. Ordinary overflow coalesces
+create a new boot ID and atomically persist a larger generation with STATE_SYNC while
+retaining old pending identities. Deep sleep retains the active boot and next sequence
+in RTC memory, and keeps the same generation. The NVS decoder upgrades the earlier
+counter-free blob format without dropping pending events. Never erase NVS and reuse the
+same node identity without explicit reprovisioning or reconciliation on the Pi; reused
+generations are rejected. Counter exhaustion fails closed without wrapping. Ordinary overflow coalesces
 history into current STATE_SYNC while retaining command results. A storage failure
 keeps new transitions unsent and the chair awake until a current snapshot persists.
 Corrupt stored data is reported and never silently overwritten with empty defaults.

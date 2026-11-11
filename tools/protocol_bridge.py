@@ -13,6 +13,8 @@ from pathlib import Path
 import serial
 
 UINT32_MAX = 0xFFFFFFFF
+MAX_BOOT_GENERATION = 0x7FFFFFFFFFFFFFFF
+SCHEMA_VERSION = 1
 RELIABLE = {
     "OCCUPIED",
     "VACATED",
@@ -102,6 +104,15 @@ def validate(message, mapping):
     kind = m.get("type")
     if kind not in RELIABLE | {"READY", "MOVEMENT_BATCH", "COMMAND_RECEIPT"}:
         raise ValueError("unknown event type")
+    generation = m.get("boot_generation")
+    if generation is not None:
+        if (
+            kind != "STATE_SYNC"
+            or not isinstance(generation, str)
+            or not re.fullmatch(r"[0-9a-f]{16}", generation)
+            or int(generation, 16) > MAX_BOOT_GENERATION
+        ):
+            raise ValueError("invalid boot generation")
     if kind != "COMMAND_RECEIPT":
         if (
             not integer(m.get("uptime_ms"))
@@ -191,6 +202,43 @@ class Store:
                 id TEXT PRIMARY KEY, node TEXT NOT NULL, config TEXT NOT NULL, expires REAL NOT NULL,
                 status TEXT NOT NULL, result TEXT);
         """)
+        if self.db.execute("PRAGMA user_version").fetchone()[0] < SCHEMA_VERSION:
+            # Previous derived generations used arrival order; retain all durable facts/commands.
+            with self.db:
+                self.db.execute("DELETE FROM boots")
+                self.db.execute("DELETE FROM current_state")
+                self.db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+
+    @staticmethod
+    def _identity_payload(message):
+        payload = {key: value for key, value in message.items() if value is not None}
+        if message["type"] == "STATE_SYNC":
+            payload.setdefault("boot_generation", "0000000000000000")
+        return payload
+
+    def _generation(self, message):
+        node, boot = message["node_id"], message["boot_id"]
+        known = self.db.execute(
+            "SELECT generation FROM boots WHERE node=? AND boot=?", (node, boot)
+        ).fetchone()
+        if message["type"] != "STATE_SYNC":
+            return known[0] if known else None
+
+        generation = int(message.get("boot_generation") or "0", 16)
+        if generation == 0:
+            return None
+        if known:
+            if known[0] != generation:
+                raise ValueError("boot identity changed its generation")
+            return generation
+
+        reused = self.db.execute(
+            "SELECT boot FROM boots WHERE node=? AND generation=?", (node, generation)
+        ).fetchone()
+        if reused:
+            raise ValueError("boot generation reused; node reprovisioning is required")
+        self.db.execute("INSERT INTO boots VALUES (?,?,?)", (node, boot, generation))
+        return generation
 
     def accept(self, m, now):
         """Commit before returning (fresh, first_received_at); only then may the caller ACK."""
@@ -201,30 +249,23 @@ class Store:
                 "SELECT payload,received_at FROM events WHERE node=? AND boot=? AND seq=?",
                 (node, boot, seq),
             ).fetchone()
-            if prior and prior[0] != payload:
+            if prior and self._identity_payload(
+                json.loads(prior[0])
+            ) != self._identity_payload(m):
                 raise ValueError("event identity reused with different content")
             if m["type"] in RELIABLE:
                 self.db.execute(
                     "INSERT OR IGNORE INTO events VALUES (?,?,?,?,?)",
                     (node, boot, seq, payload, now),
                 )
-            generation = self.db.execute(
-                "SELECT generation FROM boots WHERE node=? AND boot=?", (node, boot)
-            ).fetchone()
-            if generation is None and m["type"] == "STATE_SYNC":
-                value = self.db.execute(
-                    "SELECT COALESCE(MAX(generation),0)+1 FROM boots WHERE node=?",
-                    (node,),
-                ).fetchone()[0]
-                self.db.execute("INSERT INTO boots VALUES (?,?,?)", (node, boot, value))
-                generation = (value,)
+            generation = self._generation(m)
             if generation and m["type"] not in {"COMMAND_RECEIPT", "READY"}:
                 self.db.execute(
                     """INSERT INTO current_state VALUES (?,?,?,?) ON CONFLICT(node) DO UPDATE SET
                     generation=excluded.generation,seq=excluded.seq,payload=excluded.payload
                     WHERE excluded.generation>current_state.generation OR
                     (excluded.generation=current_state.generation AND excluded.seq>current_state.seq)""",
-                    (node, generation[0], seq, payload),
+                    (node, generation, seq, payload),
                 )
             if m["type"] == "COMMAND_RESULT":
                 status = (

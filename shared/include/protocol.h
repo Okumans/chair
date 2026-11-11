@@ -9,6 +9,8 @@
 
 namespace SmartChair {
   constexpr uint8_t PROTOCOL_VERSION = 1;
+  // Keep the durable generation within SQLite's exact signed INTEGER range.
+  constexpr uint64_t MAX_BOOT_GENERATION = INT64_MAX;
   constexpr size_t HEADER_SIZE = 32, MAX_FRAME = 1470, MAX_SAMPLES = 75;
   /// Stable v1 wire codes. Values 1–6 require durable application ACKs.
   enum class Type : uint8_t {
@@ -88,11 +90,12 @@ namespace SmartChair {
     Common common;
     Uuid command{};
     Configuration config;
-    Status status     = Status::applied;
-    Reason reason     = Reason::seat_occupied;
-    uint32_t listen   = UINT32_MAX;
-    uint64_t ack_boot = 0;
-    uint32_t ack_seq  = 0;
+    Status status            = Status::applied;
+    Reason reason            = Reason::seat_occupied;
+    uint32_t listen          = UINT32_MAX;
+    uint64_t boot_generation = 0;
+    uint64_t ack_boot        = 0;
+    uint32_t ack_seq         = 0;
     uint32_t start = 0, duration = 0;
     End end = End::interval;
     std::vector<Sample> samples;
@@ -133,6 +136,10 @@ namespace SmartChair {
     if (!validNode(f.id.node) || !f.id.boot || !f.id.seq || f.type < Type::OCCUPIED ||
         f.type > Type::COMMAND_RECEIPT)
       return false;
+
+    // Zero denotes an older snapshot without ordering metadata; only positive generations
+    // establish current state on the Pi. New firmware never creates an untracked boot.
+    if (f.type == Type::STATE_SYNC && f.boot_generation > MAX_BOOT_GENERATION) return false;
 
     // Contact transitions must agree with the physical occupancy carried in the same message.
     if ((f.type == Type::OCCUPIED && !f.common.occupied) ||
@@ -231,6 +238,7 @@ namespace SmartChair {
       w.put(f.common.revision, 4);
       w.put(f.common.health, 1);
     }
+    if (f.type == Type::STATE_SYNC) w.put(f.boot_generation, 8);
     if (f.type == Type::CONFIG_SET || f.type == Type::COMMAND_RESULT ||
         f.type == Type::COMMAND_RECEIPT)
       for (auto b : f.command) w.put(b, 1);
@@ -286,6 +294,9 @@ namespace SmartChair {
       f.common.revision = r.get(4);
       f.common.health   = r.get(1);
     }
+    // Earlier development snapshots carried only common telemetry; preserve them as facts.
+    if (f.type == Type::STATE_SYNC && bytes.size() != HEADER_SIZE + 12)
+      f.boot_generation = r.get(8);
     if (f.type == Type::CONFIG_SET || f.type == Type::COMMAND_RESULT ||
         f.type == Type::COMMAND_RECEIPT)
       for (auto& b : f.command) b = r.get(1);

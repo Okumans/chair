@@ -34,6 +34,8 @@ def event(kind="STATE_SYNC", boot="0000000000000001", seq=1, **fields):
         config_revision=0,
         health_flags=2,
     )
+    if kind == "STATE_SYNC":
+        message["boot_generation"] = boot
     message.update(fields)
     return message
 
@@ -119,6 +121,67 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(current()["boot_id"], "0000000000000002")
         self.assertEqual(
             self.store.db.execute("SELECT COUNT(*) FROM events").fetchone()[0], 6
+        )
+
+    def test_unseen_old_boot_cannot_roll_back_current_state(self):
+        newest = event(boot="0000000000000500", boot_generation="0000000000000010")
+        self.bridge.receive(envelope(newest), 1)
+        unseen_old = event(
+            boot="0000000000000400", boot_generation="000000000000000f", occupied=False
+        )
+        self.bridge.receive(envelope(unseen_old), 2)
+        self.bridge.receive(
+            envelope(dict(unseen_old, type="HEARTBEAT", seq=999, boot_generation=None)),
+            3,
+        )
+        current = json.loads(
+            self.store.db.execute("SELECT payload FROM current_state").fetchone()[0]
+        )
+        self.assertEqual(current["boot_id"], newest["boot_id"])
+        self.assertEqual(
+            self.store.db.execute("SELECT COUNT(*) FROM events").fetchone()[0], 3
+        )
+        reused = event(
+            boot="0000000000000600", boot_generation=newest["boot_generation"]
+        )
+        with self.assertRaises(ValueError):
+            self.bridge.receive(envelope(reused), 4)
+        with self.assertRaises(ValueError):
+            self.bridge.receive(
+                envelope(dict(newest, seq=2, boot_generation="0000000000000011")), 5
+            )
+
+    def test_legacy_snapshots_do_not_establish_current_state(self):
+        legacy = event(boot_generation=None)
+        self.bridge.receive(envelope(legacy), 1)
+        self.assertEqual(
+            self.store.db.execute("SELECT COUNT(*) FROM current_state").fetchone()[0], 0
+        )
+        self.assertEqual(self.bridge.next(1)["kind"], "event_ack")
+        replay = dict(legacy, boot_generation="0000000000000000")
+        self.assertTrue(self.bridge.receive(envelope(replay), 2)["duplicate"])
+        upgraded = event(seq=2)
+        self.bridge.receive(envelope(upgraded), 3)
+        self.assertEqual(
+            self.store.db.execute("SELECT COUNT(*) FROM current_state").fetchone()[0], 1
+        )
+
+    def test_ordering_migration_preserves_durable_facts(self):
+        self.store.accept(event(), 1)
+        self.store.queue("chair-01", COMMAND_ID, CONFIG, 200, 1)
+        self.store.db.execute("PRAGMA user_version=0")
+        self.store.db.close()
+        self.store = protocol.Store(str(Path(self.directory.name) / "bridge.sqlite"))
+        self.assertEqual(
+            self.store.db.execute("SELECT COUNT(*) FROM events").fetchone()[0], 1
+        )
+        self.assertEqual(len(self.store.listing(2)), 1)
+        self.assertEqual(
+            self.store.db.execute("SELECT COUNT(*) FROM current_state").fetchone()[0], 0
+        )
+        self.store.accept(event(seq=2), 2)
+        self.assertEqual(
+            self.store.db.execute("SELECT generation FROM boots").fetchone()[0], 1
         )
 
     def test_commands_uuid_conflict_expiry_and_late_result(self):

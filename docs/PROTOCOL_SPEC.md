@@ -1,6 +1,6 @@
 # Smart Chair protocol
 
-Revision 1, 12 November 2026. This is the implementation contract. Physical acceptance is separate from build and native-test evidence.
+Revision 2, 12 November 2026. This is the implementation contract. Physical acceptance is separate from build and native-test evidence.
 
 ## Ownership and defaults
 
@@ -14,7 +14,7 @@ Configuration is complete and atomic: revision uint32, heartbeat_s and movement_
 ## Binary contract
 
 All integers are explicitly little endian. No native structure layouts are sent.
-Maximum ESP-NOW v2 payload: 1470 bytes. Node ID: 1–15 ASCII alphanumeric/underscore/hyphen bytes followed by zero padding to 16. Boot ID: nonzero uint64 random on cold boot, retained through deep sleep. Sequence uint32 starts at 1; identity is (node_id, boot_id, seq). Retries preserve bytes and identity. Before wrap a new boot ID is required.
+Maximum ESP-NOW v2 payload: 1470 bytes. Node ID: 1–15 ASCII alphanumeric/underscore/hyphen bytes followed by zero padding to 16. Boot ID: nonzero uint64 random on cold boot, retained through deep sleep. Sequence uint32 starts at 1; identity is (node_id, boot_id, seq). Retries preserve bytes and identity. Before wrap a new boot ID is required. Each cold boot and sequence-identity rotation increments a durable boot_generation in 1..9223372036854775807; deep sleep retains it. Persist the counter and initial STATE_SYNC atomically before sending the snapshot. Exhaustion fails closed instead of wrapping. JSON represents the generation as 16 lowercase hex digits, like boot_id.
 
 Header (32 bytes): version u8=1 at 0, type u8 at 1, payload length u16 at 2, node ID at 4, boot ID u64 at 20, sequence u32 at 28.
 
@@ -27,7 +27,7 @@ Types and payloads:
 |1|OCCUPIED|common|reliable|
 |2|VACATED|common|reliable|
 |3|HEARTBEAT|common|reliable|
-|4|STATE_SYNC|common|reliable|
+|4|STATE_SYNC|common, boot_generation u64|reliable|
 |5|BATTERY_LOW|common|reliable|
 |6|COMMAND_RESULT|common, UUID 16 bytes, status u8|reliable|
 |7|MOVEMENT_BATCH|common, metadata, samples|best effort|
@@ -94,6 +94,6 @@ USB uses bounded UTF-8 JSON lines up to 8192 bytes excluding LF; accept CRLF. Di
 Gateway telemetry: `{kind:"telemetry",source_mac:"...",message:{version:1,type:"...",node_id:"chair-01",boot_id:"16 hex",seq:1,uptime_ms:0,occupied:true,battery_mv:null,config_revision:0,health_flags:2,...}}`.
 Pi controls use `{kind:"command",request_id:1,message:{...CONFIG_SET fields...}}` or kind `event_ack` with EVENT_ACK fields. Bench kind `tx`/`rx` hexadecimal transport remains for diagnostics; protocol frames are decoded and validated in normal operation.
 
-Pi operation requires explicit serial path, node-to-MAC mapping and SQLite path. SQLite WAL + synchronous FULL. Commit reliable event before ACK; deduplicate by identity and ACK duplicates. Track observed boot generations; previously seen older boots and older sequences cannot replace current state. A previously unseen boot can only establish a new generation via STATE_SYNC. An unknown delayed STATE_SYNC cannot be chronologically ordered from random IDs alone; gateway ordering and prompt delivery are the installation assumption. Store late command results as facts without dispatching expired commands. Commands have UUID, complete config and UTC expiry, one pending dispatch per node. READY and regular retry attempts trigger dispatch while awake. Serial disconnect resets framing and reconnects automatically. Emit structured JSON for a future MQTT adapter.
+Pi operation requires explicit serial path, node-to-MAC mapping and SQLite path. SQLite WAL + synchronous FULL. Commit reliable event before ACK; deduplicate by identity and ACK duplicates. Track the chair-provided durable boot generation; older generations and older sequences cannot replace current state, even when the older boot was never seen before. A previously unseen boot establishes its generation only via STATE_SYNC. Reject a boot that changes its generation or reuses another boot's generation. Legacy STATE_SYNC without the field decodes as generation zero and is retained as a fact without establishing current state. Never reset the counter under the same provisioned node identity; after NVS erasure, explicitly reprovision the node or reconcile its Pi history. The storage codec upgrades the prior counter-free blob format, and the Pi discards only old derived ordering rows when upgrading, preserving events and commands. Store late command results as facts without dispatching expired commands. Commands have UUID, complete config and UTC expiry, one pending dispatch per node. READY and regular retry attempts trigger dispatch while awake. Serial disconnect resets framing and reconnects automatically. Emit structured JSON for a future MQTT adapter.
 
 See TRANSPORT.md for commands and validation. Physical acceptance must cover encrypted 1108-byte frames, sample timing, configuration, durable retries, and seat/timer deep-sleep wake. Build/native checks do not establish power use or radio reliability.

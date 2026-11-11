@@ -119,6 +119,7 @@ int main() {
   assert(engine->durable.outbox[0].id == first.id &&
          engine->durable.outbox[1].type == Type::HEARTBEAT);
   assert(engine->durable.outbox[1].id.seq != first.id.seq);
+  assert(engine->durable.boot_generation == 1);
   Fake::boot(ESP_SLEEP_WAKEUP_GPIO, false);
   Fake::tick(0, LOW);
   Fake::tick(50, LOW);
@@ -127,6 +128,10 @@ int main() {
 
   Fake::boot(ESP_SLEEP_WAKEUP_UNDEFINED, false);
   assert(engine->identity.boot != bootId && engine->durable.outbox[0].id == first.id);
+  Fake::tick(0, HIGH);
+  Fake::tick(50, HIGH);
+  assert(engine->durable.boot_generation == 2);
+  assert(engine->durable.outbox.back().boot_generation == 2);
 
   Fake::boot();
   Fake::tick(0, LOW);

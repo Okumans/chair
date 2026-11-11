@@ -18,6 +18,7 @@ namespace SmartChair {
   struct JsonMessage {
     uint8_t version = 1;
     std::string type, node_id, boot_id;
+    std::optional<std::string> boot_generation;
     uint32_t seq = 0;
     std::optional<uint32_t> uptime_ms;
     std::optional<bool> occupied;
@@ -95,6 +96,7 @@ namespace SmartChair {
     j.node_id = f.id.node.data();
     j.boot_id = hex64(f.id.boot);
     j.seq     = f.id.seq;
+    if (f.type == Type::STATE_SYNC) j.boot_generation = hex64(f.boot_generation);
     if (telemetry(f.type)) {
       j.uptime_ms = f.common.uptime;
       j.occupied  = f.common.occupied;
@@ -136,9 +138,9 @@ namespace SmartChair {
   // frames.
   /// Validate an EVENT_ACK or complete CONFIG_SET from USB; do not use output on failure.
   inline bool fromJson(const JsonMessage& j, Frame& f) {
-    if (j.uptime_ms || j.occupied || j.battery_mv || j.config_revision || j.health_flags ||
-        j.status || j.reason || j.listen_remaining_ms || j.batch_start_ms || j.duration_ms ||
-        j.end_reason || j.samples)
+    if (j.boot_generation || j.uptime_ms || j.occupied || j.battery_mv || j.config_revision ||
+        j.health_flags || j.status || j.reason || j.listen_remaining_ms || j.batch_start_ms ||
+        j.duration_ms || j.end_reason || j.samples)
       return false;
     if (j.version != 1 || j.node_id.size() > 15 || j.node_id.empty() ||
         !parse64(j.boot_id, f.id.boot))
