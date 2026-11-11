@@ -15,6 +15,12 @@ import serial
 UINT32_MAX = 0xFFFFFFFF
 MAX_BOOT_GENERATION = 0x7FFFFFFFFFFFFFFF
 SCHEMA_VERSION = 1
+MAX_PENDING_ACKS = 128
+RADIO_TIMEOUT_S = 1
+COMMAND_RETRY_S = 0.75
+RETRY_DELAY_S = 1
+SERIAL_POLL_S = 0.02
+SERIAL_WRITE_TIMEOUT_S = 1
 RELIABLE = {
     "OCCUPIED",
     "VACATED",
@@ -374,7 +380,7 @@ class Bridge:
         fresh, received_at = self.store.accept(m, now)
         if m["type"] in RELIABLE:
             key = (m["node_id"], m["boot_id"], m["seq"])
-            if len(self.acks) < 128 or key in self.acks:
+            if len(self.acks) < MAX_PENDING_ACKS or key in self.acks:
                 self.acks[key] = self.control(
                     m["node_id"],
                     "EVENT_ACK",
@@ -397,7 +403,7 @@ class Bridge:
         """Return one ACK or live command when the radio slot is free; expired commands never dispatch."""
         # Mark expired commands even while serial/radio is unavailable.
         pending = self.store.pending(now)
-        if self.radio_pending is not None and now - self.radio_at < 1:
+        if self.radio_pending is not None and now - self.radio_at < RADIO_TIMEOUT_S:
             return None
         message = None
         if self.acks:
@@ -408,7 +414,7 @@ class Bridge:
                 node = command["node"]
                 if (
                     self.available.get(node, 0) > now
-                    and now - self.last_command.get(command["id"], 0) >= 0.75
+                    and now - self.last_command.get(command["id"], 0) >= COMMAND_RETRY_S
                 ):
                     control = self.control(
                         node,
@@ -429,7 +435,7 @@ class Bridge:
 
 def main(argv=None):
     """Run the bridge, enqueue configuration, or list command facts from the explicit database."""
-    from transport import Lines, write_message
+    from transport import BAUD_RATE, Lines, write_message
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=["protocol", "config", "commands"])
@@ -480,7 +486,11 @@ def main(argv=None):
             lines = Lines()
             try:
                 with serial.Serial(
-                    args.port, 115200, timeout=0.02, write_timeout=1, exclusive=True
+                    args.port,
+                    BAUD_RATE,
+                    timeout=SERIAL_POLL_S,
+                    write_timeout=SERIAL_WRITE_TIMEOUT_S,
+                    exclusive=True,
                 ) as port:
                     write_message(port, {"kind": "hello"})
                     while True:
@@ -508,7 +518,7 @@ def main(argv=None):
                                 ),
                                 flush=True,
                             )
-                            time.sleep(1)
+                            time.sleep(RETRY_DELAY_S)
                             continue
                         if outgoing:
                             write_message(port, outgoing)
@@ -516,7 +526,7 @@ def main(argv=None):
                 print(
                     json.dumps(dict(kind="disconnected", reason=str(error))), flush=True
                 )
-                time.sleep(1)
+                time.sleep(RETRY_DELAY_S)
     except KeyboardInterrupt:
         return 0
     except (ValueError, OSError, sqlite3.Error) as error:

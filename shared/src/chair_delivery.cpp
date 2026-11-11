@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <utility>
 
 #include "chair_engine.h"
 
@@ -10,8 +11,9 @@ namespace SmartChair {
     f.boot_generation = durable.boot_generation;
     // The hardware adapter rotates boot identity before sequence exhaustion.
     if (identity.seq != UINT32_MAX) ++identity.seq;
-    f.common = {uint32_t(now), occupied, UINT16_MAX, durable.config.revision,
-                uint8_t(2 | (imuAvailable ? 0 : 1))};
+    f.common = {
+        uint32_t(now), occupied, UINT16_MAX, durable.config.revision,
+        uint8_t(Health::BATTERY_UNAVAILABLE | (imuAvailable ? 0 : Health::IMU_UNAVAILABLE))};
     return f;
   }
 
@@ -25,7 +27,7 @@ namespace SmartChair {
   }
 
   void Engine::ready(Reason reason, uint64_t now) {
-    if (best_.size() >= 4) best_.pop_front();
+    if (best_.size() >= Limits::BEST_EFFORT_QUEUE) best_.pop_front();
     auto f   = frame(Type::READY, now);
     f.reason = reason;
     best_.push_back(std::move(f));
@@ -46,12 +48,12 @@ namespace SmartChair {
         rounds_.push_back({f.id, now, 0});
         it = rounds_.end() - 1;
       }
-      if (now - it->start >= 2500) {
+      if (now - it->start >= Timing::DELIVERY_ROUND_MS) {
         it->start   = now;
         it->attempt = 0;
       }
-      constexpr uint64_t offsets[] = {0, 250, 750, 1750};
-      if (it->attempt < 4 && now - it->start >= offsets[it->attempt]) {
+      if (it->attempt < Timing::RETRY_OFFSETS_MS.size() &&
+          now - it->start >= Timing::RETRY_OFFSETS_MS[it->attempt]) {
         ++it->attempt;
         output   = f;
         delivery = Delivery::RETRYING;
@@ -81,7 +83,7 @@ namespace SmartChair {
       auto receipt    = frame(Type::COMMAND_RECEIPT, now);
       receipt.command = f.command;
       receipt.status  = Status::busy;
-      if (best_.size() < 4) best_.push_back(receipt);
+      if (best_.size() < Limits::BEST_EFFORT_QUEUE) best_.push_back(receipt);
       return;
     }
     Durable changed = durable;
@@ -107,7 +109,7 @@ namespace SmartChair {
       auto receipt    = frame(Type::COMMAND_RECEIPT, now);
       receipt.command = f.command;
       receipt.status  = Status::received;
-      if (best_.size() < 4) best_.push_back(receipt);
+      if (best_.size() < Limits::BEST_EFFORT_QUEUE) best_.push_back(receipt);
     }
   }
 
@@ -145,7 +147,7 @@ namespace SmartChair {
         std::count_if(durable.outbox.begin(), durable.outbox.end(),
                       [](const auto& event) { return event.type == Type::COMMAND_RESULT; });
     // Keep one of the 32 slots available for current-state recovery.
-    return protectedResults < 31;
+    return std::cmp_less(protectedResults, Limits::MAX_COMMAND_RESULTS);
   }
 
   bool Engine::canForgetCommand(const Uuid& uuid) const {
@@ -155,7 +157,7 @@ namespace SmartChair {
   }
 
   bool Engine::rememberCommand(Durable& changed, const Frame& command, Status result) const {
-    if (changed.commands.size() == 32) {
+    if (changed.commands.size() == Limits::COMMAND_RECORDS) {
       // Preserve original request content until its reliable result is durably acknowledged.
       const auto oldestAcknowledged =
           std::find_if(changed.commands.begin(), changed.commands.end(),
@@ -180,7 +182,7 @@ namespace SmartChair {
   }
 
   void Engine::reserve(Durable& d, uint64_t now) {
-    if (d.outbox.size() < 31) return;
+    if (d.outbox.size() < Limits::MAX_COMMAND_RESULTS) return;
     std::erase_if(d.outbox, [](const auto& f) { return f.type != Type::COMMAND_RESULT; });
     auto sync            = frame(Type::STATE_SYNC, now);
     sync.common.revision = d.config.revision;
@@ -199,7 +201,7 @@ namespace SmartChair {
     }
 
     reserve(changed, now);
-    if (changed.outbox.size() >= 32) {
+    if (changed.outbox.size() >= Limits::OUTBOX_CAPACITY) {
       // Protected results must survive; replace only the reserved state snapshot.
       std::erase_if(changed.outbox, [](const auto& f) { return f.type == Type::STATE_SYNC; });
       type = Type::STATE_SYNC;

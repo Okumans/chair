@@ -14,6 +14,7 @@ import sys
 import serial
 from serial.tools import list_ports
 
+BAUD_RATE = 115200
 MAX_PAYLOAD = 1470
 MAX_LINE = 8192
 
@@ -124,7 +125,7 @@ def main():
     input_lines = Lines()
     try:
         with serial.Serial(
-            args.port, 115200, timeout=0, write_timeout=1, exclusive=True
+            args.port, BAUD_RATE, timeout=0, write_timeout=1, exclusive=True
         ) as port:
             with selectors.SelectSelector() as selector:
                 selector.register(port.fileno(), selectors.EVENT_READ, "usb")

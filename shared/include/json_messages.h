@@ -22,7 +22,7 @@ namespace Transport {
 
   /// USB connection snapshot; ready confirms local initialization, not peer delivery.
   struct HelloMessage {
-    std::string_view kind = "hello";
+    std::string_view kind = UsbKind::HELLO;
     std::string_view role;
     std::string_view mac;
     std::string_view peer_mac;
@@ -36,28 +36,28 @@ namespace Transport {
 
   /// Structured diagnostic with optional request association; zero is unsolicited.
   struct ErrorMessage {
-    std::string_view kind = "error";
+    std::string_view kind = UsbKind::ERROR;
     uint32_t request_id   = 0;
     std::string_view reason;
   };
 
   /// MAC-layer completion only; reliable protocol events still need EVENT_ACK.
   struct TxResultMessage {
-    std::string_view kind = "tx_result";
+    std::string_view kind = UsbKind::TX_RESULT;
     uint32_t request_id   = 0;
     bool mac_delivered    = false;
   };
 
   /// Diagnostic binary envelope retained for the bench console.
   struct RxMessage {
-    std::string_view kind = "rx";
+    std::string_view kind = UsbKind::RX;
     std::string_view source_mac;
     std::string_view data_hex;
   };
 
   /// Diagnostic vacant-sleep notice; heartbeat_ms is the legacy bench field.
   struct SleepMessage {
-    std::string_view kind = "sleep";
+    std::string_view kind = UsbKind::SLEEP;
     uint8_t wake_pin      = 0;
     uint32_t heartbeat_ms = 0;
   };

@@ -24,7 +24,7 @@ namespace SmartChair {
       candidate_ = raw;
       seatAt_    = now;
     }
-    if (now - seatAt_ < 50) return;
+    if (now - seatAt_ < Timing::SEAT_DEBOUNCE_MS) return;
     if (operating == Operating::STARTING || occupied != candidate_) {
       const bool starting = operating == Operating::STARTING;
       if (!candidate_ && moving_) flush(End::vacant, now);
@@ -54,7 +54,7 @@ namespace SmartChair {
   }
 
   void Engine::sample(Sample raw, uint64_t now) {
-    nextSample_ = now + 40;
+    nextSample_ = now + Timing::SAMPLE_INTERVAL_MS;
     if (!occupied || !imuAvailable || !durable.config.movement_enabled) return;
     const auto motion = classifyMotion(raw);
 
@@ -73,7 +73,7 @@ namespace SmartChair {
       }
       operating = Operating::MOTION_START_CHECK;
       append(raw, now);
-      if (now - motionAt_ < 100) return;
+      if (now - motionAt_ < Timing::MOTION_DEBOUNCE_MS) return;
       moving_          = true;
       candidateMotion_ = false;
       stopping_        = false;
@@ -91,7 +91,7 @@ namespace SmartChair {
           motionAt_ = now;
         }
         operating = Operating::MOTION_STOP_CHECK;
-        if (now - motionAt_ >= 100) {
+        if (now - motionAt_ >= Timing::MOTION_DEBOUNCE_MS) {
           flush(End::stopped, now);
           moving_ = stopping_ = false;
           operating           = Operating::OCCUPIED_IDLE;
@@ -110,7 +110,7 @@ namespace SmartChair {
 
   void Engine::tick(uint64_t now, bool radioBusy) {
     if (statePending_ && now >= storageRetry_) {
-      storageRetry_ = now + 250;
+      storageRetry_ = now + Timing::STORAGE_RETRY_MS;
       queueEvent(Type::STATE_SYNC, now);
     }
     if (occupied && now - heartbeatAt_ >= milliseconds(durable.config.heartbeat_s)) {
@@ -123,22 +123,26 @@ namespace SmartChair {
     if (operating == Operating::OCCUPIED_LIGHT_SLEEP && now >= nextSample_)
       operating = Operating::SAMPLE_CHECK;
     if (operating == Operating::PREPARE_SLEEP && !storageFailed && !candidate_ &&
-        ((!radioBusy && durable.outbox.empty() && best_.empty()) || now - sleepAt_ >= 2500))
+        ((!radioBusy && durable.outbox.empty() && best_.empty()) ||
+         now - sleepAt_ >= Timing::DELIVERY_ROUND_MS))
       operating = Operating::DEEP_SLEEP;
   }
 
   Engine::Motion Engine::classifyMotion(const Sample& raw) {
-    constexpr double accelCountsPerG              = 16384.0;
-    constexpr double gyroCountsPerDegreePerSecond = 131.0;
     const double magnitude =
         std::sqrt(double(raw.ax) * raw.ax + double(raw.ay) * raw.ay + double(raw.az) * raw.az);
-    const double accelerationDeviation = std::abs(magnitude / accelCountsPerG - 1.0);
+    const double accelerationDeviation =
+        std::abs(magnitude / MotionThresholds::ACCEL_COUNTS_PER_G - 1.0);
     const int largestGyroAxis =
         std::max({std::abs(int(raw.gx)), std::abs(int(raw.gy)), std::abs(int(raw.gz))});
-    const double angularSpeed = largestGyroAxis / gyroCountsPerDegreePerSecond;
+    const double angularSpeed = largestGyroAxis / MotionThresholds::GYRO_COUNTS_PER_DPS;
 
-    if (accelerationDeviation > 0.15 || angularSpeed > 15.0) return Motion::active;
-    if (accelerationDeviation < 0.08 && angularSpeed < 8.0) return Motion::quiet;
+    if (accelerationDeviation > MotionThresholds::START_ACCEL_G ||
+        angularSpeed > MotionThresholds::START_GYRO_DPS)
+      return Motion::active;
+    if (accelerationDeviation < MotionThresholds::QUIET_ACCEL_G &&
+        angularSpeed < MotionThresholds::QUIET_GYRO_DPS)
+      return Motion::quiet;
     return Motion::intermediate;
   }
 
@@ -157,7 +161,7 @@ namespace SmartChair {
     f.samples  = std::move(batch_);
     batch_.clear();
     batchAt_ = intervalAt_ = now;
-    if (best_.size() >= 4) best_.pop_front();
+    if (best_.size() >= Limits::BEST_EFFORT_QUEUE) best_.pop_front();
     best_.push_back(std::move(f));
   }
 }  // namespace SmartChair

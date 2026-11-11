@@ -116,7 +116,10 @@ contains its documented API and state fields. The implementations share `SmartCh
 
 `sensor/src/main.cpp` adapts seat input, persistence, radio and sleep;
 `sensor/src/mpu6050.cpp` handles sensor registers. Public APIs document time units,
-validation, ownership and failure behavior.
+validation, ownership and failure behavior. Shared timings, bounds and thresholds live
+in `shared/include/chair_constants.h`; role labels, USB names, diagnostics and radio
+settings live in `shared/include/transport_constants.h`. Sensor NVS identifiers are in
+`sensor/include/config.h`, and MPU6050 registers/settings stay local to its adapter.
 
 The chair samples at 25 Hz, retaining signed raw acceleration and gyro values at ±2 g
 and ±250 degrees/s. Classification compares acceleration magnitude to 1 g and raw gyro

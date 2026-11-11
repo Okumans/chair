@@ -3,6 +3,8 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "transport_constants.h"
+
 namespace Transport {
   /// Initialize USB and the encrypted provisioned unicast peer; report failures as structured JSON.
   void begin(const char* role, const char* ownMac, const char* peerMac);

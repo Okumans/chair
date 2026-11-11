@@ -4,6 +4,7 @@
 #include <memory>
 
 #include "chair_engine.h"
+#include "config.h"
 #include "esp_sleep.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
@@ -27,7 +28,7 @@ namespace {
   bool imuReady                       = false;
   uint64_t nextImuProbe               = 0;
 
-  uint64_t nowMs() { return uint64_t(esp_timer_get_time()) / 1000; }
+  uint64_t nowMs() { return uint64_t(esp_timer_get_time()) / Timing::MICROSECONDS_PER_MILLISECOND; }
 
   uint64_t newBootId(uint64_t previous) {
     uint64_t boot;
@@ -42,7 +43,8 @@ namespace {
     if (!storageReady) return false;
 
     const auto bytes = encodeDurable(data);
-    return preferences.putBytes("state", bytes.data(), bytes.size()) == bytes.size();
+    return preferences.putBytes(Config::Storage::STATE_KEY, bytes.data(), bytes.size()) ==
+           bytes.size();
   }
 
   void receive(const uint8_t* bytes, size_t size) {
@@ -51,11 +53,13 @@ namespace {
   }
 
   void sleepWhileVacant() {
-    const uint64_t timerUs = milliseconds(engine->durable.config.heartbeat_s) * 1000;
+    const uint64_t timerUs =
+        milliseconds(engine->durable.config.heartbeat_s) * Timing::MICROSECONDS_PER_MILLISECOND;
     if (esp_deep_sleep_enable_gpio_wakeup(1ULL << Pins::SEAT_SENSOR, ESP_GPIO_WAKEUP_GPIO_LOW) !=
             ESP_OK ||
         esp_sleep_enable_timer_wakeup(timerUs) != ESP_OK) {
-      Transport::printJson(Transport::ErrorMessage{.reason = "sleep_setup_failed"});
+      Transport::printJson(
+          Transport::ErrorMessage{.reason = Transport::ErrorCode::SLEEP_SETUP_FAILED});
       return;
     }
     // Recheck the physical contact after bounded delivery/persistence work.
@@ -67,7 +71,8 @@ namespace {
     if (esp_wifi_stop() == ESP_OK)
       esp_deep_sleep_start();
     else
-      Transport::printJson(Transport::ErrorMessage{.reason = "radio_stop_failed"});
+      Transport::printJson(
+          Transport::ErrorMessage{.reason = Transport::ErrorCode::RADIO_STOP_FAILED});
   }
 }  // namespace
 
@@ -81,21 +86,21 @@ void setup() {
   if (cause == ESP_SLEEP_WAKEUP_GPIO) wakeReason = Wake::seat;
   if (cause == ESP_SLEEP_WAKEUP_TIMER) wakeReason = Wake::timer;
 
-  if (!deepWake || !retainedBoot || retainedSeq >= UINT32_MAX - 128) {
+  if (!deepWake || !retainedBoot || retainedSeq >= UINT32_MAX - Limits::SEQUENCE_RESERVE) {
     retainedBoot = newBootId(retainedBoot);
     retainedSeq  = 1;
     wakeReason   = Wake::cold_boot;
   }
 
-  storageReady = preferences.begin("chair-v1", false);
+  storageReady = preferences.begin(Config::Storage::NAMESPACE, false);
   Durable durable;
-  if (storageReady && preferences.isKey("state")) {
-    const auto size = preferences.getBytesLength("state");
-    if (size > 8192 || !size)
+  if (storageReady && preferences.isKey(Config::Storage::STATE_KEY)) {
+    const auto size = preferences.getBytesLength(Config::Storage::STATE_KEY);
+    if (size > Limits::STORED_STATE_BYTES || !size)
       storageReady = false;
     else {
       std::vector<uint8_t> bytes(size);
-      storageReady = preferences.getBytes("state", bytes.data(), size) == size &&
+      storageReady = preferences.getBytes(Config::Storage::STATE_KEY, bytes.data(), size) == size &&
                      decodeDurable(bytes, durable);
     }
   }
@@ -108,16 +113,17 @@ void setup() {
   imuReady             = Mpu6050::begin();
   engine->imuAvailable = imuReady;
   Transport::setReceiver(receive);
-  Transport::begin("sensor", LinkConfig::SENSOR_MAC, LinkConfig::GATEWAY_MAC);
+  Transport::begin(Transport::SENSOR_ROLE, LinkConfig::SENSOR_MAC, LinkConfig::GATEWAY_MAC);
   if (!storageReady)
-    Transport::printJson(Transport::ErrorMessage{.reason = "storage_unavailable_or_corrupt"});
+    Transport::printJson(
+        Transport::ErrorMessage{.reason = Transport::ErrorCode::STORAGE_UNAVAILABLE_OR_CORRUPT});
 }
 
 /// Run one bounded hardware/engine iteration; vacant sleep is the only blocking power action.
 void loop() {
   Transport::poll();
   const uint64_t now = nowMs();
-  if (engine->identity.seq >= UINT32_MAX - 128) {
+  if (engine->identity.seq >= UINT32_MAX - Limits::SEQUENCE_RESERVE) {
     engine->rotateBoot(newBootId(engine->identity.boot), now);
   }
 
@@ -125,7 +131,7 @@ void loop() {
   if (Transport::available()) engine->radioReady(now);
 
   if (!imuReady && now >= nextImuProbe) {
-    nextImuProbe = now + 5000;
+    nextImuProbe = now + Mpu6050::RETRY_INTERVAL_MS;
     imuReady     = Mpu6050::begin();
   }
   engine->imuAvailable = imuReady;
@@ -150,5 +156,5 @@ void loop() {
   }
 
   if (engine->operating == Operating::DEEP_SLEEP) sleepWhileVacant();
-  delay(2);
+  delay(Transport::POLL_DELAY_MS);
 }

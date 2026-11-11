@@ -2,6 +2,8 @@
 
 #include <algorithm>
 
+#include "chair_constants.h"
+
 namespace SmartChair {
   void Window::open(uint64_t length) {
     state     = Communication::OPENING;
@@ -31,7 +33,7 @@ namespace SmartChair {
 
   void Window::settle(uint64_t now) {
     state    = Communication::SETTLING;
-    deadline = now + 2500;
+    deadline = now + Timing::DELIVERY_ROUND_MS;
   }
 
   void Window::tick(uint64_t now, bool pending) {

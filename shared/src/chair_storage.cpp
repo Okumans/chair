@@ -47,7 +47,7 @@ namespace SmartChair {
     if (enabled > 1) return false;
     d.config.movement_enabled = enabled;
     auto count                = r.get(1);
-    if (count > 32 || !valid(d.config)) return false;
+    if (count > Limits::OUTBOX_CAPACITY || !valid(d.config)) return false;
     for (size_t i = 0; i < count; ++i) {
       auto length = r.get(2);
       if (!r.ok || length > bytes.size() - r.pos) return false;
@@ -57,7 +57,7 @@ namespace SmartChair {
       d.outbox.push_back(std::move(f));
     }
     count = r.get(1);
-    if (count > 32) return false;
+    if (count > Limits::COMMAND_RECORDS) return false;
     for (size_t i = 0; i < count; ++i) {
       CommandRecord c;
       for (auto& b : c.uuid) b = r.get(1);

@@ -10,7 +10,7 @@ namespace Transport {
    public:
     /// Queue a JSON line without LF; false means the line is oversized or the queue is full.
     bool push(std::string text) {
-      if (text.size() > MAX_LINE || lines_.size() == 8) return false;
+      if (text.size() > MAX_LINE || lines_.size() == USB_QUEUE_DEPTH) return false;
       text += '\n';
       lines_.push_back(std::move(text));
       return true;

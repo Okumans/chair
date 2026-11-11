@@ -148,13 +148,13 @@ namespace SmartChair {
     f.id.node.fill(0);
     std::copy(j.node_id.begin(), j.node_id.end(), f.id.node.begin());
     f.id.seq = j.seq;
-    if (j.type == "EVENT_ACK") {
+    if (j.type == name(Type::EVENT_ACK)) {
       if (j.command_id || j.revision || j.heartbeat_s || j.movement_batch_s || j.movement_enabled)
         return false;
       if (!j.ack_boot_id || !j.ack_seq || !parse64(*j.ack_boot_id, f.ack_boot)) return false;
       f.type    = Type::EVENT_ACK;
       f.ack_seq = *j.ack_seq;
-    } else if (j.type == "CONFIG_SET") {
+    } else if (j.type == name(Type::CONFIG_SET)) {
       if (j.ack_boot_id || j.ack_seq) return false;
       if (!j.command_id || !j.revision || !j.heartbeat_s || !j.movement_batch_s ||
           !j.movement_enabled || !parseUuid(*j.command_id, f.command))
@@ -168,7 +168,7 @@ namespace SmartChair {
 
   /// Gateway envelope binding decoded chair telemetry to its provisioned source MAC.
   struct TelemetryMessage {
-    std::string_view kind = "telemetry";
+    std::string_view kind = Transport::UsbKind::TELEMETRY;
     std::string_view source_mac;
     JsonMessage message;
   };

@@ -7,6 +7,8 @@
 #include <string_view>
 #include <vector>
 
+#include "chair_constants.h"
+
 namespace SmartChair {
   constexpr uint8_t PROTOCOL_VERSION = 1;
   // Keep the durable generation within SQLite's exact signed INTEGER range.
@@ -45,14 +47,17 @@ namespace SmartChair {
 
   /// Complete persisted settings. Seconds accept the full nonzero uint32 range.
   struct Configuration {
-    uint32_t revision = 0, heartbeat_s = 900, movement_batch_s = 3;
-    bool movement_enabled = true;
+    uint32_t revision = 0, heartbeat_s = Defaults::HEARTBEAT_S,
+             movement_batch_s = Defaults::MOVEMENT_BATCH_S;
+    bool movement_enabled     = Defaults::MOVEMENT_ENABLED;
     /// Compare revision and all settings for idempotent configuration application.
     bool operator==(const Configuration&) const = default;
   };
 
   /// Convert accepted seconds to milliseconds without uint32 overflow.
-  constexpr uint64_t milliseconds(uint32_t seconds) { return uint64_t(seconds) * 1000; }
+  constexpr uint64_t milliseconds(uint32_t seconds) {
+    return uint64_t(seconds) * Timing::MILLISECONDS_PER_SECOND;
+  }
 
   /// Reject zero timing intervals; recommendations are not upper validation bounds.
   inline bool valid(const Configuration& c) { return c.heartbeat_s && c.movement_batch_s; }
@@ -72,7 +77,7 @@ namespace SmartChair {
     bool occupied     = false;
     uint16_t battery  = UINT16_MAX;
     uint32_t revision = 0;
-    uint8_t health    = 2;
+    uint8_t health    = Health::BATTERY_UNAVAILABLE;
   };
 
   /// Original MPU6050 readings plus acquisition offset in milliseconds from batch start.
@@ -147,7 +152,7 @@ namespace SmartChair {
       return false;
 
     // Only IMU-unavailable (bit 0) and battery-unavailable (bit 1) are defined in this version.
-    if (telemetry(f.type) && (f.common.health & ~3)) return false;
+    if (telemetry(f.type) && (f.common.health & ~Health::KNOWN_FLAGS)) return false;
 
     // An ACK must identify the exact original event; neither target field may be zero.
     if (f.type == Type::EVENT_ACK) return f.ack_boot && f.ack_seq;
@@ -190,7 +195,7 @@ namespace SmartChair {
       "MOVEMENT_BATCH", "READY",   "EVENT_ACK", "CONFIG_SET", "COMMAND_RECEIPT"};
 
   /// Return the stable JSON type name. Precondition: type has passed valid().
-  inline std::string_view name(Type type) { return TYPE_NAMES[uint8_t(type) - 1]; }
+  constexpr std::string_view name(Type type) { return TYPE_NAMES[uint8_t(type) - 1]; }
 
   // Explicit byte codecs also define the persisted frame representation.
   /// Little-endian byte accumulator shared by radio and durable storage codecs.

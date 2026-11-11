@@ -6,9 +6,9 @@
 #include <optional>
 #include <string_view>
 
+#include "transport_constants.h"
+
 namespace Transport {
-  constexpr size_t MAX_PAYLOAD = 1470;
-  constexpr size_t MAX_LINE    = 8192;
 
   /// Decode one ASCII hex digit, returning nullopt for invalid input; zero is a valid digit.
   inline std::optional<int> hexDigit(char c) {
@@ -50,16 +50,16 @@ namespace Transport {
 
   /// Decode a nonzero unicast station MAC in colon-separated hexadecimal form.
   inline bool decodeMac(const char* text, uint8_t* bytes) {
-    if (strlen(text) != 17) return false;
-    for (size_t i = 0; i < 6; ++i) {
+    if (strlen(text) != MAC_TEXT_BYTES - 1) return false;
+    for (size_t i = 0; i < MAC_BYTES; ++i) {
       const auto high = hexDigit(text[i * 3]);
       const auto low  = hexDigit(text[i * 3 + 1]);
-      if (!high || !low || (i < 5 && text[i * 3 + 2] != ':')) return false;
+      if (!high || !low || (i < MAC_BYTES - 1 && text[i * 3 + 2] != ':')) return false;
 
       bytes[i] = (*high << 4) | *low;
     }
 
-    return (bytes[0] & 1) == 0 && memcmp(bytes, "\0\0\0\0\0\0", 6) != 0;
+    return (bytes[0] & 1) == 0 && memcmp(bytes, ZERO_MAC.data(), MAC_BYTES) != 0;
   }
 
   // Returns one bounded line; overlong input is discarded through the next newline.
