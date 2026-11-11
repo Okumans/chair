@@ -1,133 +1,175 @@
-# ESP-NOW / USB transport
+# Smart Chair transport and Pi bridge
 
-```text
-Computer / Pi <-- USB --> S3 gateway <-- encrypted ESP-NOW --> C3 chair
-```
+Chair → encrypted ESP-NOW v2 → ESP32-S3 gateway → USB JSON → SQLite/Pi application.
+The Pi owns logical sessions. Firmware reports physical state and raw MPU6050 movement.
+The wire contract and limitations are in [PROTOCOL_SPEC.md](PROTOCOL_SPEC.md).
 
-The transport forwards arbitrary 1–250 byte payloads without interpreting them. Both
-nodes expose the same USB interface. The gateway stays awake; the chair sleeps while
-vacant and stays awake while occupied. It reports GPIO5 seat state, uptime, and
-`wake_reason` after boot/wake, on debounced changes, and at the heartbeat interval.
+## Provision and build
 
-## Chair deep sleep
+The ignored `shared/include/link_config.local.h` contains station MACs and two independent
+16-byte hex encryption keys. For a new pair, copy `link_config.example.h` there. Keep the
+keys private. Both targets must use matching keys, channel and node ID. The shared node
+ID is `LinkConfig::NODE_ID` in `shared/include/link_config.h`, default `chair-01`.
 
-After reporting vacancy, the chair waits for radio completion, then sleeps. GPIO5
-LOW (seat contact closes) or the 900-second (15-minute) heartbeat timer wakes it. Each wake
-reads/debounces the current contact and sends a fresh snapshot. Send completion waits
-at most 1 second; delivery remains best effort without retries or persistence.
-
-The SDK supplies the internal pull-up for LOW-level wake. Wake reliability and actual
-current need physical verification. `HEARTBEAT_INTERVAL_MS` in `sensor/include/config.h`
-uses the protocol specification default of 900 seconds.
-
-The chair cannot receive radio/USB data while asleep. Its USB connection may disappear;
-use the gateway console to observe wake reports. Downstream communication windows and
-command queues remain outside scope. A local `sleep` message precedes sleep; forwarded
-snapshots identify `wake_reason` as `reset`, `gpio`, or `timer`.
-
-## Bring-up results — 11 November 2026
-
-- Sensor MAC: `48:F6:EE:12:A0:D8`; gateway MAC: `44:1B:F6:8D:B7:9C`.
-- Both nodes initialized on channel 1 with matching peer addresses and key fingerprints.
-- Gateway → chair: `hello chair` arrived intact in the chair's `rx` output.
-- Chair transmissions initially reported `mac_delivered:false`, including with modem sleep disabled.
-- Capping the chair's transmit power at 8.5 dBm changed repeated results to `mac_delivered:true`, with the gateway unchanged.
-
-The firmware now uses `esp_wifi_set_max_tx_power(34)` (quarter-dBm units). Lower power
-may help supply/RF stability; the exact cause and usable range were not measured.
-
-Both firmware targets built successfully. Four automated tests passed, covering
-text/binary encoding, framing, invalid inputs, and a simulated USB exchange. Clangd
-checks passed for shared sources.
-
-## Setup
-
-The existing boards use the ignored `shared/include/link_config.local.h`. For a new
-pair, copy `link_config.example.h` there and configure both station MACs plus two
-independent 16-byte hex keys (`LINK_PMK`, `LINK_LMK`). Both builds must use matching keys.
-An unconfigured board's USB `hello` still reports its station MAC.
-
-Build and flash each board using its current port:
+Seat: C3 GPIO5, contact to ground, internal pull-up. MPU6050: address 0x68, SDA6/SCL7.
+INT21 is unused by the polling adapter. Battery measurement is disabled. Neither board
+owns sessions. The gateway handles one configured encrypted chair peer.
 
 ```sh
-pio run -e sensor -t upload --upload-port /dev/ttyACM_SENSOR
-pio run -e gateway -t upload --upload-port /dev/ttyACM_GATEWAY
+make format
+make lsp
+pio run -e sensor -e gateway
+python -m unittest discover -s tests -v
+clangd --check=sensor/src/main.cpp --check-lines=1-1
+clangd --check=shared/src/radio_transport.cpp --check-lines=1-1
+clangd --check=gateway/src/main.cpp --check-lines=1-1
 ```
 
-Use native USB and close other serial monitors before opening the console:
+The clangd commands parse each complete translation unit; the line range limits editor
+feature simulations. `make lsp` also supplies host compile commands for native tests.
+Firmware uses C++23, pinned pioarduino 55.03.312-1 / Arduino-ESP32 3.3.12 and vendored
+Glaze 9.1. No additional firmware dependency is needed for MPU6050 I2C reads.
+
+Flash only when ready for physical acceptance, using explicit board ports:
+
+```sh
+pio run -e sensor -t upload --upload-port /dev/serial/by-id/YOUR_SENSOR
+pio run -e gateway -t upload --upload-port /dev/serial/by-id/YOUR_GATEWAY
+```
+
+## Run the Pi bridge
+
+The Python tool needs pyserial 3.5. `uv run tools/transport.py ...` installs the script's
+pinned dependency in an isolated environment, or use an existing Python with pyserial.
+Do not run two serial owners or two bridge processes for the same gateway.
+
+Create an explicit node mapping JSON file, using the sensor station MAC from USB hello:
+
+```json
+{"chair-01":"02:00:00:00:00:01"}
+```
+
+Use the actual MAC, not the example address. The serial path, mapping file and SQLite
+path are mandatory. Prefer a stable by-id serial path and a local durable filesystem.
 
 ```sh
 python tools/transport.py --list
-python tools/transport.py /dev/serial/by-id/YOUR_DEVICE
+python tools/transport.py protocol \
+  --port /dev/serial/by-id/YOUR_GATEWAY \
+  --nodes ./nodes.json --db ./chair.sqlite
 ```
 
-If pyserial is missing, use `uv run tools/transport.py …`.
+The bridge reconnects after serial loss. It discards partial input on reconnect. SQLite
+uses WAL and synchronous FULL. Each reliable event commits before an exact EVENT_ACK
+is queued. Retransmissions are stored once and ACKed again. A failed commit produces an
+error without an ACK. JSON output is structured for a future MQTT adapter.
 
-## Console and USB format
+Bridge output includes `accepted` (with duplicate flag and reception time), `hello`,
+`tx_result`, `error` and `disconnected`. `mac_delivered` reports MAC delivery only.
+Reliable events remain in SQLite; movement and READY are streamed. READY is never stored
+as an event or retained as availability across reconnect. The current-state row tracks
+known boot generations and increasing sequence numbers. Only STATE_SYNC establishes a
+previously unseen boot. Previously unseen delayed boot snapshots cannot be ordered from
+random boot IDs alone; prompt/FIFO gateway delivery is the installation assumption.
 
-Type text to send UTF-8, `/hex 000aff0102` to send binary, or `/quit` to exit. Incoming
-`rx` messages contain `data_hex` and, in the desktop console, `text` when valid UTF-8.
-Received payloads are printed, not automatically echoed. Either node can be opened
-with this console.
+## Submit and inspect configuration
 
-USB uses newline-delimited JSON: LF or CRLF, maximum 2048 bytes per line. Overlong
-lines are discarded through the next newline. The radio carries the original bytes.
+Configuration is a complete transaction. Both intervals accept 1..4294967295 seconds;
+zero is invalid. Values do not have to fit within the heartbeat interval. Recommended
+movement interval: 1–3 s; a 75-sample buffer flushes earlier regardless of the setting.
+Use a larger revision for changed settings. Revision zero contains the firmware defaults.
 
-Computer → ESP:
-
-```json
-{"kind":"hello"}
-{"kind":"tx","request_id":1,"data_hex":"68656c6c6f"}
-```
-
-ESP → computer:
-
-```json
-{"kind":"hello","role":"sensor","mac":"48:F6:EE:12:A0:D8","peer_mac":"44:1b:f6:8d:b7:9c","key_id":"9da721ec166c1019","channel":1,"power_save":0,"tx_power_dbm":8.50,"ready":true,"max_payload":250}
-{"kind":"rx","source_mac":"44:1b:f6:8d:b7:9c","data_hex":"68656c6c6f"}
-{"kind":"tx_result","request_id":1,"mac_delivered":true}
-{"kind":"error","request_id":2,"reason":"radio_busy"}
-```
-
-`request_id` is 1–4294967295; zero identifies automatic chair reports. One radio send
-may be in flight per node. `mac_delivered` confirms radio delivery, not application
-processing or durable computer receipt. There are no retries or replay after USB
-reconnection; queue overflow or disconnected USB can lose packets.
-
-For troubleshooting, compare peer MACs, live channel, and `key_id` on both boards.
-The key ID is the first 8 bytes of SHA-256(PMK bytes + LMK bytes). `power_save:0`
-means modem sleep is disabled; `ready:true` confirms local initialization only.
-
-## Scope
-
-The planned application protocol is in [PROTOCOL_SPEC.md](PROTOCOL_SPEC.md). Event
-ACKs, persistence, configuration commands, downstream communication windows, MQTT,
-and a systemd service remain outside this transport implementation.
-
-## Build stack
-
-Both nodes use C++23 with pioarduino `55.03.312-1` and Arduino-ESP32 `3.3.12`,
-pinned in `platformio.ini` (GCC 14.2, ESP-IDF 5.5.5). The migration updates ESP-NOW callbacks and the SHA-256
-API. Recheck radio delivery and contact/timer wake on hardware after flashing this
-stack; the earlier bring-up results were recorded with Arduino-ESP32 2.0.17.
-
-Glaze v9.1.0 headers and license are vendored under `third_party/glaze`; firmware uses
-Glaze for USB parsing/output and seat snapshots. Message structs are defined in
-`shared/include/json_messages.h`. USB field names and radio payload
-limits are unchanged. Invalid field types or out-of-range IDs are rejected. Serialization
-may change JSON whitespace/number formatting; consumers must parse JSON rather than
-compare raw text.
-
-## Development checks
-
-Six automated tests cover transport and sensor sleep sequencing using hardware stubs.
-JSON checks cover malformed/trailing input, integer bounds, embedded nulls, and escaping.
-The sleep checks include debounce, send completion/timeout, late seat closure, and
-wake-setup failure. Physical wake cycles and sleep current are not covered.
+The configuration command runs independently of the serial-owning bridge and adds a
+row to the same SQLite database. `--expires-at` is UTC Unix time in seconds. This example
+expires one hour after submission:
 
 ```sh
-pio run -e sensor -e gateway
-python -m unittest discover -s tests -v
-make compiledb
-clangd --check=shared/src/radio_transport.cpp --log=error
+python tools/transport.py config --nodes ./nodes.json --db ./chair.sqlite \
+  --node chair-01 --revision 1 --heartbeat-s 900 --movement-batch-s 3 \
+  --movement-enabled true --expires-at "$(date -d '+1 hour' +%s)"
+python tools/transport.py commands --nodes ./nodes.json --db ./chair.sqlite
 ```
+
+An optional `--command-id` accepts a canonical nonzero UUID. Reusing a UUID with different
+content or expiry is rejected. Commands wait for fresh occupied READY availability and
+retry one at a time per node. A future timed READY bounds dispatch to its remaining
+listen duration. Expired commands never dispatch again. A late reliable result remains
+a durable fact in `events` and the command's `result`; an expired status stays expired.
+The first result finalizes applied/rejected status. Chair deduplication retains the last
+32 UUIDs and protects all unacknowledged results in its 32-entry outbox.
+
+## Firmware operation
+
+The deterministic engine stays separate from Arduino. `shared/include/chair_engine.h`
+contains its documented API and state fields. The implementations share `SmartChair`:
+
+| Source | Responsibility |
+|---|---|
+| `shared/src/chair_engine.cpp` | Operating states, seat debounce and motion batching |
+| `shared/src/chair_delivery.cpp` | Reliable retries, ACKs, configuration and overflow |
+| `shared/src/communication_window.cpp` | Radio window timing and shutdown |
+| `shared/src/chair_storage.cpp` | Versioned durable snapshot encoding and validation |
+
+`sensor/src/main.cpp` adapts seat input, persistence, radio and sleep;
+`sensor/src/mpu6050.cpp` handles sensor registers. Public APIs document time units,
+validation, ownership and failure behavior.
+
+The chair samples at 25 Hz, retaining signed raw acceleration and gyro values at ±2 g
+and ±250 degrees/s. Classification compares acceleration magnitude to 1 g and raw gyro
+axes to the initial thresholds; thresholds/reference need calibration on the installed
+hardware. Start and stop debounce are 100 ms. Candidate and stop samples remain in
+batches. Capacity or interval flushes produce bounded packets; stop/vacancy emits the
+final boundary, even when empty. A buffer gap that exceeds the 16-bit sample offset
+flushes early. No idle-only batches are emitted.
+
+Reliable events and exact ACK removal use an atomic versioned NVS blob. Cold resets
+create a new boot ID and STATE_SYNC while retaining old pending identities. Deep sleep
+retains the active boot and next sequence in RTC memory. Ordinary overflow coalesces
+history into current STATE_SYNC while retaining command results. A storage failure
+keeps new transitions unsent and the chair awake until a current snapshot persists.
+Corrupt stored data is reported and never silently overwritten with empty defaults.
+
+Awake occupied operation keeps communication open and bypasses occupied sleep. Vacant
+sleep preparation allows up to 2500 ms for pending work, cancels on reseating, and
+rechecks the physical pin before radio stop. Wake is GPIO5 low or the configured
+heartbeat timer. Communication windows and occupied sleep are represented/tested in the
+engine, but no hardware schedule or downstream window configuration is enabled.
+
+## USB details and diagnostics
+
+USB accepts UTF-8 JSON lines, LF/CRLF, maximum 8192 bytes excluding LF. Readers discard
+oversized lines through newline. Firmware output has an eight-line RAM queue and resumes
+short writes without interleaving messages. Overflow drops output; reliable radio retries
+recover it. The radio input queue is also bounded. Best-effort movement may be lost.
+
+Normal messages are typed `telemetry`, `event_ack`, and `command` envelopes. Boot IDs use
+16 hex digits, command IDs canonical UUID strings. Unknown battery and indefinite listen
+time are explicitly null. The gateway validates binary frames and the Pi validates the
+MAC/node mapping. Corrupt or unauthorized frames never reach the state engine.
+
+The bench console remains available for raw outbound diagnostic payloads:
+
+```sh
+python tools/transport.py /dev/serial/by-id/YOUR_GATEWAY
+```
+
+Type text, `/hex 00ff010a`, or `/quit`. The input permits 1–1470 arbitrary bytes, but the
+protocol gateway/chair now reject incoming bytes that are not valid provisioned protocol
+frames. This console is useful for hello, malformed-input testing and manually encoded
+protocol frames; arbitrary text is no longer forwarded as a normal received message.
+
+Hello readiness is local initialization evidence. The existing 8.5 dBm transmit cap is
+retained from bench bring-up. Match channel, peer MACs and key fingerprints on both
+boards when diagnosing radio issues. This code does not claim physical delivery.
+
+## Acceptance boundary
+
+Native tests cover wire validation and sizes, motion timing and debounce, future radio
+windows, retries, ACK loss/duplicates, overflow, reset persistence, command replay,
+storage failure, SQLite commit-before-ACK, USB partial writes, and PTY serial reconnect.
+Both firmware targets must build and clangd must report zero source errors.
+
+Physical acceptance remains required for encrypted 1108-byte delivery, actual sample
+timing, sensor calibration, configuration round trips, reset durability, seat/timer wake,
+and power/radio measurements. MQTT, systemd, battery hardware, actual occupied light
+sleep and hardware communication schedules are deferred.
