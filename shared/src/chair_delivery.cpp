@@ -85,10 +85,7 @@ namespace SmartChair {
     Durable changed = durable;
     // A repeated UUID returns its historical result without rolling back newer settings.
     if (record == nullptr && result == Status::applied) changed.config = f.config;
-    if (record == nullptr) {
-      if (changed.commands.size() == 32) changed.commands.erase(changed.commands.begin());
-      changed.commands.push_back({f.command, f.config, result});
-    }
+    if (record == nullptr && !rememberCommand(changed, f, result)) return;
     auto event            = frame(Type::COMMAND_RESULT, now);
     event.command         = f.command;
     event.status          = result;
@@ -147,6 +144,27 @@ namespace SmartChair {
                       [](const auto& event) { return event.type == Type::COMMAND_RESULT; });
     // Keep one of the 32 slots available for current-state recovery.
     return protectedResults < 31;
+  }
+
+  bool Engine::canForgetCommand(const Uuid& uuid) const {
+    return std::none_of(durable.outbox.begin(), durable.outbox.end(), [&](const auto& event) {
+      return event.type == Type::COMMAND_RESULT && event.command == uuid;
+    });
+  }
+
+  bool Engine::rememberCommand(Durable& changed, const Frame& command, Status result) const {
+    if (changed.commands.size() == 32) {
+      // Preserve original request content until its reliable result is durably acknowledged.
+      const auto oldestAcknowledged =
+          std::find_if(changed.commands.begin(), changed.commands.end(),
+                       [&](const auto& record) { return canForgetCommand(record.uuid); });
+      if (oldestAcknowledged == changed.commands.end()) return false;
+
+      changed.commands.erase(oldestAcknowledged);
+    }
+
+    changed.commands.push_back({command.command, command.config, result});
+    return true;
   }
 
   bool Engine::commit(const Durable& d) {

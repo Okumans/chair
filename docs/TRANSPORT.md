@@ -95,8 +95,9 @@ content or expiry is rejected. Commands wait for fresh occupied READY availabili
 retry one at a time per node. A future timed READY bounds dispatch to its remaining
 listen duration. Expired commands never dispatch again. A late reliable result remains
 a durable fact in `events` and the command's `result`; an expired status stays expired.
-The first result finalizes applied/rejected status. Chair deduplication retains the last
-32 UUIDs and protects all unacknowledged results in its 32-entry outbox.
+The first result finalizes applied/rejected status. Chair deduplication retains up to
+32 UUID records, evicts acknowledged records first, and protects the record and result
+until its exact ACK is durable in the 32-entry outbox.
 
 ## Firmware operation
 

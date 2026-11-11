@@ -306,4 +306,19 @@ int main() {
   e.tick(900050);
   assert(e.communication.state == Communication::OPENING);
   assert(e.durable.outbox.back().type == Type::HEARTBEAT);
+  // A delayed ACK must not let later acknowledged commands evict the original UUID record.
+  e = engine();
+  c = config(1);
+  e.receive(c, 100);
+  for (uint32_t revision = 2; revision <= 40; ++revision) {
+    e.receive(config(revision, revision), revision * 100);
+    result = e.durable.outbox.back();
+    assert(result.type == Type::COMMAND_RESULT && result.command != c.command);
+    e.receive(ack(result), revision * 100 + 1);
+  }
+  const auto pendingBeforeReplay = e.durable.outbox.size();
+  e.receive(c, 4100);
+  assert(e.durable.outbox.size() == pendingBeforeReplay);
+  assert(e.durable.commands.size() == 32);
+  assert(e.durable.config.revision == 40);
 }

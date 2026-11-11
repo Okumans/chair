@@ -116,6 +116,10 @@ namespace SmartChair {
 
     bool hasCommandCapacity() const;
 
+    bool canForgetCommand(const Uuid& uuid) const;
+
+    bool rememberCommand(Durable& changed, const Frame& command, Status result) const;
+
     struct Round {
       Header id;
       uint64_t start;
