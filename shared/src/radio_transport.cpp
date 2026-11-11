@@ -4,14 +4,18 @@
 #include <WiFi.h>
 
 #include "esp_now.h"
+#include "esp_timer.h"
 #include "esp_wifi.h"
 #include "freertos/queue.h"
 #include "json_messages.h"
 #include "link_config.h"
 #include "mbedtls/sha256.h"
+#include "protocol_json.h"
 #include "transport_codec.h"
 
 namespace Transport {
+  static_assert(MAX_PAYLOAD <= ESP_NOW_MAX_DATA_LEN_V2, "Protocol frames require ESP-NOW v2");
+
   namespace {
     struct Received {
       uint8_t data[MAX_PAYLOAD];
@@ -28,6 +32,8 @@ namespace Transport {
     uint32_t pendingId   = 0;
     bool wasConnected    = false;
     LineReader reader;
+    Receiver receiver    = nullptr;
+    uint64_t sendStarted = 0;
 
     void hello() {
       uint8_t channel = 0;
@@ -60,8 +66,7 @@ namespace Transport {
       Received packet{};
       packet.size = size;
       memcpy(packet.data, data, size);
-      // shortcut: a full queue drops packets, this bench link has no application delivery
-      // guarantee.
+      // Reliable application messages retry after transient queue overflow.
       xQueueSend(receivedQueue, &packet, 0);
     }
 
@@ -85,6 +90,20 @@ namespace Transport {
       }
       uint8_t payload[MAX_PAYLOAD];
       size_t size = 0;
+      if ((command.kind == "command" || command.kind == "event_ack") && command.message &&
+          command.request_id && *command.request_id) {
+        SmartChair::Frame frame;
+        if (!SmartChair::fromJson(*command.message, frame) ||
+            std::string_view(frame.id.node.data()) != LinkConfig::NODE_ID ||
+            (command.kind == "command" && frame.type != SmartChair::Type::CONFIG_SET) ||
+            (command.kind == "event_ack" && frame.type != SmartChair::Type::EVENT_ACK)) {
+          error("invalid_protocol_command", *command.request_id);
+          return;
+        }
+        const auto bytes = SmartChair::encode(frame);
+        send(bytes.data(), bytes.size(), *command.request_id);
+        return;
+      }
       if (command.kind != "tx" || !command.request_id || *command.request_id == 0 ||
           !command.data_hex || !decodeHex(*command.data_hex, payload, MAX_PAYLOAD, size) || !size) {
         error("invalid_tx");
@@ -165,8 +184,9 @@ namespace Transport {
       error(!ready ? "radio_not_ready" : sending ? "radio_busy" : "invalid_payload", requestId);
       return false;
     }
-    sending   = true;
-    pendingId = requestId;
+    sendStarted = esp_timer_get_time() / 1000;
+    sending     = true;
+    pendingId   = requestId;
     if (esp_now_send(peer, data, size) != ESP_OK) {
       sending = false;
       error("radio_send_failed", requestId);
@@ -177,10 +197,15 @@ namespace Transport {
 
   bool busy() { return sending; }
 
+  bool available() { return ready; }
+
+  void setReceiver(Receiver callback) { receiver = callback; }
+
   void poll() {
     const bool connected = static_cast<bool>(Serial);
     if (connected != wasConnected) {
       reader.reset();
+      usbOutput.reset();
       if (connected) hello();
       wasConnected = connected;
     }
@@ -191,7 +216,16 @@ namespace Transport {
       if (reader.push(c)) handleLine(reader.line());
     }
 
+    if (connected)
+      usbOutput.drain(Serial.availableForWrite(), [](const char* data, size_t size) {
+        return Serial.write(reinterpret_cast<const uint8_t*>(data), size);
+      });
     if (!ready) return;
+    // A missing MAC callback cannot permanently block application delivery.
+    if (sending && uint64_t(esp_timer_get_time() / 1000) - sendStarted >= 1000) {
+      sending = false;
+      error("radio_send_timeout", pendingId);
+    }
     esp_now_send_status_t status;
     if (xQueueReceive(sentQueue, &status, 0) == pdTRUE) {
       printJson(TxResultMessage{
@@ -202,13 +236,23 @@ namespace Transport {
     }
 
     Received packet;
-    while (xQueueReceive(receivedQueue, &packet, 0) == pdTRUE) {
-      char hex[MAX_PAYLOAD * 2 + 1];
-      encodeHex(packet.data, packet.size, hex);
+    for (size_t i = 0; i < 8 && xQueueReceive(receivedQueue, &packet, 0) == pdTRUE; ++i) {
+      if (receiver) {
+        receiver(packet.data, packet.size);
+        continue;
+      }
+      SmartChair::Frame frame;
+      if (!SmartChair::decode(std::span(packet.data, packet.size), frame) ||
+          std::string_view(frame.id.node.data()) != LinkConfig::NODE_ID ||
+          (!SmartChair::telemetry(frame.type) && frame.type != SmartChair::Type::COMMAND_RECEIPT)) {
+        error("invalid_radio_frame");
+        continue;
+      }
       char peerMac[18];
       snprintf(peerMac, sizeof(peerMac), "%02x:%02x:%02x:%02x:%02x:%02x", peer[0], peer[1], peer[2],
                peer[3], peer[4], peer[5]);
-      printJson(RxMessage{.source_mac = peerMac, .data_hex = hex});
+      printJson(SmartChair::TelemetryMessage{.source_mac = peerMac,
+                                             .message    = SmartChair::toJson(frame)});
     }
   }
 }  // namespace Transport

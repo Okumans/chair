@@ -11,7 +11,7 @@ NamespaceIndentation: All
 AlignConsecutiveAssignments:
   Enabled: true
   AcrossEmptyLines: true
-  AcrossComments: true
+  AcrossComments: false
 
 # Do NOT align function declarations with variables or with each other
 AlignConsecutiveDeclarations: None

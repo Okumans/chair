@@ -44,7 +44,7 @@ namespace SmartChair {
   /// Complete persisted settings. Seconds accept the full nonzero uint32 range.
   struct Configuration {
     uint32_t revision = 0, heartbeat_s = 900, movement_batch_s = 3;
-    bool movement_enabled                       = true;
+    bool movement_enabled = true;
     /// Compare revision and all settings for idempotent configuration application.
     bool operator==(const Configuration&) const = default;
   };
@@ -58,8 +58,8 @@ namespace SmartChair {
   /// Event identity. Node bytes are zero padded; boot and sequence must be nonzero.
   struct Header {
     std::array<char, 16> node{};
-    uint64_t boot                        = 0;
-    uint32_t seq                         = 0;
+    uint64_t boot = 0;
+    uint32_t seq  = 0;
     /// Match an exact node, boot and sequence identity, including retransmissions.
     bool operator==(const Header&) const = default;
   };

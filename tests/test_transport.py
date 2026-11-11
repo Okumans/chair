@@ -10,6 +10,15 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+ENGINE_SOURCES = [
+    ROOT / "shared/src" / name
+    for name in (
+        "chair_engine.cpp",
+        "chair_delivery.cpp",
+        "chair_storage.cpp",
+        "communication_window.cpp",
+    )
+]
 spec = importlib.util.spec_from_file_location("transport", ROOT / "tools/transport.py")
 transport = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(transport)
@@ -77,6 +86,10 @@ class TransportTests(unittest.TestCase):
                 tempfile.TemporaryDirectory() as directory,
             ):
                 binary = Path(directory) / "protocol-test"
+                sources = [source]
+                if source.name == "protocol_engine_test.cpp":
+                    sources.extend(ENGINE_SOURCES)
+
                 subprocess.run(
                     [
                         "c++",
@@ -88,7 +101,7 @@ class TransportTests(unittest.TestCase):
                         str(ROOT / "shared/include"),
                         "-I",
                         str(ROOT / "third_party/glaze/include"),
-                        str(source),
+                        *[str(path) for path in sources],
                         "-o",
                         str(binary),
                     ],
@@ -139,6 +152,7 @@ class TransportTests(unittest.TestCase):
                     "-I",
                     str(ROOT / "third_party/glaze/include"),
                     str(ROOT / "tests/sensor_sleep_test.cpp"),
+                    *[str(path) for path in ENGINE_SOURCES],
                     "-o",
                     str(binary),
                 ],

@@ -18,6 +18,8 @@
 #endif
 
 namespace LinkConfig {
+  // Shared node identity used by both the chair and its provisioned gateway.
+  constexpr const char* NODE_ID     = "chair-01";
   constexpr unsigned char CHANNEL   = 1;
   constexpr const char* SENSOR_MAC  = LINK_SENSOR_MAC;
   constexpr const char* GATEWAY_MAC = LINK_GATEWAY_MAC;

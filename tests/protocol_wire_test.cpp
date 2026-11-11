@@ -83,7 +83,13 @@ int main() {
   assert(!decode(bad, decoded));
   // Worst-case signed readings still fit the bounded JSON line.
   std::string json;
-  for (auto& s : f.samples) s = {65535, -32768, -32768, -32768, -32768, -32768, -32768};
+  for (size_t i = 0; i < f.samples.size(); ++i)
+    f.samples[i] = {uint16_t(65535 - 74 + i), -32768, -32768, -32768, -32768, -32768, -32768};
+  std::strcpy(f.id.node.data(), "abcdefghijklmno");
+  f.id.boot       = UINT64_MAX;
+  f.id.seq        = UINT32_MAX;
+  f.common.uptime = f.common.revision = f.duration = UINT32_MAX;
+  assert(valid(f));
   assert(!glz::write<JsonOptions{}>(
       TelemetryMessage{.source_mac = "02:00:00:00:00:01", .message = toJson(f)}, json));
   assert(json.size() <= Transport::MAX_LINE);

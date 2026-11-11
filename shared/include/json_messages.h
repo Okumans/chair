@@ -8,14 +8,19 @@
 
 #include "glaze/json/read.hpp"
 #include "glaze/json/write.hpp"
+#include "protocol_json.h"
+#include "usb_output.h"
 
 namespace Transport {
+  /// Glaze input envelope for hello, diagnostic bytes and typed protocol controls.
   struct UsbCommand {
     std::string kind;
     std::optional<uint32_t> request_id;
     std::optional<std::string> data_hex;
+    std::optional<SmartChair::JsonMessage> message;
   };
 
+  /// USB connection snapshot; ready confirms local initialization, not peer delivery.
   struct HelloMessage {
     std::string_view kind = "hello";
     std::string_view role;
@@ -29,30 +34,35 @@ namespace Transport {
     size_t max_payload  = 0;
   };
 
+  /// Structured diagnostic with optional request association; zero is unsolicited.
   struct ErrorMessage {
     std::string_view kind = "error";
     uint32_t request_id   = 0;
     std::string_view reason;
   };
 
+  /// MAC-layer completion only; reliable protocol events still need EVENT_ACK.
   struct TxResultMessage {
     std::string_view kind = "tx_result";
     uint32_t request_id   = 0;
     bool mac_delivered    = false;
   };
 
+  /// Diagnostic binary envelope retained for the bench console.
   struct RxMessage {
     std::string_view kind = "rx";
     std::string_view source_mac;
     std::string_view data_hex;
   };
 
+  /// Diagnostic vacant-sleep notice; heartbeat_ms is the legacy bench field.
   struct SleepMessage {
     std::string_view kind = "sleep";
     uint8_t wake_pin      = 0;
     uint32_t heartbeat_ms = 0;
   };
 
+  /// Legacy bench snapshot schema retained for existing diagnostic tooling.
   struct SeatSnapshot {
     uint8_t seat_pin = 0;
     std::string_view occupancy;
@@ -60,19 +70,23 @@ namespace Transport {
     std::string_view wake_reason;
   };
 
+  /// Reject unknown fields, malformed skipped values and trailing non-whitespace.
   struct UsbReadOptions : glz::opts {
-    bool error_on_unknown_keys        = false;
+    bool error_on_unknown_keys        = true;
     bool validate_skipped             = true;
     bool validate_trailing_whitespace = true;
   };
 
+  /// Keep unavailable battery and indefinite listen time explicitly null in USB JSON.
+  struct UsbWriteOptions : glz::opts {
+    bool skip_null_members = false;
+  };
+
+  inline UsbOutput usbOutput;
+
+  /// Serialize and enqueue one bounded line; queue overflow drops output without blocking sensing.
   inline void printJson(const auto& value) {
     std::string buffer;
-    if (glz::write_json(value, buffer)) {
-      Serial.println("{\"kind\":\"error\",\"request_id\":0,\"reason\":\"json_encode_failed\"}");
-      return;
-    }
-    Serial.print(buffer.c_str());
-    Serial.print('\n');
+    if (!glz::write<UsbWriteOptions{}>(value, buffer)) usbOutput.push(std::move(buffer));
   }
 }  // namespace Transport

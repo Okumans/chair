@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cassert>
 
 #include "chair_engine.h"
@@ -294,4 +295,15 @@ int main() {
   assert(e.durable.outbox.size() <= 32);
   assert(std::any_of(e.durable.outbox.begin(), e.durable.outbox.end(),
                      [](const auto& frame) { return frame.type == Type::STATE_SYNC; }));
+  const auto originalIdentity = e.durable.outbox.front().id;
+  e.rotateBoot(99, 100001);
+  assert(e.durable.outbox.front().id == originalIdentity);
+  assert(e.durable.outbox.back().type == Type::STATE_SYNC);
+  assert(e.durable.outbox.back().id.boot == 99 && e.durable.outbox.back().id.seq == 1);
+  assert(e.identity.seq == 2);
+  e                     = engine();
+  e.communication.state = Communication::CLOSED;
+  e.tick(900050);
+  assert(e.communication.state == Communication::OPENING);
+  assert(e.durable.outbox.back().type == Type::HEARTBEAT);
 }
