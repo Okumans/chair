@@ -5,6 +5,12 @@
 #include <string>
 
 int main() {
+  assert(Transport::hexDigit('0') == 0);
+  assert(Transport::hexDigit('9') == 9);
+  assert(Transport::hexDigit('a') == 10);
+  assert(Transport::hexDigit('F') == 15);
+  assert(!Transport::hexDigit('g'));
+
   uint8_t bytes[Transport::MAX_PAYLOAD];
   char encoded[Transport::MAX_PAYLOAD * 2 + 1];
   for (size_t i = 0; i < sizeof(bytes); ++i) bytes[i] = i;

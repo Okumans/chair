@@ -57,9 +57,10 @@ namespace SmartChair {
     if (text.size() != 16) return false;
     value = 0;
     for (char c : text) {
-      int digit = Transport::hexDigit(c);
-      if (digit < 0) return false;
-      value = (value << 4) | digit;
+      const auto digit = Transport::hexDigit(c);
+      if (!digit) return false;
+
+      value = (value << 4) | *digit;
     }
     return value != 0;
   }
