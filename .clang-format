@@ -26,3 +26,6 @@ AlignConsecutiveMacros:
 AlignTrailingComments:
   Kind: Always
   OverEmptyLines: 1
+
+# Keep definitions visually separate, including short helper functions.
+SeparateDefinitionBlocks: Always

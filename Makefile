@@ -3,7 +3,7 @@
 # Target environment: `sensor` (ESP32-C3 SuperMini) or `gateway` (ESP32-S3 DevKit)
 ENV ?= sensor
 
-CPP_FILES := $(shell find sensor gateway shared -name '*.cpp' -o -name '*.h' 2>/dev/null)
+CPP_FILES := $(shell find sensor gateway shared tests -name '*.cpp' -o -name '*.h' 2>/dev/null)
 
 .PHONY: help build upload monitor flash lsp compiledb format clean
 
@@ -42,12 +42,13 @@ monitor:
 	pio device monitor
 
 compiledb:
-	@python3 -c "import json, subprocess; \
+	@python3 -c "import json, pathlib, subprocess; \
 	cmds = []; \
 	subprocess.run(['pio', 'run', '-e', 'sensor', '-t', 'compiledb'], check=True, stdout=subprocess.DEVNULL); \
 	cmds.extend(json.load(open('compile_commands.json'))); \
 	subprocess.run(['pio', 'run', '-e', 'gateway', '-t', 'compiledb'], check=True, stdout=subprocess.DEVNULL); \
 	cmds.extend(json.load(open('compile_commands.json'))); \
+	cmds.extend({'directory': str(pathlib.Path.cwd()), 'file': str(p.resolve()), 'arguments': ['c++', '-std=c++23', '-Itests/fakes', '-Isensor/include', '-Ishared/include', '-Ithird_party/glaze/include', '-c', str(p)]} for p in pathlib.Path('tests').glob('*.cpp')); \
 	seen = set(); unique = []; \
 	[unique.append(c) for c in cmds if c['file'] not in seen and not seen.add(c['file'])]; \
 	json.dump(unique, open('compile_commands.json', 'w'), indent=2); \

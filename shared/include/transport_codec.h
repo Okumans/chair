@@ -6,9 +6,10 @@
 #include <string_view>
 
 namespace Transport {
-  constexpr size_t MAX_PAYLOAD = 250;
-  constexpr size_t MAX_LINE    = 2048;
+  constexpr size_t MAX_PAYLOAD = 1470;
+  constexpr size_t MAX_LINE    = 8192;
 
+  /// Decode one ASCII hex digit, returning -1 for invalid input.
   inline int hexDigit(char c) {
     if (c >= '0' && c <= '9') return c - '0';
     if (c >= 'a' && c <= 'f') return c - 'a' + 10;
@@ -16,6 +17,7 @@ namespace Transport {
     return -1;
   }
 
+  /// Decode complete byte pairs within capacity. Ignore bytes and size on failure.
   inline bool decodeHex(std::string_view text, uint8_t* bytes, size_t capacity, size_t& size) {
     const size_t length = text.size();
     if (length % 2 || length / 2 > capacity) return false;
@@ -30,6 +32,7 @@ namespace Transport {
     return true;
   }
 
+  /// Write lowercase hex plus NUL; text must hold at least size*2+1 bytes.
   inline void encodeHex(const uint8_t* bytes, size_t size, char* text) {
     constexpr char digits[] = "0123456789abcdef";
     for (size_t i = 0; i < size; ++i) {
@@ -39,6 +42,7 @@ namespace Transport {
     text[size * 2] = '\0';
   }
 
+  /// Decode a nonzero unicast station MAC in colon-separated hexadecimal form.
   inline bool decodeMac(const char* text, uint8_t* bytes) {
     if (strlen(text) != 17) return false;
     for (size_t i = 0; i < 6; ++i) {
@@ -51,8 +55,11 @@ namespace Transport {
   }
 
   // Returns one bounded line; overlong input is discarded through the next newline.
+  /// Bounded LF/CRLF accumulator; discard overlong or NUL-bearing input through newline.
   class LineReader {
    public:
+    /// Consume a byte. True exposes a complete line until the next push; false means
+    /// incomplete/invalid.
     bool push(char c) {
       if (c == '\n') {
         const bool ready = !overflow && used > 0;
@@ -67,10 +74,13 @@ namespace Transport {
       return false;
     }
 
+    /// Discard the partial line and overflow state when a USB connection changes.
     void reset() {
       used     = 0;
       overflow = false;
     }
+
+    /// Return the last completed, NUL-terminated line; consume it before the next push.
     const char* line() const { return buffer; }
 
    private:
