@@ -61,6 +61,8 @@ are separate; see [development checks](docs/SETUP.md#development-checks).
 - [Setup and dependencies](docs/SETUP.md): installation, provisioning, builds, editor setup and checks.
 - [Transport and Pi bridge](docs/TRANSPORT.md): MAC retrieval, commands, diagnostics and physical acceptance.
 - [Protocol specification](docs/PROTOCOL_SPEC.md): message formats, state transitions and delivery rules.
+- The confirmed radio-window design covers wire v2, state-machine integration and implementation
+  acceptance. [Radio windows specification](docs/RADIO_WINDOWS_SPEC.md)
 
 Battery measurement, MQTT, systemd deployment, actual occupied light sleep and scheduled
 radio windows remain deferred. Native tests do not establish physical radio reliability,

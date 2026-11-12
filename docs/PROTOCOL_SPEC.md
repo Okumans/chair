@@ -2,6 +2,10 @@
 
 Revision 2, 12 November 2026. This is the implementation contract. Physical acceptance is separate from build and native-test evidence.
 
+This document describes current wire version 1. The confirmed next-revision radio-window
+design specifies wire version 2, scheduling, state-machine integration and a breaking
+test-data reset procedure. [Radio windows specification](RADIO_WINDOWS_SPEC.md)
+
 ## Ownership and defaults
 
 Chair → encrypted unicast ESP-NOW → gateway → USB JSON → Pi SQLite.
