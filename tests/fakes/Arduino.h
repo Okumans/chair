@@ -1,4 +1,5 @@
 #pragma once
+#include <cassert>
 #include <cstdint>
 #include <cstdio>
 #include <string>
@@ -8,8 +9,21 @@ constexpr int HIGH         = 1;
 constexpr int INPUT_PULLUP = 2;
 
 struct FakeSerial {
+  bool connected = true;
+  uint32_t baud  = 0;
+
+  void begin(uint32_t rate) { baud = rate; }
+
+  explicit operator bool() const { return connected; }
+
   template <typename... Args>
-  void printf(const char*, Args...) {}
+  void printf(const char* format, Args... args) {
+    const int length = std::snprintf(nullptr, 0, format, args...);
+    assert(length >= 0);
+    std::string buffer(static_cast<size_t>(length) + 1, '\0');
+    std::snprintf(buffer.data(), buffer.size(), format, args...);
+    output.append(buffer.data(), static_cast<size_t>(length));
+  }
 
   void println(const char*) {}
 

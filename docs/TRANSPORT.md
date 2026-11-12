@@ -4,6 +4,26 @@ Chair → encrypted ESP-NOW v2 → ESP32-S3 gateway → USB JSON → SQLite/Pi a
 The Pi owns logical sessions. Firmware reports physical state and raw MPU6050 movement.
 The wire contract and limitations are in [PROTOCOL_SPEC.md](PROTOCOL_SPEC.md).
 
+## Read a board's MAC
+
+The `mac-sensor` (ESP32-C3) and `mac-gateway` (ESP32-S3) environments build only
+`tools/mac_address/main.cpp`. This reads the factory-derived Wi-Fi station MAC directly
+and prints it once per second at 115200 baud. It works before pairing keys are configured.
+
+For the S3, stop any other serial tool and use its actual port:
+
+```sh
+pio run -e mac-gateway -t upload --upload-port /dev/ttyACM1
+pio device monitor --port /dev/ttyACM1 --baud 115200
+```
+
+For the C3, use `-e mac-sensor` and that board's port. With only one board connected,
+`make flash ENV=mac-sensor` or `make flash ENV=mac-gateway` uploads and starts the monitor.
+Copy the printed address into the appropriate `LINK_SENSOR_MAC` or `LINK_GATEWAY_MAC`.
+This replaces the board's application while the MAC utility is installed; upload the
+normal `sensor` or `gateway` environment afterward to restore chair operation. The MAC
+utility does not write NVS, so stored chair configuration and events remain intact.
+
 ## Provision and build
 
 The ignored `shared/include/link_config.local.h` contains station MACs and two independent

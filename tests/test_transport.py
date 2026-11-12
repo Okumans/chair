@@ -109,6 +109,28 @@ class TransportTests(unittest.TestCase):
                 )
                 subprocess.run([str(binary)], check=True)
 
+    def test_mac_address_firmware(self):
+        with tempfile.TemporaryDirectory() as directory:
+            binary = Path(directory) / "mac-address-test"
+            subprocess.run(
+                [
+                    "c++",
+                    "-std=c++23",
+                    "-Wall",
+                    "-Wextra",
+                    "-Werror",
+                    "-I",
+                    str(ROOT / "tests/fakes"),
+                    "-I",
+                    str(ROOT / "shared/include"),
+                    str(ROOT / "tests/mac_address_test.cpp"),
+                    "-o",
+                    str(binary),
+                ],
+                check=True,
+            )
+            subprocess.run([str(binary)], check=True)
+
     def test_glaze_messages(self):
         with tempfile.TemporaryDirectory() as directory:
             binary = Path(directory) / "json-messages-test"
