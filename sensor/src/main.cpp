@@ -19,6 +19,7 @@ static_assert(static_cast<uint8_t>(Pins::SEAT_SENSOR) == 5,
 
 namespace {
   using namespace SmartChair;
+
   Preferences preferences;
   std::unique_ptr<Engine> engine;
   RTC_DATA_ATTR uint64_t retainedBoot = 0;
