@@ -14,7 +14,7 @@ namespace SmartChair {
     int32_t ax, ay, az, gx, gy, gz;
   };
 
-  /// Glaze USB schema. Type-specific fields are optional; unavailable values serialize as null.
+  /// Glaze USB schema. Absent optional fields are omitted from the serialized message.
   struct JsonMessage {
     uint8_t version = 1;
     std::string type, node_id, boot_id;
@@ -22,11 +22,13 @@ namespace SmartChair {
     uint32_t seq = 0;
     std::optional<uint32_t> uptime_ms;
     std::optional<bool> occupied;
-    std::optional<uint16_t> battery_mv;
+    // Outer empty means absent; inner empty means an intentional JSON null for telemetry.
+    std::optional<std::optional<uint16_t>> battery_mv;
     std::optional<uint32_t> config_revision;
     std::optional<uint8_t> health_flags;
     std::optional<std::string> command_id, status, reason;
-    std::optional<uint32_t> listen_remaining_ms;
+    // The same absent/null distinction keeps indefinite listen time exclusive to READY.
+    std::optional<std::optional<uint32_t>> listen_remaining_ms;
     std::optional<std::string> ack_boot_id;
     std::optional<uint32_t> ack_seq, revision, heartbeat_s, movement_batch_s;
     std::optional<bool> movement_enabled;
@@ -100,7 +102,8 @@ namespace SmartChair {
     if (telemetry(f.type)) {
       j.uptime_ms = f.common.uptime;
       j.occupied  = f.common.occupied;
-      if (f.common.battery != UINT16_MAX) j.battery_mv = f.common.battery;
+      j.battery_mv.emplace();
+      if (f.common.battery != UINT16_MAX) j.battery_mv->emplace(f.common.battery);
       j.config_revision = f.common.revision;
       j.health_flags    = f.common.health;
     }
@@ -111,7 +114,8 @@ namespace SmartChair {
       j.status = STATUS_NAMES[uint8_t(f.status)];
     if (f.type == Type::READY) {
       j.reason = REASON_NAMES[uint8_t(f.reason)];
-      if (f.listen != UINT32_MAX) j.listen_remaining_ms = f.listen;
+      j.listen_remaining_ms.emplace();
+      if (f.listen != UINT32_MAX) j.listen_remaining_ms->emplace(f.listen);
     }
     if (f.type == Type::EVENT_ACK) {
       j.ack_boot_id = hex64(f.ack_boot);

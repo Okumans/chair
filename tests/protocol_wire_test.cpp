@@ -5,10 +5,6 @@
 #include "protocol_json.h"
 using namespace SmartChair;
 
-struct JsonOptions : glz::opts {
-  bool skip_null_members = false;
-};
-
 namespace {
   Header id(uint64_t boot = 0x0807060504030201ULL) {
     Header h;
@@ -99,8 +95,8 @@ int main() {
   f.id.seq        = UINT32_MAX;
   f.common.uptime = f.common.revision = f.duration = UINT32_MAX;
   assert(valid(f));
-  assert(!glz::write<JsonOptions{}>(
-      TelemetryMessage{.source_mac = "02:00:00:00:00:01", .message = toJson(f)}, json));
+  assert(!glz::write_json(TelemetryMessage{.source_mac = "02:00:00:00:00:01", .message = toJson(f)},
+                          json));
   assert(json.size() <= Transport::MAX_LINE);
   std::cout << "maximum USB telemetry bytes: " << json.size() << '\n';
   auto j = toJson(config(UINT32_MAX));

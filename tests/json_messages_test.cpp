@@ -1,6 +1,8 @@
 #include "json_messages.h"
 
 #include <cassert>
+#include <map>
+#include <set>
 #include <string>
 
 #include "transport_codec.h"
@@ -12,6 +14,26 @@ struct Error {
   uint32_t request_id;
   std::string reason;
 };
+
+namespace {
+  std::map<std::string, glz::raw_json> serializedFields(const SmartChair::Frame& frame) {
+    Serial.output.clear();
+    Transport::printJson(SmartChair::TelemetryMessage{.source_mac = "02:00:00:00:00:01",
+                                                      .message    = SmartChair::toJson(frame)});
+    while (!Transport::usbOutput.empty())
+      Transport::usbOutput.drain(Transport::MAX_LINE, [](const char* data, size_t size) {
+        Serial.output.append(data, size);
+        return size;
+      });
+
+    std::map<std::string, glz::raw_json> envelope;
+    assert(!glz::read_json(envelope, Serial.output));
+    std::map<std::string, glz::raw_json> fields;
+    assert(!glz::read_json(fields, envelope.at("message").str));
+    Serial.output.clear();
+    return fields;
+  }
+}  // namespace
 
 int main() {
   Transport::UsbCommand command;
@@ -70,6 +92,69 @@ int main() {
   assert(Serial.output.find("\"battery_mv\":null") != std::string::npos);
   assert(Serial.output.find("\"listen_remaining_ms\":null") != std::string::npos);
   Serial.output.clear();
+
+  using SmartChair::Type;
+  const std::map<Type, std::set<std::string>> typeFields{
+      {Type::OCCUPIED, {}},
+      {Type::VACATED, {}},
+      {Type::HEARTBEAT, {}},
+      {Type::STATE_SYNC, {"boot_generation"}},
+      {Type::BATTERY_LOW, {}},
+      {Type::COMMAND_RESULT, {"command_id", "status"}},
+      {Type::MOVEMENT_BATCH, {"batch_start_ms", "duration_ms", "end_reason", "samples"}},
+      {Type::READY, {"reason", "listen_remaining_ms"}},
+      {Type::EVENT_ACK, {"ack_boot_id", "ack_seq"}},
+      {Type::CONFIG_SET,
+       {"command_id", "revision", "heartbeat_s", "movement_batch_s", "movement_enabled"}},
+      {Type::COMMAND_RECEIPT, {"command_id", "status"}},
+  };
+  for (const auto& [type, extraFields] : typeFields) {
+    SmartChair::Frame frame;
+    frame.id              = availability.id;
+    frame.type            = type;
+    frame.common.occupied = type == Type::OCCUPIED;
+    frame.boot_generation = 1;
+    frame.command[0]      = 1;
+    frame.ack_boot = frame.ack_seq = 1;
+    frame.end                      = SmartChair::End::stopped;
+    frame.status =
+        type == Type::COMMAND_RECEIPT ? SmartChair::Status::received : SmartChair::Status::applied;
+    assert(SmartChair::valid(frame));
+
+    std::set<std::string> expected{"version", "type", "node_id", "boot_id", "seq"};
+    if (SmartChair::telemetry(type)) {
+      expected.insert({"uptime_ms", "occupied", "battery_mv", "config_revision", "health_flags"});
+    }
+    expected.insert(extraFields.begin(), extraFields.end());
+
+    const auto fields = serializedFields(frame);
+    std::set<std::string> actual;
+    for (const auto& [key, value] : fields) {
+      actual.insert(key);
+      if (value.str == "null") {
+        assert((key == "battery_mv" && SmartChair::telemetry(type)) ||
+               (key == "listen_remaining_ms" && type == Type::READY));
+      }
+    }
+    assert(actual == expected);
+    if (SmartChair::telemetry(type)) assert(fields.at("battery_mv").str == "null");
+    if (type == Type::READY) assert(fields.at("listen_remaining_ms").str == "null");
+    if (type == Type::MOVEMENT_BATCH) assert(fields.at("samples").str == "[]");
+  }
+
+  availability.common.battery = 3910;
+  availability.listen         = 0;
+  const auto timedReady       = serializedFields(availability);
+  assert(timedReady.at("battery_mv").str == "3910");
+  assert(timedReady.at("listen_remaining_ms").str == "0");
+
+  control.type                    = Type::CONFIG_SET;
+  control.command[0]              = 1;
+  control.config                  = {};
+  control.config.movement_enabled = false;
+  const auto disabledMovement     = serializedFields(control);
+  assert(disabledMovement.at("movement_enabled").str == "false");
+  assert(disabledMovement.at("revision").str == "0");
 
   const std::string text = "quote\" slash\\ newline\n tab\t ไทย";
   Transport::printJson(Transport::ErrorMessage{.request_id = 42, .reason = text});

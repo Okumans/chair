@@ -77,16 +77,11 @@ namespace Transport {
     bool validate_trailing_whitespace = true;
   };
 
-  /// Keep unavailable battery and indefinite listen time explicitly null in USB JSON.
-  struct UsbWriteOptions : glz::opts {
-    bool skip_null_members = false;
-  };
-
   inline UsbOutput usbOutput;
 
   /// Serialize and enqueue one bounded line; queue overflow drops output without blocking sensing.
   inline void printJson(const auto& value) {
     std::string buffer;
-    if (!glz::write<UsbWriteOptions{}>(value, buffer)) usbOutput.push(std::move(buffer));
+    if (!glz::write_json(value, buffer)) usbOutput.push(std::move(buffer));
   }
 }  // namespace Transport

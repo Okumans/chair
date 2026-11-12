@@ -101,6 +101,30 @@ class ProtocolTests(unittest.TestCase):
             self.store.db.execute("PRAGMA journal_mode").fetchone()[0], "wal"
         )
 
+    def test_compact_retransmission_matches_previously_stored_null_fields(self):
+        compact = event("OCCUPIED", seq=8)
+        previous = dict(
+            compact,
+            command_id=None,
+            status=None,
+            boot_generation=None,
+            ack_boot_id=None,
+            ack_seq=None,
+            samples=None,
+            listen_remaining_ms=None,
+        )
+        self.assertFalse(self.bridge.receive(envelope(previous), 100)["duplicate"])
+        self.bridge.next(100)
+
+        replay = self.bridge.receive(envelope(compact), 101)
+        self.assertTrue(replay["duplicate"])
+        self.assertEqual(replay["received_at"], 100)
+        self.assertNotIn("command_id", replay["message"])
+        self.assertEqual(self.bridge.next(101)["kind"], "event_ack")
+        self.assertEqual(
+            self.store.db.execute("SELECT COUNT(*) FROM events").fetchone()[0], 1
+        )
+
     def test_boot_generation_and_sequence_prevent_state_regression(self):
         self.store.accept(event(), 1)
         self.store.accept(event("VACATED", seq=5, occupied=False), 2)

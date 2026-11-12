@@ -153,6 +153,11 @@ oversized lines through newline. Firmware output has an eight-line RAM queue and
 short writes without interleaving messages. Overflow drops output; reliable radio retries
 recover it. The radio input queue is also bounded. Best-effort movement may be lost.
 
+Each message contains only fields relevant to its type; unrelated fields are omitted.
+Unavailable battery voltage remains `battery_mv: null` in telemetry, and indefinitely
+open READY messages retain `listen_remaining_ms: null`. Earlier SQLite facts containing
+unrelated nulls remain compatible with compact retransmissions; do not reset the database.
+
 Normal messages are typed `telemetry`, `event_ack`, and `command` envelopes. Boot IDs use
 16 hex digits, command IDs canonical UUID strings. Unknown battery and indefinite listen
 time are explicitly null. The gateway validates binary frames and the Pi validates the
