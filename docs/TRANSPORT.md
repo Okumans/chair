@@ -4,25 +4,77 @@ Chair → encrypted ESP-NOW v2 → ESP32-S3 gateway → USB JSON → SQLite/Pi a
 The Pi owns logical sessions. Firmware reports physical state and raw MPU6050 movement.
 The wire contract and limitations are in [PROTOCOL_SPEC.md](PROTOCOL_SPEC.md).
 
-## Read a board's MAC
+## Read a board's MAC for ESP-NOW
 
-The `mac-sensor` (ESP32-C3) and `mac-gateway` (ESP32-S3) environments build only
-`tools/mac_address/main.cpp`. This reads the factory-derived Wi-Fi station MAC directly
-and prints it once per second at 115200 baud. It works before pairing keys are configured.
+Use the Wi-Fi station (STA) MAC for each board: the ESP-NOW transport uses
+`WIFI_IF_STA`. The `mac-sensor` (ESP32-C3) and `mac-gateway` (ESP32-S3) environments
+build only `tools/mac_address/main.cpp`, which reads this factory-derived address
+and prints it once per second at 115200 baud. Pairing keys are not needed to run it.
 
-For the S3, stop any other serial tool and use its actual port:
+Run these commands from the repository root. Stop the Python bridge and any other
+serial monitor first. Connect the board's native USB port; on an S3 with separate
+UART and native USB connectors, this firmware prints through the native USB connector.
+Find each board's port with:
 
 ```sh
-pio run -e mac-gateway -t upload --upload-port /dev/ttyACM1
-pio device monitor --port /dev/ttyACM1 --baud 115200
+pio device list
 ```
 
-For the C3, use `-e mac-sensor` and that board's port. With only one board connected,
-`make flash ENV=mac-sensor` or `make flash ENV=mac-gateway` uploads and starts the monitor.
-Copy the printed address into the appropriate `LINK_SENSOR_MAC` or `LINK_GATEWAY_MAC`.
-This replaces the board's application while the MAC utility is installed; upload the
-normal `sensor` or `gateway` environment afterward to restore chair operation. The MAC
-utility does not write NVS, so stored chair configuration and events remain intact.
+**C3 chair sensor:** replace `YOUR_C3` with its actual serial-by-id device name.
+
+```sh
+pio run -e mac-sensor -t upload --upload-port /dev/serial/by-id/YOUR_C3
+pio device monitor --port /dev/serial/by-id/YOUR_C3 --baud 115200
+```
+
+Record the printed address as the C3 sensor's STA MAC, then exit the monitor with Ctrl+C.
+
+**S3 gateway:** replace `YOUR_S3` with its actual device name.
+
+```sh
+pio run -e mac-gateway -t upload --upload-port /dev/serial/by-id/YOUR_S3
+pio device monitor --port /dev/serial/by-id/YOUR_S3 --baud 115200
+```
+
+Record this address separately, then exit with Ctrl+C. A current `/dev/ttyACM0` or
+`/dev/ttyACM1` path also works, but port numbers can change when boards reconnect.
+With only one board connected, `make flash ENV=mac-sensor` or
+`make flash ENV=mac-gateway` uploads the utility and starts its monitor automatically.
+
+Put the recorded addresses in the ignored `shared/include/link_config.local.h`:
+
+| Board | Firmware environment | Address setting |
+|---|---|---|
+| ESP32-C3 chair | `mac-sensor` | `LINK_SENSOR_MAC` |
+| ESP32-S3 gateway | `mac-gateway` | `LINK_GATEWAY_MAC` |
+
+Replace the placeholders below with the printed addresses. Preserve existing `LINK_PMK`
+and `LINK_LMK` values; if the local file does not exist yet, copy
+`shared/include/link_config.example.h` first and configure its keys as described below.
+The same local file supplies the MACs and encryption keys to both firmware builds.
+
+```cpp
+#define LINK_SENSOR_MAC  "C3_STA_MAC_YOU_RECORDED"
+#define LINK_GATEWAY_MAC "S3_STA_MAC_YOU_RECORDED"
+```
+
+Also map the chair's node ID to the **C3 sensor's MAC** in the Pi's `nodes.json`:
+
+```json
+{"chair-01":"C3_STA_MAC_YOU_RECORDED"}
+```
+
+Installing the MAC utility replaces the board's application. Restore normal ESP-NOW
+operation after recording and configuring both addresses:
+
+```sh
+pio run -e sensor -t upload --upload-port /dev/serial/by-id/YOUR_C3
+pio run -e gateway -t upload --upload-port /dev/serial/by-id/YOUR_S3
+```
+
+The MAC utility does not write NVS, so stored chair configuration and events remain
+intact. On the restored gateway, USB `hello.mac` should match the S3 address and
+`hello.peer_mac` the C3 address. Then run the Pi bridge as described below.
 
 ## Provision and build
 
