@@ -36,8 +36,59 @@ uv tool update-shell
 ```
 
 Start a new shell if needed so `pio` is on PATH. If PlatformIO is already installed,
-use that installation instead of creating another one. Other Linux distributions need
-the equivalent packages providing the commands in the table above.
+use that installation instead of creating another one.
+
+### Debian and Ubuntu development machine
+
+Use Debian 13 (Trixie) or Ubuntu 24.04 LTS or newer as the starting point for full
+development. Older releases can run the bridge, but their default compiler or formatter
+may be too old for the native tests and `.clang-format` configuration.
+
+```sh
+sudo apt update
+sudo apt install git build-essential g++-14 python3 python3-venv \
+  curl ca-certificates clang-format clangd
+```
+
+On Ubuntu, enable the Universe repository if these packages are unavailable.
+[Ubuntu 24.04 provides `g++-14`](https://packages.ubuntu.com/noble/g%2B%2B-14);
+[Debian 13 defaults to GCC 14](https://packages.debian.org/trixie/g%2B%2B).
+Check `c++ --version`: native tests invoke `c++` directly, so installing `g++-14`
+alone does not select it on Ubuntu. If `c++` still selects an older GCC, these commands
+register and select GCC 14 as the **system-wide** C++ compiler alternative:
+
+```sh
+sudo update-alternatives --install /usr/bin/c++ c++ /usr/bin/g++-14 140
+sudo update-alternatives --set c++ /usr/bin/g++-14
+c++ --version
+```
+
+Install uv using its [official standalone installer](https://docs.astral.sh/uv/getting-started/installation/),
+then install the Python tools in isolated environments:
+
+```sh
+curl -LsSf https://astral.sh/uv/install.sh | sh
+. "$HOME/.local/bin/env"
+uv tool install platformio
+uv tool install ruff
+uv tool update-shell
+```
+
+Open a new shell if necessary for the tool PATH changes. Do not use `sudo pip` or
+`--break-system-packages`; uv keeps these tools outside the distro-managed Python.
+
+For USB serial access, inspect `ls -l /dev/ttyACM*`. If the device belongs to `dialout`,
+add your user to that group, then log out and back in and reconnect the board:
+
+```sh
+sudo usermod -aG dialout "$USER"
+```
+
+If upload access still fails, follow PlatformIO's
+[udev rules instructions](https://docs.platformio.org/en/latest/core/installation/udev-rules.html).
+Keep uploads and the bridge running as your normal user.
+
+### Verify the development tools
 
 Confirm the commands are available:
 
@@ -56,6 +107,10 @@ test or bridge invocation also downloads Python dependencies. Allow network acce
 writable PlatformIO/uv caches during this first setup.
 
 ### Bridge-only computer or Raspberry Pi
+
+On Debian, Ubuntu or Raspberry Pi OS, install `python3`, `python3-venv`, `curl` and
+`ca-certificates` with apt, then install uv using the standalone installer above.
+The compiler, formatter, Ruff, clangd and PlatformIO are unnecessary for bridge-only use.
 
 Install Python 3 and uv, then run `uv run tools/transport.py --list` to resolve pyserial
 and list serial devices. If you manage your own virtual environment instead, install

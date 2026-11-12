@@ -13,7 +13,7 @@ while vacant it can deep sleep and wake from the seat switch or heartbeat timer.
 
 ## Start here
 
-1. Follow [Setup and dependencies](docs/SETUP.md) to install the development tools.
+1. Follow [Setup and dependencies](docs/SETUP.md) for Arch Linux, Debian or Ubuntu.
 2. [Read both boards' station MACs](docs/TRANSPORT.md#read-a-boards-mac-for-esp-now)
    and configure the shared, ignored pairing file.
 3. Build and upload the normal sensor and gateway firmware using explicit serial ports.
