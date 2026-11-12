@@ -1,0 +1,164 @@
+# Setup and dependencies
+
+Run these commands from the repository root. The development and bridge test workflow
+targets Linux; serial reconnect tests use pseudo terminals. A computer/Pi running only
+the bridge does not need the C++ tools or PlatformIO.
+
+## Dependencies
+
+| Tool | Used for |
+|---|---|
+| Git and Make | Checkout, development targets and the local commit hook |
+| Python 3 and uv | Bridge, test runner and isolated Python dependencies |
+| PlatformIO Core (`pio`) | Downloading ESP toolchains, building, uploading and monitoring |
+| Host C++23 compiler (`c++`) | Native tests; separate from the ESP cross-compilers |
+| clang-format | C/C++ formatting and formatting checks |
+| Ruff (`ruff`) | Python formatting and lint |
+| clangd | Optional editor diagnostics using the generated compilation database |
+
+The firmware platform is pinned in `platformio.ini` to pioarduino `55.03.312-1`.
+Glaze is vendored in `third_party/glaze`; no separate download is needed. MPU6050 access
+uses Arduino Wire directly. Python's SQLite support is in the standard library; no
+SQLite server is needed. The bridge script and test target pin `pyserial==3.5`.
+
+The host compiler must support the C++23 features used by Glaze as well as `-std=c++23`.
+`make test` verifies this by compiling and running the native tests. Formatter and lint
+versions are currently taken from your PATH, rather than pinned by the repository.
+
+### Arch Linux development machine
+
+Install the system tools, then install PlatformIO in an isolated uv tool environment:
+
+```sh
+sudo pacman -S --needed git make gcc python uv clang ruff
+uv tool install platformio
+uv tool update-shell
+```
+
+Start a new shell if needed so `pio` is on PATH. If PlatformIO is already installed,
+use that installation instead of creating another one. Other Linux distributions need
+the equivalent packages providing the commands in the table above.
+
+Confirm the commands are available:
+
+```sh
+python3 --version
+uv --version
+pio --version
+c++ --version
+clang-format --version
+ruff --version
+clangd --version
+```
+
+Initial builds download the pinned ESP platform, SDK and cross-compilers. The first uv
+test or bridge invocation also downloads Python dependencies. Allow network access and
+writable PlatformIO/uv caches during this first setup.
+
+### Bridge-only computer or Raspberry Pi
+
+Install Python 3 and uv, then run `uv run tools/transport.py --list` to resolve pyserial
+and list serial devices. If you manage your own virtual environment instead, install
+`pyserial==3.5` there and use `python tools/transport.py ...`. Do not install packages
+into the system Python just to run the bridge.
+
+## Provision the boards
+
+1. Connect each board with a data-capable USB cable. Use native USB on the S3.
+2. Follow [MAC retrieval](TRANSPORT.md#read-a-boards-mac-for-esp-now) for the C3 and S3.
+   `make mac ENV=sensor PORT=...` and `make mac ENV=gateway PORT=...` replace the
+   application with MAC-only firmware; restore the normal firmware afterward.
+3. Create the local pairing header once:
+
+   ```sh
+   cp shared/include/link_config.example.h shared/include/link_config.local.h
+   ```
+
+   Edit the local file with both STA MACs and two independent random 16-byte keys,
+   encoded as 32 hex characters each. For example, run
+   `python3 -c 'import secrets; print(secrets.token_hex(16))'` separately for each key.
+   Both builds use this same header. Keep it private; Git ignores it. Preserve an
+   existing local file instead of overwriting its pairing keys.
+4. Update `nodes.json` to map `chair-01` to your **C3 sensor's** STA MAC. The tracked
+   mapping belongs to the development pair and is not a universal default.
+
+The seat contact connects GPIO5 to ground with an internal pull-up. The MPU6050 uses
+I2C address `0x68`, SDA GPIO6 and SCL GPIO7. Confirm wiring against
+`sensor/include/pins.h`; the optional interrupt and battery input are currently unused.
+
+## Build, upload and run
+
+```sh
+make build ENV=sensor
+make build ENV=gateway
+pio device list
+pio run -e sensor -t upload --upload-port /dev/serial/by-id/YOUR_C3
+pio run -e gateway -t upload --upload-port /dev/serial/by-id/YOUR_S3
+uv run tools/transport.py protocol \
+  --port /dev/serial/by-id/YOUR_S3 --nodes ./nodes.json --db ./chair.sqlite
+```
+
+Replace serial placeholders with actual device paths. `PORT` is used by `make mac`;
+normal upload commands above pass `--upload-port` directly to PlatformIO. The firmware
+can build without pairing values, but the normal radio link will not become ready
+until valid matching settings are supplied.
+
+Use a local durable filesystem for SQLite and keep database files out of commits.
+Stop the bridge before opening a serial monitor or uploading the gateway. Only one
+program should read/write its serial port at a time. On permission errors, inspect
+`ls -l /dev/ttyACM*` and your distribution's serial-device group or udev rules; reconnect
+and log in again after changing permissions. Run the bridge as your normal user.
+
+See [Transport and Pi bridge](TRANSPORT.md#submit-and-inspect-configuration) to queue
+configuration commands. No additional service is needed for command submission.
+
+## Development checks
+
+```sh
+make setup-hooks
+make format
+make check
+make lsp
+```
+
+`make check` runs `format-check`, `lint` and `test`. This covers C/C++ and Python
+formatting, shell syntax for the hook, Ruff lint, and all Python/native C++ tests.
+Native builds treat compiler warnings as errors. Individual targets are available when
+diagnosing a failure. `make format` changes files; stage the resulting edits yourself.
+
+`make setup-hooks` sets this checkout's local `core.hooksPath` to `.githooks`, replacing
+any previous local hook-path setting. The plain Git shell hook checks a temporary copy
+of exactly the staged files; unstaged edits and untracked files remain untouched.
+Failures block the commit. Fix the error, stage the corrected files and retry. Install
+the hook separately in each clone. The Python pre-commit framework is not required.
+
+The hook does **not** build ESP firmware or run clangd. Before committing firmware
+changes, also build both targets and check the affected translation units:
+
+```sh
+pio run -e sensor -e gateway
+make lsp
+clangd --check=sensor/src/main.cpp
+clangd --check=shared/src/radio_transport.cpp
+clangd --check=gateway/src/main.cpp
+```
+
+`make lsp` regenerates the ignored `compile_commands.json` for both normal firmware
+targets, both MAC utilities and native tests. It does not itself run diagnostics.
+The checked-in `.clangd` contains absolute `/home/okumnas/.platformio` SDK paths;
+adjust those paths for your home directory and installed toolchain versions on another
+machine. Clang has no Xtensa backend, so gateway diagnostics use a header-parsing
+workaround; the PlatformIO build remains the firmware compilation check.
+
+## Troubleshooting
+
+- **Missing `pio`, `ruff` or formatter:** verify PATH in the terminal/editor that starts
+  Git. Hooks inherit that environment and need the same commands as `make check`.
+- **`ready: false`:** check the local pairing header, both MACs, keys and channel.
+- **`invalid_json`:** stop extra serial owners and inspect `parse_error`, `byte_offset`
+  and `line_bytes`; see [USB diagnostics](TRANSPORT.md#usb-details-and-diagnostics).
+- **No movement:** check MPU6050 wiring and health flags; battery readings remain null.
+- **No serial output:** check the USB cable, native USB connector and device path after
+  reconnecting. Prefer `/dev/serial/by-id/` when available.
+
+Software checks do not replace the [physical acceptance tests](TRANSPORT.md#acceptance-boundary).

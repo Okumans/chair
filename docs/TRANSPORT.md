@@ -2,6 +2,7 @@
 
 Chair → encrypted ESP-NOW v2 → ESP32-S3 gateway → USB JSON → SQLite/Pi application.
 The Pi owns logical sessions. Firmware reports physical state and raw MPU6050 movement.
+Start with [Setup and dependencies](SETUP.md) for tool installation and development checks.
 The wire contract and limitations are in [PROTOCOL_SPEC.md](PROTOCOL_SPEC.md).
 
 ## Read a board's MAC for ESP-NOW
@@ -92,7 +93,7 @@ owns sessions. The gateway handles one configured encrypted chair peer.
 make format
 make lsp
 pio run -e sensor -e gateway
-python -m unittest discover -s tests -v
+make check
 clangd --check=sensor/src/main.cpp --check-lines=1-1
 clangd --check=shared/src/radio_transport.cpp --check-lines=1-1
 clangd --check=gateway/src/main.cpp --check-lines=1-1
@@ -112,23 +113,9 @@ pio run -e gateway -t upload --upload-port /dev/serial/by-id/YOUR_GATEWAY
 
 ## Pre-commit checks
 
-Install the repository's hook once per clone:
-
-```sh
-make setup-hooks
-```
-
-Development checks require Git, Make, clang-format, Ruff, uv and a C++23 compiler.
-`make format` applies C/C++ and Python formatting. `make check` verifies formatting,
-checks the hook's shell syntax, runs Python lint, and runs the Python/native C++ tests.
-The native tests compile with warnings treated as errors; uv supplies pinned pyserial
-3.5 for the tests. Individual targets are `format-check`, `lint` and `test`.
-
-The pre-commit hook runs `make check` on a temporary copy of exactly the Git index.
-Unstaged edits and untracked files remain untouched, and the hook does not stage changes
-automatically. Any formatting, lint, test or staged-whitespace failure blocks the commit.
-Fix the reported problem, run `make format` if needed, stage the corrected files, and
-retry the commit. Firmware builds and physical acceptance use the commands above.
+Run `make setup-hooks` once per clone. The plain Git shell hook checks staged formatting,
+lint and tests without changing unstaged files. See [development checks](SETUP.md#development-checks)
+for dependencies, commands and the separate firmware/LSP checks.
 
 ## Run the Pi bridge
 
@@ -146,8 +133,8 @@ Use the actual MAC, not the example address. The serial path, mapping file and S
 path are mandatory. Prefer a stable by-id serial path and a local durable filesystem.
 
 ```sh
-python tools/transport.py --list
-python tools/transport.py protocol \
+uv run tools/transport.py --list
+uv run tools/transport.py protocol \
   --port /dev/serial/by-id/YOUR_GATEWAY \
   --nodes ./nodes.json --db ./chair.sqlite
 ```
@@ -180,10 +167,10 @@ row to the same SQLite database. `--expires-at` is UTC Unix time in seconds. Thi
 expires one hour after submission:
 
 ```sh
-python tools/transport.py config --nodes ./nodes.json --db ./chair.sqlite \
+uv run tools/transport.py config --nodes ./nodes.json --db ./chair.sqlite \
   --node chair-01 --revision 1 --heartbeat-s 900 --movement-batch-s 3 \
   --movement-enabled true --expires-at "$(date -d '+1 hour' +%s)"
-python tools/transport.py commands --nodes ./nodes.json --db ./chair.sqlite
+uv run tools/transport.py commands --nodes ./nodes.json --db ./chair.sqlite
 ```
 
 An optional `--command-id` accepts a canonical nonzero UUID. Reusing a UUID with different
@@ -271,7 +258,7 @@ MAC/node mapping. Corrupt or unauthorized frames never reach the state engine.
 The bench console remains available for raw outbound diagnostic payloads:
 
 ```sh
-python tools/transport.py /dev/serial/by-id/YOUR_GATEWAY
+uv run tools/transport.py /dev/serial/by-id/YOUR_GATEWAY
 ```
 
 Type text, `/hex 00ff010a`, or `/quit`. The input permits 1–1470 arbitrary bytes, but the
