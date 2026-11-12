@@ -71,6 +71,16 @@ namespace {
 }  // namespace
 
 int main() {
+  {
+    auto failed        = engine();
+    const auto pending = failed.durable.outbox.size();
+    failed.sampleFailed(50);
+    assert(!failed.imuAvailable);
+    assert(!failed.sampleDue(89) && failed.sampleDue(90));
+    assert(failed.operating == Operating::OCCUPIED_IDLE);
+    assert(failed.durable.outbox.size() == pending);
+  }
+
   Frame f;
   Window w;
   w.open(1000);

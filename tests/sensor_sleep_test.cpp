@@ -33,6 +33,7 @@ namespace Fake {
       retainedSeq  = 1;
     }
     Preferences::available = true;
+    Wire.connected         = true;
     sent.clear();
     setup();
   }
@@ -180,4 +181,15 @@ int main() {
   Fake::tick(50, HIGH);
   Fake::tick(2550, HIGH);
   assert(Fake::timerUs == 4294967295000000ULL);
+
+  Fake::boot();
+  Fake::tick(0, LOW);
+  Fake::tick(50, LOW);
+  assert(imuReady && engine->imuAvailable);
+  Wire.connected = false;
+  Fake::tick(90, LOW);
+  assert(!imuReady && !engine->imuAvailable);
+  assert(!engine->sampleDue(129) && engine->sampleDue(130));
+  Fake::tick(92, LOW);
+  assert(!engine->sampleDue(129));  // Failed reads do not cause a retry on every loop.
 }

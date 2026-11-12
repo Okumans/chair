@@ -53,6 +53,11 @@ namespace SmartChair {
     }
   }
 
+  void Engine::sampleFailed(uint64_t now) {
+    imuAvailable = false;
+    nextSample_  = now + Timing::SAMPLE_INTERVAL_MS;
+  }
+
   void Engine::sample(Sample raw, uint64_t now) {
     nextSample_ = now + Timing::SAMPLE_INTERVAL_MS;
     if (!occupied || !imuAvailable || !durable.config.movement_enabled) return;

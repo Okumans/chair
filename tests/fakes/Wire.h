@@ -3,6 +3,7 @@
 #include <cstdint>
 
 struct FakeWire {
+  bool connected   = true;
   uint8_t reg      = 0;
   unsigned written = 0, cursor = 0;
 
@@ -16,7 +17,7 @@ struct FakeWire {
     if (!written++) reg = value;
   }
 
-  int endTransmission(bool = true) { return 0; }
+  int endTransmission(bool = true) { return connected ? 0 : 1; }
 
   int requestFrom(uint8_t, uint8_t count) {
     cursor = 0;

@@ -52,6 +52,19 @@ namespace {
     if (decode(std::span(bytes, size), f)) engine->receive(f, nowMs());
   }
 
+  void sampleImu(uint64_t now) {
+    if (!engine->sampleDue(now)) return;
+
+    Sample sample;
+    if (!imuReady || !Mpu6050::read(sample)) {
+      imuReady = false;
+      engine->sampleFailed(now);
+      return;
+    }
+
+    engine->sample(sample, nowMs());
+  }
+
   void sleepWhileVacant() {
     const uint64_t timerUs =
         milliseconds(engine->durable.config.heartbeat_s) * Timing::MICROSECONDS_PER_MILLISECOND;
@@ -136,16 +149,7 @@ void loop() {
   }
   engine->imuAvailable = imuReady;
 
-  if (engine->sampleDue(now)) {
-    Sample sample;
-    if (imuReady && Mpu6050::read(sample))
-      engine->sample(sample, nowMs());
-    else {
-      imuReady             = false;
-      engine->imuAvailable = false;
-      engine->sample(sample, now);
-    }
-  }
+  sampleImu(now);
 
   engine->tick(nowMs(), Transport::busy());
 

@@ -70,6 +70,9 @@ namespace SmartChair {
     /// unchanged.
     void sample(Sample raw, uint64_t now);
 
+    /// Mark the IMU unavailable and postpone the next attempt without processing a reading.
+    void sampleFailed(uint64_t now);
+
     /// Retry failed state persistence, queue heartbeats and advance bounded vacant sleep.
     void tick(uint64_t now, bool radioBusy = false);
 
