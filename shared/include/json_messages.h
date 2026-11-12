@@ -39,6 +39,10 @@ namespace Transport {
     std::string_view kind = UsbKind::ERROR;
     uint32_t request_id   = 0;
     std::string_view reason;
+    // Only JSON parse failures include diagnostics; never echo arbitrary command contents.
+    std::optional<glz::error_code> parse_error = std::nullopt;
+    std::optional<size_t> byte_offset          = std::nullopt;
+    std::optional<size_t> line_bytes           = std::nullopt;
   };
 
   /// MAC-layer completion only; reliable protocol events still need EVENT_ACK.

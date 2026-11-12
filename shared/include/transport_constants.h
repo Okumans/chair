@@ -17,6 +17,7 @@ namespace Transport {
   inline constexpr double QUARTERS_PER_DBM          = 4.0;
   inline constexpr size_t MAX_PAYLOAD               = 1470;
   inline constexpr size_t MAX_LINE                  = 8192;
+  inline constexpr size_t USB_RX_BUFFER_BYTES       = MAX_LINE + 1;
   inline constexpr size_t USB_QUEUE_DEPTH           = 8;
   inline constexpr size_t RADIO_QUEUE_DEPTH         = 8;
   inline constexpr size_t TX_QUEUE_DEPTH            = 1;
@@ -46,6 +47,7 @@ namespace Transport {
   /// Stable structured diagnostic reasons, never free-form text on the USB stream.
   namespace ErrorCode {
     inline constexpr char INVALID_JSON[]                    = "invalid_json";
+    inline constexpr char USB_RX_BUFFER_FAILED[]            = "usb_rx_buffer_failed";
     inline constexpr char INVALID_PROTOCOL_COMMAND[]        = "invalid_protocol_command";
     inline constexpr char INVALID_TX[]                      = "invalid_tx";
     inline constexpr char WIFI_START_FAILED[]               = "wifi_start_failed";

@@ -48,7 +48,7 @@ compiledb:
 	cmds.extend(json.load(open('compile_commands.json'))); \
 	subprocess.run(['pio', 'run', '-e', 'gateway', '-t', 'compiledb'], check=True, stdout=subprocess.DEVNULL); \
 	cmds.extend(json.load(open('compile_commands.json'))); \
-	cmds.extend({'directory': str(pathlib.Path.cwd()), 'file': str(p.resolve()), 'arguments': ['c++', '-std=c++23', '-Itests/fakes', '-Isensor/include', '-Ishared/include', '-Ithird_party/glaze/include', '-c', str(p)]} for p in pathlib.Path('tests').glob('*.cpp')); \
+	cmds.extend({'directory': str(pathlib.Path.cwd()), 'file': str(p.resolve()), 'arguments': ['c++', '-std=c++23', *(['-Itests/radio_fakes'] if p.name == 'radio_usb_test.cpp' else []), '-Itests/fakes', '-Isensor/include', '-Ishared/include', '-Ithird_party/glaze/include', '-c', str(p)]} for p in pathlib.Path('tests').glob('*.cpp')); \
 	seen = set(); unique = []; \
 	[unique.append(c) for c in cmds if c['file'] not in seen and not seen.add(c['file'])]; \
 	json.dump(unique, open('compile_commands.json', 'w'), indent=2); \

@@ -287,6 +287,43 @@ class ProtocolTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             protocol.validate(envelope(batch), MAPPING)
 
+    def test_gateway_usb_receive_with_real_bridge_acks(self):
+        binary = Path(self.directory.name) / "radio-usb-test"
+        subprocess.run(
+            [
+                "c++",
+                "-std=c++23",
+                "-Wall",
+                "-Wextra",
+                "-Werror",
+                "-I",
+                str(ROOT / "tests/radio_fakes"),
+                "-I",
+                str(ROOT / "shared/include"),
+                "-I",
+                str(ROOT / "third_party/glaze/include"),
+                str(ROOT / "tests/radio_usb_test.cpp"),
+                "-o",
+                str(binary),
+            ],
+            check=True,
+        )
+        lines = []
+        for seq in range(1, 1001):
+            message = self.bridge.control(
+                "chair-01", "EVENT_ACK", ack_boot_id="27a1fb4aa76ba72e", ack_seq=seq
+            )
+            lines.append(
+                json.dumps(
+                    {"kind": "event_ack", "message": message, "request_id": seq},
+                    separators=(",", ":"),
+                )
+            )
+        subprocess.run(
+            [str(binary)], input="\n".join(lines) + "\n", text=True, check=True
+        )
+        subprocess.run([str(binary), "allocation-failure"], check=True)
+
     def test_partial_usb_writes(self):
         class Port:
             data = bytearray()

@@ -3,6 +3,8 @@
 #include <Arduino.h>
 #include <WiFi.h>
 
+#include <atomic>
+
 #include "esp_now.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
@@ -30,10 +32,13 @@ namespace Transport {
     bool ready           = false;
     bool sending         = false;
     uint32_t pendingId   = 0;
-    bool wasConnected    = false;
+    bool usbAnnounced    = false;
+    std::atomic<bool> usbBusReset{false};
     LineReader reader;
     Receiver receiver    = nullptr;
     uint64_t sendStarted = 0;
+
+    void usbResetCallback(void*, esp_event_base_t, int32_t, void*) { usbBusReset.store(true); }
 
     void hello() {
       uint8_t channel = 0;
@@ -62,7 +67,9 @@ namespace Transport {
     void receiveCallback(const esp_now_recv_info_t* info, const uint8_t* data, int size) {
       if (!info) return;
       const uint8_t* mac = info->src_addr;
-      if (!mac || !data || memcmp(mac, peer, MAC_BYTES) || size <= 0 || size > MAX_PAYLOAD) return;
+      if (!mac || !data || memcmp(mac, peer, MAC_BYTES) || size <= 0 ||
+          static_cast<size_t>(size) > MAX_PAYLOAD)
+        return;
       Received packet{};
       packet.size = size;
       memcpy(packet.data, data, size);
@@ -80,8 +87,15 @@ namespace Transport {
 
     void handleLine(const char* line) {
       UsbCommand command;
-      if (glz::read<UsbReadOptions{}>(command, std::string_view{line})) {
-        error(ErrorCode::INVALID_JSON);
+      const std::string_view input{line};
+      const auto parseError = glz::read<UsbReadOptions{}>(command, input);
+      if (parseError) {
+        printJson(ErrorMessage{
+            .reason      = ErrorCode::INVALID_JSON,
+            .parse_error = parseError.ec,
+            .byte_offset = parseError.count,
+            .line_bytes  = input.size(),
+        });
         return;
       }
       if (command.kind == UsbKind::HELLO) {
@@ -114,8 +128,15 @@ namespace Transport {
   }  // namespace
 
   void begin(const char* role, const char* ownMac, const char* peerMac) {
-    nodeRole = role;
+    nodeRole                 = role;
+    const bool rxBufferReady = Serial.setRxBufferSize(USB_RX_BUFFER_BYTES) == USB_RX_BUFFER_BYTES;
+    Serial.onEvent(ARDUINO_HW_CDC_BUS_RESET_EVENT, usbResetCallback);
     Serial.begin(BAUD_RATE);
+    if (!rxBufferReady) {
+      error(ErrorCode::USB_RX_BUFFER_FAILED);
+      hello();
+      return;
+    }
     // Arduino's asynchronous STA_START handler reapplies this preference to the driver.
     WiFi.setSleep(false);
     if (!WiFi.STA.begin(false)) {
@@ -207,17 +228,22 @@ namespace Transport {
 
   void poll() {
     const bool connected = static_cast<bool>(Serial);
-    if (connected != wasConnected) {
+    // HWCDC's connection boolean can flap during a healthy link; only a bus reset loses framing.
+    if (usbBusReset.exchange(false)) {
       reader.reset();
       usbOutput.reset();
-      if (connected) hello();
-      wasConnected = connected;
+      usbAnnounced = false;
+    }
+    if (connected && !usbAnnounced) {
+      hello();
+      usbAnnounced = true;
     }
 
     // Bound USB work so continuous input cannot starve radio queue draining.
     for (size_t i = 0; i < USB_POLL_BYTES && Serial.available(); ++i) {
-      const char c = Serial.read();
-      if (reader.push(c)) handleLine(reader.line());
+      const int value = Serial.read();
+      if (value < 0) break;
+      if (reader.push(static_cast<char>(value))) handleLine(reader.line());
     }
 
     if (connected)

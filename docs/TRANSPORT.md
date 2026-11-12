@@ -153,6 +153,18 @@ oversized lines through newline. Firmware output has an eight-line RAM queue and
 short writes without interleaving messages. Overflow drops output; reliable radio retries
 recover it. The radio input queue is also bounded. Best-effort movement may be lost.
 
+The hardware USB CDC receive buffer is configured to hold a complete maximum-length
+line plus LF before serial startup. Its driver otherwise defaults to 256 bytes and can
+drop bytes during bursts. A transient false USB readiness indication preserves partial
+input/output; only the hardware bus-reset event clears framing and starts a new USB
+session. Native tests exercise 1,000 real bridge ACKs split across readiness changes,
+maximum-size input, bus reset, partial output, and receive-buffer allocation failure.
+
+An `invalid_json` error now includes `parse_error` (Glaze's error name), `byte_offset`
+(where parsing stopped), and `line_bytes` (received line length). It does not echo raw
+commands. These details distinguish malformed or truncated input without exposing its
+contents. No MQTT broker or background service is needed for this serial/SQLite bridge.
+
 Each message contains only fields relevant to its type; unrelated fields are omitted.
 Unavailable battery voltage remains `battery_mv: null` in telemetry, and indefinitely
 open READY messages retain `listen_remaining_ms: null`. Earlier SQLite facts containing
