@@ -52,7 +52,22 @@ namespace {
     if (decode(std::span(bytes, size), f)) engine->receive(f, nowMs());
   }
 
-  void sampleImu(uint64_t now) {
+  void rotateIdentityIfNeeded(uint64_t now) {
+    if (engine->identity.seq >= UINT32_MAX - Limits::SEQUENCE_RESERVE) {
+      engine->rotateBoot(newBootId(engine->identity.boot), now);
+    }
+  }
+
+  void updateInputs(uint64_t now) {
+    engine->seat(digitalRead(Pins::SEAT_SENSOR) == LOW, now, wakeReason);
+    if (Transport::available()) engine->radioReady(now);
+
+    if (!imuReady && now >= nextImuProbe) {
+      nextImuProbe = now + Mpu6050::RETRY_INTERVAL_MS;
+      imuReady     = Mpu6050::begin();
+    }
+    engine->imuAvailable = imuReady;
+
     if (!engine->sampleDue(now)) return;
 
     Sample sample;
@@ -65,7 +80,19 @@ namespace {
     engine->sample(sample, nowMs());
   }
 
-  void sleepWhileVacant() {
+  void sendPendingFrame() {
+    if (!Transport::available() || Transport::busy()) return;
+
+    Frame outgoing;
+    if (!engine->next(outgoing, nowMs())) return;
+
+    const auto bytes = encode(outgoing);
+    if (!bytes.empty()) Transport::send(bytes.data(), bytes.size());
+  }
+
+  void sleepIfRequested() {
+    if (engine->operating != Operating::DEEP_SLEEP) return;
+
     const uint64_t timerUs =
         milliseconds(engine->durable.config.heartbeat_s) * Timing::MICROSECONDS_PER_MILLISECOND;
     if (esp_deep_sleep_enable_gpio_wakeup(1ULL << Pins::SEAT_SENSOR, ESP_GPIO_WAKEUP_GPIO_LOW) !=
@@ -136,29 +163,12 @@ void setup() {
 void loop() {
   Transport::poll();
   const uint64_t now = nowMs();
-  if (engine->identity.seq >= UINT32_MAX - Limits::SEQUENCE_RESERVE) {
-    engine->rotateBoot(newBootId(engine->identity.boot), now);
-  }
 
-  engine->seat(digitalRead(Pins::SEAT_SENSOR) == LOW, now, wakeReason);
-  if (Transport::available()) engine->radioReady(now);
-
-  if (!imuReady && now >= nextImuProbe) {
-    nextImuProbe = now + Mpu6050::RETRY_INTERVAL_MS;
-    imuReady     = Mpu6050::begin();
-  }
-  engine->imuAvailable = imuReady;
-
-  sampleImu(now);
-
+  rotateIdentityIfNeeded(now);
+  updateInputs(now);
   engine->tick(nowMs(), Transport::busy());
+  sendPendingFrame();
+  sleepIfRequested();
 
-  Frame outgoing;
-  if (Transport::available() && !Transport::busy() && engine->next(outgoing, nowMs())) {
-    const auto bytes = encode(outgoing);
-    if (!bytes.empty()) Transport::send(bytes.data(), bytes.size());
-  }
-
-  if (engine->operating == Operating::DEEP_SLEEP) sleepWhileVacant();
   delay(Transport::POLL_DELAY_MS);
 }
