@@ -48,15 +48,42 @@ namespace {
            bytes.size();
   }
 
+  inline void startColdBoot() {
+    retainedBoot = newBootId(retainedBoot);
+    retainedSeq  = 1;
+    wakeReason   = Wake::cold_boot;
+  }
+
+  inline bool loadDurable(Durable& durable) {
+    const auto size = preferences.getBytesLength(Config::Storage::STATE_KEY);
+    if (!size || size > Limits::STORED_STATE_BYTES) return false;
+
+    std::vector<uint8_t> bytes(size);
+    return preferences.getBytes(Config::Storage::STATE_KEY, bytes.data(), size) == size &&
+           decodeDurable(bytes, durable);
+  }
+
+  inline void initializeEngine(Durable durable) {
+    Header identity;
+    std::strncpy(identity.node.data(), LinkConfig::NODE_ID, identity.node.size() - 1);
+    identity.boot = retainedBoot;
+    identity.seq  = retainedSeq;
+    engine        = std::make_unique<Engine>(identity, std::move(durable), save);
+  }
+
+  inline void initializeImu() {
+    imuReady             = Mpu6050::begin();
+    engine->imuAvailable = imuReady;
+  }
+
   void receive(const uint8_t* bytes, size_t size) {
     Frame f;
     if (decode(std::span(bytes, size), f)) engine->receive(f, nowMs());
   }
 
   inline void probeImu(uint64_t now) {
-    nextImuProbe         = now + Mpu6050::RETRY_INTERVAL_MS;
-    imuReady             = Mpu6050::begin();
-    engine->imuAvailable = imuReady;
+    nextImuProbe = now + Mpu6050::RETRY_INTERVAL_MS;
+    initializeImu();
   }
 
   inline void sampleImu(uint64_t now) {
@@ -110,31 +137,18 @@ void setup() {
   if (cause == ESP_SLEEP_WAKEUP_TIMER) wakeReason = Wake::timer;
 
   if (!deepWake || !retainedBoot || retainedSeq >= UINT32_MAX - Limits::SEQUENCE_RESERVE) {
-    retainedBoot = newBootId(retainedBoot);
-    retainedSeq  = 1;
-    wakeReason   = Wake::cold_boot;
+    startColdBoot();
   }
 
   storageReady = preferences.begin(Config::Storage::NAMESPACE, false);
   Durable durable;
   if (storageReady && preferences.isKey(Config::Storage::STATE_KEY)) {
-    const auto size = preferences.getBytesLength(Config::Storage::STATE_KEY);
-    if (size > Limits::STORED_STATE_BYTES || !size)
-      storageReady = false;
-    else {
-      std::vector<uint8_t> bytes(size);
-      storageReady = preferences.getBytes(Config::Storage::STATE_KEY, bytes.data(), size) == size &&
-                     decodeDurable(bytes, durable);
-    }
+    storageReady = loadDurable(durable);
   }
 
-  Header identity;
-  std::strncpy(identity.node.data(), LinkConfig::NODE_ID, 15);
-  identity.boot        = retainedBoot;
-  identity.seq         = retainedSeq;
-  engine               = std::make_unique<Engine>(identity, std::move(durable), save);
-  imuReady             = Mpu6050::begin();
-  engine->imuAvailable = imuReady;
+  initializeEngine(std::move(durable));
+  initializeImu();
+
   Transport::setReceiver(receive);
   Transport::begin(Transport::SENSOR_ROLE, LinkConfig::SENSOR_MAC, LinkConfig::GATEWAY_MAC);
   if (!storageReady)
