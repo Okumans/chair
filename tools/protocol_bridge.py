@@ -14,7 +14,7 @@ import serial
 
 UINT32_MAX = 0xFFFFFFFF
 MAX_BOOT_GENERATION = 0x7FFFFFFFFFFFFFFF
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 MAX_PENDING_ACKS = 128
 RADIO_TIMEOUT_S = 1
 COMMAND_RETRY_S = 0.75
@@ -50,11 +50,24 @@ def configuration(config):
     return (
         isinstance(config, dict)
         and set(config)
-        == {"revision", "heartbeat_s", "movement_batch_s", "movement_enabled"}
+        == {
+            "revision",
+            "heartbeat_s",
+            "movement_batch_s",
+            "movement_enabled",
+            "radio_windows_enabled",
+            "radio_interval_s",
+            "radio_open_s",
+            "radio_motion_tail_s",
+        }
         and integer(config["revision"])
         and integer(config["heartbeat_s"], 1)
         and integer(config["movement_batch_s"], 1)
         and type(config["movement_enabled"]) is bool
+        and type(config["radio_windows_enabled"]) is bool
+        and integer(config["radio_interval_s"], 1)
+        and integer(config["radio_open_s"], 1, config["radio_interval_s"])
+        and integer(config["radio_motion_tail_s"], 1)
     )
 
 
@@ -100,7 +113,7 @@ def validate(message, mapping):
         raise ValueError("sender does not match node")
     if (
         type(m.get("version")) is not int
-        or m["version"] != 1
+        or m["version"] != 2
         or not isinstance(m.get("boot_id"), str)
         or not re.fullmatch(r"[0-9a-f]{16}", m["boot_id"])
         or int(m["boot_id"], 16) == 0
@@ -108,20 +121,28 @@ def validate(message, mapping):
     ):
         raise ValueError("invalid event identity")
     kind = m.get("type")
-    if kind not in RELIABLE | {"READY", "MOVEMENT_BATCH", "COMMAND_RECEIPT"}:
+    if kind not in RELIABLE | {
+        "READY",
+        "MOVEMENT_BATCH",
+        "MOVEMENT_LOSS",
+        "COMMAND_RECEIPT",
+    }:
         raise ValueError("unknown event type")
     generation = m.get("boot_generation")
-    if generation is not None:
+    if kind == "STATE_SYNC":
         if (
-            kind != "STATE_SYNC"
-            or not isinstance(generation, str)
+            not isinstance(generation, str)
             or not re.fullmatch(r"[0-9a-f]{16}", generation)
+            or int(generation, 16) == 0
             or int(generation, 16) > MAX_BOOT_GENERATION
         ):
             raise ValueError("invalid boot generation")
+    elif generation is not None:
+        raise ValueError("invalid boot generation")
     if kind != "COMMAND_RECEIPT":
         if (
-            not integer(m.get("uptime_ms"))
+            "battery_mv" not in m
+            or not integer(m.get("uptime_ms"))
             or type(m.get("occupied")) is not bool
             or not integer(m.get("config_revision"))
             or not integer(m.get("health_flags"), 0, 3)
@@ -142,13 +163,18 @@ def validate(message, mapping):
         ):
             raise ValueError("invalid command status")
     if kind == "READY":
-        if m.get("reason") not in {
-            "seat_occupied",
-            "movement_started",
-            "scheduled",
-        } or (
-            m.get("listen_remaining_ms") is not None
-            and not integer(m["listen_remaining_ms"], 0, UINT32_MAX - 1)
+        if (
+            "listen_remaining_ms" not in m
+            or m.get("reason")
+            not in {
+                "seat_occupied",
+                "movement_started",
+                "scheduled",
+            }
+            or (
+                m.get("listen_remaining_ms") is not None
+                and not integer(m["listen_remaining_ms"], 0, UINT32_MAX - 1)
+            )
         ):
             raise ValueError("invalid availability")
     if kind == "MOVEMENT_BATCH":
@@ -178,6 +204,8 @@ def validate(message, mapping):
             ):
                 raise ValueError("invalid movement sample")
             previous = sample["offset_ms"]
+    if kind == "MOVEMENT_LOSS" and not integer(m.get("dropped_batches"), 1):
+        raise ValueError("invalid movement loss count")
     return m
 
 
@@ -191,6 +219,15 @@ class Store:
 
         self.db = sqlite3.connect(path)
         self.db.row_factory = sqlite3.Row
+        version = self.db.execute("PRAGMA user_version").fetchone()[0]
+        existing = self.db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' LIMIT 1"
+        ).fetchone()
+        if version != SCHEMA_VERSION and (existing or version):
+            self.db.close()
+            raise ValueError(
+                "unsupported database version; explicitly reset test data or use a new database"
+            )
         journal = self.db.execute("PRAGMA journal_mode=WAL").fetchone()[0]
         if journal != "wal":
             self.db.close()
@@ -208,11 +245,8 @@ class Store:
                 id TEXT PRIMARY KEY, node TEXT NOT NULL, config TEXT NOT NULL, expires REAL NOT NULL,
                 status TEXT NOT NULL, result TEXT);
         """)
-        if self.db.execute("PRAGMA user_version").fetchone()[0] < SCHEMA_VERSION:
-            # Previous derived generations used arrival order; retain all durable facts/commands.
+        if not version:
             with self.db:
-                self.db.execute("DELETE FROM boots")
-                self.db.execute("DELETE FROM current_state")
                 self.db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
 
     @staticmethod
@@ -341,9 +375,12 @@ class Bridge:
         self.acks = {}
         self.available = {}
         self.last_command = {}
+        # Keep per-boot watermarks across serial reconnects within this bridge process.
+        self.last_telemetry = {}
         self.radio_pending = None
         self.radio_at = 0
-        self.request = 0
+        self.request = secrets.randbelow(UINT32_MAX)
+        self.hello_request = None
 
     def reset(self):
         """Discard connection-local framing work and availability before serial reconnect."""
@@ -351,6 +388,9 @@ class Bridge:
         self.available.clear()
         self.radio_pending = None
         self.last_command.clear()
+        self.request = self.request % UINT32_MAX + 1
+        self.hello_request = self.request
+        return {"kind": "hello", "request_id": self.hello_request}
 
     def control(self, node, kind, **fields):
         """Allocate a typed downstream control identity without changing its target event identity."""
@@ -359,7 +399,7 @@ class Bridge:
             self.seq = 0
         self.seq += 1
         return dict(
-            version=1,
+            version=2,
             type=kind,
             node_id=node,
             boot_id=self.boot,
@@ -367,9 +407,15 @@ class Bridge:
             **fields,
         )
 
-    def receive(self, envelope, now):
+    def receive(self, envelope, now, monotonic=None):
         """Validate and durably accept an envelope before making a reliable ACK eligible to send."""
+        lease_now = now if monotonic is None else monotonic
         if envelope.get("kind") != "telemetry":
+            if (
+                envelope.get("kind") == "hello"
+                and envelope.get("request_id") == self.hello_request
+            ):
+                self.hello_request = None
             if (
                 envelope.get("kind") in {"tx_result", "error"}
                 and envelope.get("request_id") == self.radio_pending
@@ -377,7 +423,20 @@ class Bridge:
                 self.radio_pending = None
             return envelope
         m = validate(envelope, self.mapping)
+        if m["type"] == "READY" and self.hello_request is not None:
+            return dict(kind="ignored", reason="awaiting_fresh_connection", message=m)
         fresh, received_at = self.store.accept(m, now)
+        identity = (m["node_id"], m["boot_id"])
+        newer = m["seq"] > self.last_telemetry.get(identity, 0)
+        # Best-effort batches and loss reports can be sent ahead of an older queued READY;
+        # only state-changing reliable events and READY itself invalidate an older lease.
+        if newer and (m["type"] in RELIABLE or m["type"] == "READY"):
+            self.last_telemetry[identity] = m["seq"]
+        if m["type"] == "COMMAND_RESULT" and m["status"] in {
+            "applied",
+            "already_applied",
+        }:
+            self.available.pop(m["node_id"], None)
         if m["type"] in RELIABLE:
             key = (m["node_id"], m["boot_id"], m["seq"])
             if len(self.acks) < MAX_PENDING_ACKS or key in self.acks:
@@ -390,20 +449,30 @@ class Bridge:
         if m["type"] != "COMMAND_RECEIPT":
             if not m["occupied"]:
                 self.available.pop(m["node_id"], None)
-            elif m["type"] == "READY":
-                remaining = m.get("listen_remaining_ms")
-                self.available[m["node_id"]] = (
-                    float("inf") if remaining is None else now + remaining / 1000
-                )
+            elif m["type"] == "READY" and newer:
+                current = self.store.db.execute(
+                    "SELECT generation FROM current_state WHERE node=?", (m["node_id"],)
+                ).fetchone()
+                known = self.store.db.execute(
+                    "SELECT generation FROM boots WHERE node=? AND boot=?", identity
+                ).fetchone()
+                if not current or (known and known[0] == current[0]):
+                    remaining = m.get("listen_remaining_ms")
+                    self.available[m["node_id"]] = (
+                        float("inf")
+                        if remaining is None
+                        else lease_now + remaining / 1000
+                    )
         return dict(
             kind="accepted", duplicate=not fresh, received_at=received_at, message=m
         )
 
-    def next(self, now):
+    def next(self, now, monotonic=None):
         """Return one ACK or live command when the radio slot is free; expired commands never dispatch."""
+        clock = now if monotonic is None else monotonic
         # Mark expired commands even while serial/radio is unavailable.
         pending = self.store.pending(now)
-        if self.radio_pending is not None and now - self.radio_at < RADIO_TIMEOUT_S:
+        if self.radio_pending is not None and clock - self.radio_at < RADIO_TIMEOUT_S:
             return None
         message = None
         if self.acks:
@@ -413,8 +482,9 @@ class Bridge:
             for command in pending:
                 node = command["node"]
                 if (
-                    self.available.get(node, 0) > now
-                    and now - self.last_command.get(command["id"], 0) >= COMMAND_RETRY_S
+                    self.available.get(node, 0) > clock
+                    and clock - self.last_command.get(command["id"], 0)
+                    >= COMMAND_RETRY_S
                 ):
                     control = self.control(
                         node,
@@ -423,13 +493,13 @@ class Bridge:
                         **json.loads(command["config"]),
                     )
                     message = dict(kind="command", message=control)
-                    self.last_command[command["id"]] = now
+                    self.last_command[command["id"]] = clock
                     break
         if message:
             self.request = self.request % UINT32_MAX + 1
             message["request_id"] = self.request
             self.radio_pending = self.request
-            self.radio_at = now
+            self.radio_at = clock
         return message
 
 
@@ -450,6 +520,12 @@ def main(argv=None):
     parser.add_argument("--heartbeat-s", type=int, default=900)
     parser.add_argument("--movement-batch-s", type=int, default=3)
     parser.add_argument("--movement-enabled", choices=["true", "false"], default="true")
+    parser.add_argument(
+        "--radio-windows-enabled", choices=["true", "false"], default="true"
+    )
+    parser.add_argument("--radio-interval-s", type=int, default=30)
+    parser.add_argument("--radio-open-s", type=int, default=5)
+    parser.add_argument("--radio-motion-tail-s", type=int, default=10)
     parser.add_argument("--expires-at", type=float, help="UTC Unix seconds")
     args = parser.parse_args(argv)
     try:
@@ -473,6 +549,10 @@ def main(argv=None):
                 heartbeat_s=args.heartbeat_s,
                 movement_batch_s=args.movement_batch_s,
                 movement_enabled=args.movement_enabled == "true",
+                radio_windows_enabled=args.radio_windows_enabled == "true",
+                radio_interval_s=args.radio_interval_s,
+                radio_open_s=args.radio_open_s,
+                radio_motion_tail_s=args.radio_motion_tail_s,
             )
             command_id = args.command_id or str(uuid.uuid4())
             store.queue(args.node, command_id, config, args.expires_at, time.time())
@@ -482,7 +562,7 @@ def main(argv=None):
             parser.error("protocol requires an explicit --port")
         bridge = Bridge(store, mapping)
         while True:
-            bridge.reset()
+            hello = bridge.reset()
             lines = Lines()
             try:
                 with serial.Serial(
@@ -492,12 +572,15 @@ def main(argv=None):
                     write_timeout=SERIAL_WRITE_TIMEOUT_S,
                     exclusive=True,
                 ) as port:
-                    write_message(port, {"kind": "hello"})
+                    write_message(port, hello)
+                    hello_at = time.monotonic()
                     while True:
                         chunk = port.read(min(8192, max(1, port.in_waiting)))
                         for line in lines.feed(chunk):
                             try:
-                                result = bridge.receive(json.loads(line), time.time())
+                                result = bridge.receive(
+                                    json.loads(line), time.time(), time.monotonic()
+                                )
                                 print(json.dumps(result, ensure_ascii=True), flush=True)
                             except (
                                 ValueError,
@@ -510,7 +593,7 @@ def main(argv=None):
                                     flush=True,
                                 )
                         try:
-                            outgoing = bridge.next(time.time())
+                            outgoing = bridge.next(time.time(), time.monotonic())
                         except sqlite3.Error as error:
                             print(
                                 json.dumps(
@@ -520,6 +603,12 @@ def main(argv=None):
                             )
                             time.sleep(RETRY_DELAY_S)
                             continue
+                        if (
+                            bridge.hello_request is not None
+                            and time.monotonic() - hello_at >= 1
+                        ):
+                            write_message(port, hello)
+                            hello_at = time.monotonic()
                         if outgoing:
                             write_message(port, outgoing)
             except (serial.SerialException, OSError) as error:

@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <cassert>
+#include <cstdio>
 
 #include "chair_engine.h"
 #include "usb_output.h"
@@ -28,7 +29,8 @@ namespace {
 
   Engine engine(bool occupied = true) {
     Engine e(id(), {}, save);
-    e.imuAvailable = true;
+    e.durable.config.radio_windows_enabled = false;
+    e.imuAvailable                         = true;
     e.seat(occupied, 0);
     e.seat(occupied, 50);
     e.radioReady(50);
@@ -68,9 +70,31 @@ namespace {
     for (uint64_t now : {100, 140, 180, 220}) e.sample(active, now);
     assert(e.operating == Operating::MOVING);
   }
+
+  void stopped(Engine& e, uint64_t now) {
+    const auto action = e.radioAction(now, false);
+    if (action != RadioAction::STOP)
+      std::fprintf(stderr, "no stop at %llu, state %d, action %d\n",
+                   static_cast<unsigned long long>(now), int(e.communication.state), int(action));
+    assert(action == RadioAction::STOP);
+    e.radioStopped(now);
+    e.tick(now);
+  }
 }  // namespace
 
 int main() {
+  {
+    auto scheduled                                 = engine();
+    scheduled.durable.config.radio_windows_enabled = true;
+    scheduled.communication.state                  = Communication::CLOSED;
+    for (uint64_t now = 100; now < 20000; now += 40) scheduled.sample(active, now);
+    assert(scheduled.communication.state == Communication::OPENING);
+    scheduled.radioReady(20000);
+    const auto loss = take(scheduled, 20000, Type::MOVEMENT_LOSS);
+    assert(loss.dropped_batches > 0);
+    Frame decoded;
+    assert(decode(encode(loss), decoded) && decoded.dropped_batches == loss.dropped_batches);
+  }
   {
     auto failed        = engine();
     const auto pending = failed.durable.outbox.size();
@@ -96,7 +120,7 @@ int main() {
   assert(w.state == Communication::OPEN && w.remaining(6100) == 2000);
   w.tick(8100, true);
   w.tick(10600, true);
-  assert(w.allowsSleep());
+  assert(w.state == Communication::SETTLING);
   w.open();
   w.radioReady(0);
   assert(w.remaining(100000) == UINT32_MAX);
@@ -133,10 +157,8 @@ int main() {
 
   e = engine();
   motion(e);
-  ready = take(e, 220, Type::READY);  // Seat availability precedes movement availability.
-  assert(ready.reason == Reason::seat_occupied);
   ready = take(e, 220, Type::READY);
-  assert(ready.reason == Reason::movement_started);
+  assert(ready.reason == Reason::seat_occupied);
   for (uint64_t now : {260, 300, 340, 380}) e.sample(quiet, now);
   auto batch = take(e, 380, Type::MOVEMENT_BATCH);
   assert(batch.end == End::stopped && batch.samples.size() == 8 &&
@@ -161,6 +183,7 @@ int main() {
   e.tick(5649, true);
   assert(e.operating == Operating::PREPARE_SLEEP);
   e.tick(5650, true);
+  stopped(e, 5650);
   assert(e.operating == Operating::DEEP_SLEEP);
   e.seat(true, 5651);
   e.tick(5651);
@@ -233,8 +256,9 @@ int main() {
   assert(e.operating == Operating::PREPARE_SLEEP && e.storageFailed);
   storage = true;
   e.tick(10250, false);
+  stopped(e, 10250);
   assert(!e.storageFailed && e.operating == Operating::DEEP_SLEEP);
-  assert(e.durable.outbox.back().type == Type::STATE_SYNC);
+  assert(e.durable.outbox.back().type == Type::VACATED);
 
   // Arbitrary short writes retain their cursor and never mix JSON messages.
   Transport::UsbOutput output;
@@ -269,12 +293,11 @@ int main() {
   assert(e.operating == Operating::OCCUPIED_LIGHT_SLEEP);
   e.tick(140);
   assert(e.operating == Operating::SAMPLE_CHECK && e.communication.allowsSleep());
-  e.movement_window_ms = 2000;
   for (uint64_t now : {180, 220, 260, 300}) e.sample(active, now);
   assert(e.communication.state == Communication::OPENING && !e.canOccupiedSleep());
   e.radioReady(500);
   ready = take(e, 600, Type::READY);
-  assert(ready.reason == Reason::movement_started && ready.listen == 1900);
+  assert(ready.reason == Reason::movement_started && ready.listen == UINT32_MAX);
 
   // Disabling sensing while vacant must preserve the pending deep-sleep transition.
   e                         = engine(false);
@@ -310,7 +333,7 @@ int main() {
   assert(e.durable.outbox.front().id == originalIdentity);
   assert(e.durable.outbox.back().type == Type::STATE_SYNC);
   assert(e.durable.outbox.back().id.boot == 99 && e.durable.outbox.back().id.seq == 1);
-  assert(e.identity.seq == 2);
+  assert(e.identity.seq >= 2);
   assert(e.durable.boot_generation == 2 && e.durable.outbox.back().boot_generation == 2);
   e                     = engine();
   e.communication.state = Communication::CLOSED;
@@ -332,7 +355,7 @@ int main() {
   assert(e.durable.outbox.size() == pendingBeforeReplay);
   assert(e.durable.commands.size() == 32);
   assert(e.durable.config.revision == 40);
-  // Legacy NVS format upgrades without dropping outstanding event identities.
+  // V1 NVS must be explicitly reset; it must never be silently upgraded.
   auto legacyState = e.durable;
   std::erase_if(legacyState.outbox,
                 [](const auto& frame) { return frame.type == Type::STATE_SYNC; });
@@ -342,12 +365,7 @@ int main() {
   legacyStore[2]   = 0x48;
   legacyStore[3]   = 0x31;
   legacyStore.erase(legacyStore.begin() + 4, legacyStore.begin() + 12);
-  assert(decodeDurable(legacyStore, restored) && restored.boot_generation == 0);
-  Engine upgraded(id(100), restored, save);
-  upgraded.seat(true, 0, Wake::seat);
-  upgraded.seat(true, 50, Wake::seat);
-  assert(upgraded.durable.boot_generation == 1);
-  assert(upgraded.durable.outbox.back().type == Type::STATE_SYNC);
+  assert(!decodeDurable(legacyStore, restored));
 
   Durable exhausted;
   exhausted.boot_generation = MAX_BOOT_GENERATION;

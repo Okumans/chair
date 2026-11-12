@@ -87,7 +87,10 @@ class TransportTests(unittest.TestCase):
             ):
                 binary = Path(directory) / "protocol-test"
                 sources = [source]
-                if source.name == "protocol_engine_test.cpp":
+                if source.name in {
+                    "protocol_engine_test.cpp",
+                    "protocol_v2_engine_test.cpp",
+                }:
                     sources.extend(ENGINE_SOURCES)
 
                 subprocess.run(
@@ -124,6 +127,28 @@ class TransportTests(unittest.TestCase):
                     "-I",
                     str(ROOT / "shared/include"),
                     str(ROOT / "tests/mac_address_test.cpp"),
+                    "-o",
+                    str(binary),
+                ],
+                check=True,
+            )
+            subprocess.run([str(binary)], check=True)
+
+    def test_reset_sensor_requires_explicit_confirmation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            binary = Path(directory) / "reset-sensor-test"
+            subprocess.run(
+                [
+                    "c++",
+                    "-std=c++23",
+                    "-Wall",
+                    "-Wextra",
+                    "-Werror",
+                    "-I",
+                    str(ROOT / "tests/fakes"),
+                    "-I",
+                    str(ROOT / "sensor/include"),
+                    str(ROOT / "tests/reset_sensor_test.cpp"),
                     "-o",
                     str(binary),
                 ],

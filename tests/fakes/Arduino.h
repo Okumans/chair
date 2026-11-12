@@ -2,6 +2,7 @@
 #include <cassert>
 #include <cstdint>
 #include <cstdio>
+#include <deque>
 #include <string>
 
 constexpr int LOW          = 0;
@@ -25,7 +26,17 @@ struct FakeSerial {
     output.append(buffer.data(), static_cast<size_t>(length));
   }
 
-  void println(const char*) {}
+  void println(const char* text) { output += std::string(text) + "\n"; }
+
+  std::deque<char> input;
+
+  int available() const { return input.size(); }
+
+  int read() {
+    const int value = input.front();
+    input.pop_front();
+    return value;
+  }
 
   std::string output;
 

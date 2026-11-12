@@ -61,9 +61,16 @@ namespace Transport {
     inline constexpr char INVALID_PAYLOAD[]                 = "invalid_payload";
     inline constexpr char RADIO_SEND_FAILED[]               = "radio_send_failed";
     inline constexpr char RADIO_SEND_TIMEOUT[]              = "radio_send_timeout";
+    inline constexpr char RADIO_SUSPEND_FAILED[]            = "radio_suspend_failed";
+    inline constexpr char RADIO_RESUME_FAILED[]             = "radio_resume_failed";
+    inline constexpr char RADIO_START_TIMEOUT[]             = "radio_start_timeout";
+    inline constexpr char RADIO_STOP_TIMEOUT[]              = "radio_stop_timeout";
+    inline constexpr char RADIO_TASK_FAILED[]               = "radio_task_failed";
     inline constexpr char INVALID_RADIO_FRAME[]             = "invalid_radio_frame";
     inline constexpr char SLEEP_SETUP_FAILED[]              = "sleep_setup_failed";
     inline constexpr char RADIO_STOP_FAILED[]               = "radio_stop_failed";
     inline constexpr char STORAGE_UNAVAILABLE_OR_CORRUPT[]  = "storage_unavailable_or_corrupt";
+    inline constexpr char STORAGE_RESET_REQUIRED[] =
+        "unsupported_or_corrupt_storage_explicit_v2_reset_required";
   }  // namespace ErrorCode
 }  // namespace Transport

@@ -16,7 +16,8 @@ namespace SmartChair {
 
   /// Glaze USB schema. Absent optional fields are omitted from the serialized message.
   struct JsonMessage {
-    uint8_t version = 1;
+    // Zero is invalid, so an omitted USB version cannot silently become current.
+    uint8_t version = 0;
     std::string type, node_id, boot_id;
     std::optional<std::string> boot_generation;
     uint32_t seq = 0;
@@ -32,7 +33,10 @@ namespace SmartChair {
     std::optional<std::string> ack_boot_id;
     std::optional<uint32_t> ack_seq, revision, heartbeat_s, movement_batch_s;
     std::optional<bool> movement_enabled;
+    std::optional<bool> radio_windows_enabled;
+    std::optional<uint32_t> radio_interval_s, radio_open_s, radio_motion_tail_s;
     std::optional<uint32_t> batch_start_ms, duration_ms;
+    std::optional<uint32_t> dropped_batches;
     std::optional<std::string> end_reason;
     std::optional<std::vector<JsonSample>> samples;
   };
@@ -94,11 +98,13 @@ namespace SmartChair {
   /// Convert a validated frame to the typed USB schema without modifying raw samples.
   inline JsonMessage toJson(const Frame& f) {
     JsonMessage j;
+    j.version = PROTOCOL_VERSION;
     j.type    = name(f.type);
     j.node_id = f.id.node.data();
     j.boot_id = hex64(f.id.boot);
     j.seq     = f.id.seq;
     if (f.type == Type::STATE_SYNC) j.boot_generation = hex64(f.boot_generation);
+    if (f.type == Type::MOVEMENT_LOSS) j.dropped_batches = f.dropped_batches;
     if (telemetry(f.type)) {
       j.uptime_ms = f.common.uptime;
       j.occupied  = f.common.occupied;
@@ -122,10 +128,14 @@ namespace SmartChair {
       j.ack_seq     = f.ack_seq;
     }
     if (f.type == Type::CONFIG_SET) {
-      j.revision         = f.config.revision;
-      j.heartbeat_s      = f.config.heartbeat_s;
-      j.movement_batch_s = f.config.movement_batch_s;
-      j.movement_enabled = f.config.movement_enabled;
+      j.revision              = f.config.revision;
+      j.heartbeat_s           = f.config.heartbeat_s;
+      j.movement_batch_s      = f.config.movement_batch_s;
+      j.movement_enabled      = f.config.movement_enabled;
+      j.radio_windows_enabled = f.config.radio_windows_enabled;
+      j.radio_interval_s      = f.config.radio_interval_s;
+      j.radio_open_s          = f.config.radio_open_s;
+      j.radio_motion_tail_s   = f.config.radio_motion_tail_s;
     }
     if (f.type == Type::MOVEMENT_BATCH) {
       j.batch_start_ms = f.start;
@@ -144,16 +154,17 @@ namespace SmartChair {
   inline bool fromJson(const JsonMessage& j, Frame& f) {
     if (j.boot_generation || j.uptime_ms || j.occupied || j.battery_mv || j.config_revision ||
         j.health_flags || j.status || j.reason || j.listen_remaining_ms || j.batch_start_ms ||
-        j.duration_ms || j.end_reason || j.samples)
+        j.duration_ms || j.dropped_batches || j.end_reason || j.samples)
       return false;
-    if (j.version != 1 || j.node_id.size() > 15 || j.node_id.empty() ||
+    if (j.version != PROTOCOL_VERSION || j.node_id.size() > 15 || j.node_id.empty() ||
         !parse64(j.boot_id, f.id.boot))
       return false;
     f.id.node.fill(0);
     std::copy(j.node_id.begin(), j.node_id.end(), f.id.node.begin());
     f.id.seq = j.seq;
     if (j.type == name(Type::EVENT_ACK)) {
-      if (j.command_id || j.revision || j.heartbeat_s || j.movement_batch_s || j.movement_enabled)
+      if (j.command_id || j.revision || j.heartbeat_s || j.movement_batch_s || j.movement_enabled ||
+          j.radio_windows_enabled || j.radio_interval_s || j.radio_open_s || j.radio_motion_tail_s)
         return false;
       if (!j.ack_boot_id || !j.ack_seq || !parse64(*j.ack_boot_id, f.ack_boot)) return false;
       f.type    = Type::EVENT_ACK;
@@ -161,10 +172,15 @@ namespace SmartChair {
     } else if (j.type == name(Type::CONFIG_SET)) {
       if (j.ack_boot_id || j.ack_seq) return false;
       if (!j.command_id || !j.revision || !j.heartbeat_s || !j.movement_batch_s ||
-          !j.movement_enabled || !parseUuid(*j.command_id, f.command))
+          !j.movement_enabled || !j.radio_windows_enabled || !j.radio_interval_s ||
+          !j.radio_open_s || !j.radio_motion_tail_s || !parseUuid(*j.command_id, f.command))
         return false;
       f.type   = Type::CONFIG_SET;
       f.config = {*j.revision, *j.heartbeat_s, *j.movement_batch_s, *j.movement_enabled};
+      f.config.radio_windows_enabled = *j.radio_windows_enabled;
+      f.config.radio_interval_s      = *j.radio_interval_s;
+      f.config.radio_open_s          = *j.radio_open_s;
+      f.config.radio_motion_tail_s   = *j.radio_motion_tail_s;
     } else
       return false;
     return valid(f);

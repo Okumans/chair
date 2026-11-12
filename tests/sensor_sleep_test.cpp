@@ -8,13 +8,16 @@ namespace Fake {
   uint64_t now = 0;
   int seat = HIGH, sleeps = 0, stops = 0, sleepResult = ESP_OK, stopResult = ESP_OK;
   bool sending = false, closeOnTimerSetup = false;
+  bool radioOn = true;
+  int suspends = 0, resumes = 0;
   uint64_t wakeMask = 0, timerUs = 0;
   esp_sleep_wakeup_cause_t cause = ESP_SLEEP_WAKEUP_UNDEFINED;
   std::vector<std::vector<uint8_t>> sent;
 
   void tick(uint64_t time, int level) {
-    now  = time;
-    seat = level;
+    now     = time;
+    seat    = level;
+    sending = false;  // Complete the previous fake MAC transmission.
     loop();
   }
 
@@ -23,6 +26,8 @@ namespace Fake {
     seat   = HIGH;
     sleeps = stops = 0;
     sending = closeOnTimerSetup = false;
+    radioOn                     = true;
+    suspends = resumes = 0;
     sleepResult = stopResult = ESP_OK;
     cause                    = reason;
     storageReady             = false;
@@ -80,11 +85,33 @@ int esp_wifi_stop() {
 }
 
 namespace Transport {
-  void begin(const char*, const char*, const char*) {}
+  void begin(const char*, const char*, const char*) { Fake::radioOn = false; }
 
   void setReceiver(Receiver) {}
 
-  bool available() { return true; }
+  bool suspend(bool) {
+    if (Fake::radioOn) {
+      ++Fake::suspends;
+      ++Fake::stops;
+      if (Fake::stopResult != ESP_OK) return false;
+    }
+    Fake::radioOn = false;
+    return true;
+  }
+
+  bool resume(bool) {
+    if (!Fake::radioOn) ++Fake::resumes;
+    Fake::radioOn = true;
+    return true;
+  }
+
+  bool available() { return Fake::radioOn; }
+
+  bool stopped() { return !Fake::radioOn; }
+
+  bool needsRestart() { return false; }
+
+  void setLifecycleBusy(bool) {}
 
   void poll() {}
 
@@ -99,6 +126,19 @@ namespace Transport {
 
 int main() {
   using namespace SmartChair;
+  Fake::boot();
+  Fake::tick(0, LOW);
+  Fake::tick(50, LOW);
+  Fake::sending = false;
+  Fake::tick(5050, LOW);
+  Fake::sending = false;
+  Fake::tick(7550, LOW);
+  assert(!Fake::radioOn && Fake::suspends == 1);
+  Fake::tick(30049, LOW);
+  assert(!Fake::radioOn);
+  Fake::tick(30050, LOW);
+  assert(Fake::radioOn && Fake::resumes == 2);
+
   Fake::boot();
   Fake::tick(0, HIGH);
   Fake::tick(49, HIGH);
@@ -154,7 +194,7 @@ int main() {
   Fake::tick(50, HIGH);
   Fake::closeOnTimerSetup = true;
   Fake::tick(2550, HIGH);
-  assert(Fake::sleeps == 0 && Fake::stops == 0);  // Final physical-pin check prevents sleep.
+  assert(Fake::sleeps == 0 && Fake::stops == 1);  // Final physical-pin check prevents sleep.
   Fake::tick(2551, LOW);
   Fake::tick(2601, LOW);
   assert(engine->occupied);
@@ -163,10 +203,12 @@ int main() {
   Fake::tick(50, HIGH);
   Fake::sleepResult = -1;
   Fake::tick(2550, HIGH);
-  assert(Fake::sleeps == 0 && Fake::stops == 0);
-  Fake::sleepResult = ESP_OK;
-  Fake::stopResult  = -1;
-  Fake::tick(2552, HIGH);
+  assert(Fake::sleeps == 0 && Fake::stops == 1);
+  Fake::boot();
+  Fake::tick(0, HIGH);
+  Fake::tick(50, HIGH);
+  Fake::stopResult = -1;
+  Fake::tick(2550, HIGH);
   assert(Fake::sleeps == 0 && Fake::stops == 1);
   Fake::boot();
   Preferences::available = false;
@@ -192,4 +234,46 @@ int main() {
   assert(!engine->sampleDue(129) && engine->sampleDue(130));
   Fake::tick(92, LOW);
   assert(!engine->sampleDue(129));  // Failed reads do not cause a retry on every loop.
+
+  Fake::boot();
+  FakeTask::defer = true;
+  Fake::tick(0, LOW);
+  Fake::tick(50, LOW);
+  assert(FakeTask::pending && !Fake::radioOn);
+  Fake::tick(90, LOW);
+  assert(!engine->sampleDue(129));  // Sensing continues while radio startup is in progress.
+  Fake::tick(2550, LOW);
+  assert(engine->communication.state == Communication::SETTLING);
+  FakeTask::run();
+  FakeTask::defer = false;
+  Fake::tick(2551, LOW);
+  assert(engine->communication.state == Communication::SETTLING);
+  Fake::tick(3550, LOW);
+  Fake::tick(3551, LOW);
+  assert(Fake::radioOn);
+
+  Fake::boot();
+  FakeTask::fail = true;
+  Fake::tick(0, LOW);
+  Fake::tick(50, LOW);
+  assert(!Fake::radioOn && engine->communication.state == Communication::CLOSED);
+  FakeTask::fail = false;
+  Fake::tick(1049, LOW);
+  assert(!Fake::radioOn);
+  Fake::tick(1050, LOW);
+  assert(Fake::radioOn && engine->communication.state == Communication::OPEN);
+
+  Fake::boot();
+  Fake::tick(0, LOW);
+  Fake::tick(50, LOW);
+  Fake::tick(5050, LOW);
+  FakeTask::defer = true;
+  Fake::tick(7550, LOW);
+  assert(FakeTask::pending && engine->communication.state == Communication::SETTLING);
+  Fake::tick(10050, LOW);
+  assert(engine->communication.state == Communication::SETTLING && Fake::radioOn);
+  FakeTask::run();
+  FakeTask::defer = false;
+  Fake::tick(10051, LOW);
+  assert(!Fake::radioOn && engine->communication.state == Communication::CLOSED);
 }

@@ -22,25 +22,38 @@ namespace Transport {
     struct Received {
       uint8_t data[MAX_PAYLOAD];
       uint16_t size;
+      uint64_t receivedAt;
     };
 
     QueueHandle_t receivedQueue = nullptr;
-    QueueHandle_t sentQueue     = nullptr;
+    // A timed-out send keeps its callback slot reserved until that callback arrives.
+    // A later lifecycle uses another slot, so late completions cannot finish a new send.
+    constexpr size_t CALLBACK_SLOTS = 8;
+    std::array<std::atomic<unsigned>, CALLBACK_SLOTS> completions{};
+    std::atomic<int> callbackSlot{-1};
     uint8_t peer[MAC_BYTES]{};
+    uint8_t expectedOwn[MAC_BYTES]{};
     char keyId[KEY_FINGERPRINT_BYTES * 2 + 1]{};
     const char* nodeRole = nullptr;
-    bool ready           = false;
-    bool sending         = false;
-    uint32_t pendingId   = 0;
-    bool usbAnnounced    = false;
+    std::atomic<bool> ready{false};
+    bool configured      = false;
+    bool wifiInitialized = false;
+    std::atomic<bool> wifiRunning{false};
+    std::atomic<bool> sending{false};
+    std::atomic<bool> restartRequired{false};
+    std::atomic<bool> lifecycleBusy{false};
+    uint32_t pendingId = 0;
+    bool usbAnnounced  = false;
     std::atomic<bool> usbBusReset{false};
     LineReader reader;
-    Receiver receiver    = nullptr;
-    uint64_t sendStarted = 0;
+    Receiver receiver     = nullptr;
+    uint64_t sendStarted  = 0;
+    uint64_t helloBarrier = 0;
+    bool hasHelloBarrier  = false;
 
     void usbResetCallback(void*, esp_event_base_t, int32_t, void*) { usbBusReset.store(true); }
 
-    void hello() {
+    void hello(std::optional<uint32_t> requestId = std::nullopt) {
       uint8_t channel = 0;
       wifi_second_chan_t secondary;
       if (esp_wifi_get_channel(&channel, &secondary) != ESP_OK) channel = 0;
@@ -52,6 +65,7 @@ namespace Transport {
       snprintf(peerMac, sizeof(peerMac), "%02x:%02x:%02x:%02x:%02x:%02x", peer[0], peer[1], peer[2],
                peer[3], peer[4], peer[5]);
       printJson(HelloMessage{
+          .request_id   = requestId,
           .role         = nodeRole,
           .mac          = WiFi.macAddress().c_str(),
           .peer_mac     = peerMac,
@@ -71,18 +85,70 @@ namespace Transport {
           static_cast<size_t>(size) > MAX_PAYLOAD)
         return;
       Received packet{};
-      packet.size = size;
+      packet.size       = size;
+      packet.receivedAt = uint64_t(esp_timer_get_time());
       memcpy(packet.data, data, size);
       // Reliable application messages retry after transient queue overflow.
       xQueueSend(receivedQueue, &packet, 0);
     }
 
+    template <size_t Slot>
     void sentCallback(const esp_now_send_info_t*, esp_now_send_status_t status) {
-      xQueueSend(sentQueue, &status, 0);
+      unsigned waiting = 1;
+      completions[Slot].compare_exchange_strong(waiting, status == ESP_NOW_SEND_SUCCESS ? 2 : 3);
     }
+
+    using SentCallback = void (*)(const esp_now_send_info_t*, esp_now_send_status_t);
+    constexpr std::array<SentCallback, CALLBACK_SLOTS> sentCallbacks{
+        sentCallback<0>, sentCallback<1>, sentCallback<2>, sentCallback<3>,
+        sentCallback<4>, sentCallback<5>, sentCallback<6>, sentCallback<7>};
 
     void error(const char* reason, uint32_t requestId = 0) {
       printJson(ErrorMessage{.request_id = requestId, .reason = reason});
+    }
+
+    bool stopWifi() {
+      const auto result = esp_wifi_stop();
+      if (result == ESP_OK || result == ESP_ERR_WIFI_NOT_INIT ||
+          result == ESP_ERR_WIFI_NOT_STARTED) {
+        wifiRunning = false;
+        return true;
+      }
+      wifiRunning = true;
+      return false;
+    }
+
+    bool initPeer() {
+      int slot = -1;
+      for (size_t i = 0; i < CALLBACK_SLOTS; ++i)
+        if (completions[i].load() == 0) {
+          slot = int(i);
+          break;
+        }
+      if (slot < 0) return false;
+      uint8_t pmk[KEY_BYTES], lmk[KEY_BYTES];
+      size_t size = 0;
+      if (!decodeHex(LinkConfig::PMK, pmk, sizeof(pmk), size) || size != KEY_BYTES ||
+          !decodeHex(LinkConfig::LMK, lmk, sizeof(lmk), size) || size != KEY_BYTES ||
+          esp_wifi_set_ps(WIFI_PS_NONE) != ESP_OK ||
+          esp_wifi_set_max_tx_power(TX_POWER_QUARTER_DBM) != ESP_OK ||
+          esp_wifi_set_channel(LinkConfig::CHANNEL, WIFI_SECOND_CHAN_NONE) != ESP_OK ||
+          esp_now_init() != ESP_OK)
+        return false;
+      esp_now_peer_info_t info{};
+      memcpy(info.peer_addr, peer, MAC_BYTES);
+      memcpy(info.lmk, lmk, KEY_BYTES);
+      info.channel = LinkConfig::CHANNEL;
+      info.ifidx   = WIFI_IF_STA;
+      info.encrypt = true;
+      if (esp_now_set_pmk(pmk) == ESP_OK && esp_now_add_peer(&info) == ESP_OK &&
+          esp_now_register_recv_cb(receiveCallback) == ESP_OK &&
+          esp_now_register_send_cb(sentCallbacks[slot]) == ESP_OK) {
+        callbackSlot = slot;
+        return true;
+      }
+      esp_now_deinit();
+      return false;
     }
 
     void handleLine(const char* line) {
@@ -99,7 +165,11 @@ namespace Transport {
         return;
       }
       if (command.kind == UsbKind::HELLO) {
-        hello();
+        if (command.request_id) {
+          helloBarrier    = uint64_t(esp_timer_get_time());
+          hasHelloBarrier = true;
+        }
+        hello(command.request_id);
         return;
       }
       uint8_t payload[MAX_PAYLOAD];
@@ -137,29 +207,13 @@ namespace Transport {
       hello();
       return;
     }
-    // Arduino's asynchronous STA_START handler reapplies this preference to the driver.
-    WiFi.setSleep(false);
-    if (!WiFi.STA.begin(false)) {
-      error(ErrorCode::WIFI_START_FAILED);
-      hello();
-      return;
-    }
-    WiFi.disconnect();
-
-    uint8_t own[MAC_BYTES];
     uint8_t pmk[KEY_BYTES];
     uint8_t lmk[KEY_BYTES];
     size_t size = 0;
-    uint8_t actualMac[MAC_BYTES]{};
-    if (esp_wifi_get_mac(WIFI_IF_STA, actualMac) != ESP_OK) {
-      error(ErrorCode::STATION_MAC_FAILED);
-      hello();
-      return;
-    }
-    if (!decodeMac(ownMac, own) || !decodeMac(peerMac, peer) || memcmp(own, actualMac, MAC_BYTES) ||
-        !memcmp(own, peer, MAC_BYTES) || !decodeHex(LinkConfig::PMK, pmk, sizeof(pmk), size) ||
-        size != KEY_BYTES || !decodeHex(LinkConfig::LMK, lmk, sizeof(lmk), size) ||
-        size != KEY_BYTES) {
+    if (!decodeMac(ownMac, expectedOwn) || !decodeMac(peerMac, peer) ||
+        !memcmp(expectedOwn, peer, MAC_BYTES) ||
+        !decodeHex(LinkConfig::PMK, pmk, sizeof(pmk), size) || size != KEY_BYTES ||
+        !decodeHex(LinkConfig::LMK, lmk, sizeof(lmk), size) || size != KEY_BYTES) {
       error(ErrorCode::CONFIGURE_STATION_MACS_AND_KEYS);
       hello();
       return;
@@ -177,43 +231,30 @@ namespace Transport {
     encodeHex(digest, KEY_FINGERPRINT_BYTES, keyId);
 
     receivedQueue = xQueueCreate(RADIO_QUEUE_DEPTH, sizeof(Received));
-    sentQueue     = xQueueCreate(TX_QUEUE_DEPTH, sizeof(esp_now_send_status_t));
-    // Bench experiment: cap transmit power at 8.5 dBm while diagnosing failed packets.
-    if (!receivedQueue || !sentQueue || esp_wifi_set_ps(WIFI_PS_NONE) != ESP_OK ||
-        esp_wifi_set_max_tx_power(TX_POWER_QUARTER_DBM) != ESP_OK ||
-        esp_wifi_set_channel(LinkConfig::CHANNEL, WIFI_SECOND_CHAN_NONE) != ESP_OK ||
-        esp_now_init() != ESP_OK || esp_now_set_pmk(pmk) != ESP_OK) {
+    if (!receivedQueue) {
       error(ErrorCode::RADIO_INIT_FAILED);
       hello();
       return;
     }
-
-    esp_now_peer_info_t info{};
-    memcpy(info.peer_addr, peer, MAC_BYTES);
-    memcpy(info.lmk, lmk, KEY_BYTES);
-    info.channel = LinkConfig::CHANNEL;
-    info.ifidx   = WIFI_IF_STA;
-    info.encrypt = true;
-    ready        = esp_now_add_peer(&info) == ESP_OK &&
-                   esp_now_register_recv_cb(receiveCallback) == ESP_OK &&
-                   esp_now_register_send_cb(sentCallback) == ESP_OK;
-    if (!ready) error(ErrorCode::RADIO_PEER_FAILED);
+    configured = true;
     hello();
   }
 
   bool send(const uint8_t* data, size_t size, uint32_t requestId) {
-    if (!ready || sending || !size || size > MAX_PAYLOAD) {
-      error(!ready    ? ErrorCode::RADIO_NOT_READY
-            : sending ? ErrorCode::RADIO_BUSY
-                      : ErrorCode::INVALID_PAYLOAD,
+    if (!ready || sending || restartRequired || lifecycleBusy || !size || size > MAX_PAYLOAD) {
+      error(!ready                                        ? ErrorCode::RADIO_NOT_READY
+            : sending || restartRequired || lifecycleBusy ? ErrorCode::RADIO_BUSY
+                                                          : ErrorCode::INVALID_PAYLOAD,
             requestId);
       return false;
     }
     sendStarted = esp_timer_get_time() / SmartChair::Timing::MICROSECONDS_PER_MILLISECOND;
     sending     = true;
     pendingId   = requestId;
+    completions[callbackSlot].store(1);
     if (esp_now_send(peer, data, size) != ESP_OK) {
       sending = false;
+      completions[callbackSlot].store(0);
       error(ErrorCode::RADIO_SEND_FAILED, requestId);
       return false;
     }
@@ -224,7 +265,68 @@ namespace Transport {
 
   bool available() { return ready; }
 
+  bool stopped() { return !wifiRunning; }
+
+  bool needsRestart() { return restartRequired; }
+
+  void setLifecycleBusy(bool value) { lifecycleBusy = value; }
+
   void setReceiver(Receiver callback) { receiver = callback; }
+
+  bool suspend(bool report) {
+    if (!configured || sending) return false;
+    if (!wifiRunning) return true;
+    if (ready && esp_now_deinit() != ESP_OK) {
+      if (report) error(ErrorCode::RADIO_SUSPEND_FAILED);
+      return false;
+    }
+    ready = false;
+    if (!stopWifi()) {
+      if (wifiInitialized) ready = initPeer();
+      if (report) error(ErrorCode::RADIO_SUSPEND_FAILED);
+      return false;
+    }
+    restartRequired = false;
+    return true;
+  }
+
+  bool resume(bool report) {
+    if (ready) return true;
+    if (!configured) return false;
+    if (!wifiInitialized) {
+      WiFi.setSleep(false);
+      // begin() may enable Wi-Fi even if its wait for the start event fails.
+      wifiRunning = true;
+      if (!WiFi.STA.begin(false)) {
+        stopWifi();
+        if (report) error(ErrorCode::WIFI_START_FAILED);
+        return false;
+      }
+      WiFi.disconnect();
+      uint8_t actualMac[MAC_BYTES]{};
+      if (esp_wifi_get_mac(WIFI_IF_STA, actualMac) != ESP_OK ||
+          memcmp(expectedOwn, actualMac, MAC_BYTES)) {
+        stopWifi();
+        if (report) error(ErrorCode::STATION_MAC_FAILED);
+        return false;
+      }
+      wifiInitialized = true;
+    } else if (!wifiRunning) {
+      wifiRunning = true;
+      if (esp_wifi_start() != ESP_OK) {
+        stopWifi();
+        if (report) error(ErrorCode::RADIO_RESUME_FAILED);
+        return false;
+      }
+    }
+    if (!initPeer()) {
+      stopWifi();
+      if (report) error(ErrorCode::RADIO_RESUME_FAILED);
+      return false;
+    }
+    ready = true;
+    return true;
+  }
 
   void poll() {
     const bool connected = static_cast<bool>(Serial);
@@ -250,22 +352,24 @@ namespace Transport {
       usbOutput.drain(Serial.availableForWrite(), [](const char* data, size_t size) {
         return Serial.write(reinterpret_cast<const uint8_t*>(data), size);
       });
+    for (size_t i = 0; i < CALLBACK_SLOTS; ++i) {
+      const auto completion = completions[i].load();
+      if (completion < 2) continue;
+      completions[i].store(0);
+      if (int(i) == callbackSlot && sending) {
+        printJson(TxResultMessage{.request_id = pendingId, .mac_delivered = completion == 2});
+        sending = false;
+      }
+    }
     if (!ready) return;
     // A missing MAC callback cannot permanently block application delivery.
     if (sending &&
         uint64_t(esp_timer_get_time() / SmartChair::Timing::MICROSECONDS_PER_MILLISECOND) -
                 sendStarted >=
             SEND_TIMEOUT_MS) {
-      sending = false;
+      sending         = false;
+      restartRequired = true;
       error(ErrorCode::RADIO_SEND_TIMEOUT, pendingId);
-    }
-    esp_now_send_status_t status;
-    if (xQueueReceive(sentQueue, &status, 0) == pdTRUE) {
-      printJson(TxResultMessage{
-          .request_id    = pendingId,
-          .mac_delivered = status == ESP_NOW_SEND_SUCCESS,
-      });
-      sending = false;
     }
 
     Received packet;
@@ -282,6 +386,9 @@ namespace Transport {
         error(ErrorCode::INVALID_RADIO_FRAME);
         continue;
       }
+      if (frame.type == SmartChair::Type::READY && hasHelloBarrier &&
+          packet.receivedAt <= helloBarrier)
+        continue;
       char peerMac[MAC_TEXT_BYTES];
       snprintf(peerMac, sizeof(peerMac), "%02x:%02x:%02x:%02x:%02x:%02x", peer[0], peer[1], peer[2],
                peer[3], peer[4], peer[5]);

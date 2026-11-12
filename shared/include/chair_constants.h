@@ -5,6 +5,11 @@
 #include <cstdint>
 
 namespace SmartChair {
+  /// Deadlines saturate instead of wrapping when supplied time approaches uint64 exhaustion.
+  constexpr uint64_t deadlineAfter(uint64_t now, uint64_t delay) {
+    return delay > UINT64_MAX - now ? UINT64_MAX : now + delay;
+  }
+
   /// Internal cooperative timing in monotonic milliseconds; not downstream configuration fields.
   namespace Timing {
     inline constexpr uint64_t MILLISECONDS_PER_SECOND      = 1000;
@@ -13,6 +18,9 @@ namespace SmartChair {
     inline constexpr uint64_t SAMPLE_INTERVAL_MS           = 40;
     inline constexpr uint64_t MOTION_DEBOUNCE_MS           = 100;
     inline constexpr uint64_t DELIVERY_ROUND_MS            = 2500;
+    inline constexpr uint64_t RADIO_START_TIMEOUT_MS       = 2500;
+    inline constexpr uint64_t RADIO_STOP_TIMEOUT_MS        = 2500;
+    inline constexpr uint64_t RADIO_RETRY_MS               = 1000;
     inline constexpr uint64_t STORAGE_RETRY_MS             = 250;
     inline constexpr std::array<uint64_t, 4> RETRY_OFFSETS_MS{0, 250, 750, 1750};
   }  // namespace Timing
@@ -30,9 +38,13 @@ namespace SmartChair {
 
   /// Complete factory settings; accepted timing values still span every nonzero uint32 value.
   namespace Defaults {
-    inline constexpr uint32_t HEARTBEAT_S      = 900;
-    inline constexpr uint32_t MOVEMENT_BATCH_S = 3;
-    inline constexpr bool MOVEMENT_ENABLED     = true;
+    inline constexpr uint32_t HEARTBEAT_S         = 900;
+    inline constexpr uint32_t MOVEMENT_BATCH_S    = 3;
+    inline constexpr bool MOVEMENT_ENABLED        = true;
+    inline constexpr bool RADIO_WINDOWS_ENABLED   = true;
+    inline constexpr uint32_t RADIO_INTERVAL_S    = 30;
+    inline constexpr uint32_t RADIO_OPEN_S        = 5;
+    inline constexpr uint32_t RADIO_MOTION_TAIL_S = 10;
   }  // namespace Defaults
 
   /// MPU6050 scaling and initial classification thresholds, kept separate from reported raw axes.

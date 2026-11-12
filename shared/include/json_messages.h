@@ -22,7 +22,8 @@ namespace Transport {
 
   /// USB connection snapshot; ready confirms local initialization, not peer delivery.
   struct HelloMessage {
-    std::string_view kind = UsbKind::HELLO;
+    std::string_view kind              = UsbKind::HELLO;
+    std::optional<uint32_t> request_id = std::nullopt;
     std::string_view role;
     std::string_view mac;
     std::string_view peer_mac;

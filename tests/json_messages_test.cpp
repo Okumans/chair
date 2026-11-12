@@ -61,9 +61,10 @@ int main() {
   assert(!Transport::decodeHex(*command.data_hex, data, sizeof(data), size));
 
   assert(!read(R"({"kind":"command","request_id":1,"message":{
-    "version":1,"type":"CONFIG_SET","node_id":"chair-01","boot_id":"0000000000000001",
+    "version":2,"type":"CONFIG_SET","node_id":"chair-01","boot_id":"0000000000000001",
     "seq":1,"command_id":"11111111-1111-4111-8111-111111111111","revision":1,
-    "heartbeat_s":4294967295,"movement_batch_s":1,"movement_enabled":false}})"));
+    "heartbeat_s":4294967295,"movement_batch_s":1,"movement_enabled":false,
+    "radio_windows_enabled":true,"radio_interval_s":30,"radio_open_s":5,"radio_motion_tail_s":10}})"));
   SmartChair::Frame control;
   assert(command.message && SmartChair::fromJson(*command.message, control));
   assert(control.config.heartbeat_s == UINT32_MAX && !control.config.movement_enabled);
@@ -71,8 +72,13 @@ int main() {
   SmartChair::Frame roundtrip;
   assert(SmartChair::decode(wire, roundtrip) && roundtrip.config == control.config);
 
+  command.message->version = 0;
+  assert(!SmartChair::fromJson(*command.message, control));
+  command.message->version = 1;
+  assert(!SmartChair::fromJson(*command.message, control));
+
   assert(!read(R"({"kind":"event_ack","request_id":2,"message":{
-    "version":1,"type":"EVENT_ACK","node_id":"chair-01","boot_id":"0000000000000001",
+    "version":2,"type":"EVENT_ACK","node_id":"chair-01","boot_id":"0000000000000001",
     "seq":2,"ack_boot_id":"0807060504030201","ack_seq":42}})"));
   assert(command.message && SmartChair::fromJson(*command.message, control));
   assert(control.ack_boot == 0x0807060504030201ULL && control.ack_seq == 42);
@@ -105,7 +111,8 @@ int main() {
       {Type::READY, {"reason", "listen_remaining_ms"}},
       {Type::EVENT_ACK, {"ack_boot_id", "ack_seq"}},
       {Type::CONFIG_SET,
-       {"command_id", "revision", "heartbeat_s", "movement_batch_s", "movement_enabled"}},
+       {"command_id", "revision", "heartbeat_s", "movement_batch_s", "movement_enabled",
+        "radio_windows_enabled", "radio_interval_s", "radio_open_s", "radio_motion_tail_s"}},
       {Type::COMMAND_RECEIPT, {"command_id", "status"}},
   };
   for (const auto& [type, extraFields] : typeFields) {

@@ -11,6 +11,8 @@
 #include <vector>
 
 constexpr int ESP_OK                         = 0;
+constexpr int ESP_ERR_WIFI_NOT_INIT          = 101;
+constexpr int ESP_ERR_WIFI_NOT_STARTED       = 102;
 constexpr int pdTRUE                         = 1;
 constexpr size_t ESP_NOW_MAX_DATA_LEN_V2     = 1470;
 constexpr int ARDUINO_HW_CDC_BUS_RESET_EVENT = 1;
@@ -106,11 +108,23 @@ inline int xQueueReceive(QueueHandle_t queue, void* value, int) {
   return pdTRUE;
 }
 
-inline int64_t esp_timer_get_time() { return 0; }
+inline int xQueueReset(QueueHandle_t queue) {
+  queue->items.clear();
+  return pdTRUE;
+}
+
+inline int64_t fakeRadioTime = 0;
+
+inline int64_t esp_timer_get_time() { return fakeRadioTime; }
 
 using wifi_second_chan_t            = int;
 using wifi_ps_type_t                = int;
 constexpr int WIFI_SECOND_CHAN_NONE = 0, WIFI_PS_NONE = 0, WIFI_IF_STA = 0;
+
+namespace FakeHardware {
+  inline int startResult = ESP_OK, stopResult = ESP_OK, peerResult = ESP_OK;
+  inline bool beginResult = true;
+}  // namespace FakeHardware
 
 inline int esp_wifi_get_channel(uint8_t* primary, int* secondary) {
   *primary   = 1;
@@ -140,9 +154,13 @@ inline int esp_wifi_set_max_tx_power(int8_t) { return ESP_OK; }
 
 inline int esp_wifi_set_channel(uint8_t, int) { return ESP_OK; }
 
+inline int esp_wifi_start() { return FakeHardware::startResult; }
+
+inline int esp_wifi_stop() { return FakeHardware::stopResult; }
+
 struct FakeWiFi {
   struct Station {
-    bool begin(bool) { return true; }
+    bool begin(bool) { return FakeHardware::beginResult; }
   } STA;
 
   void setSleep(bool) {}
@@ -170,16 +188,22 @@ struct esp_now_peer_info_t {
 
 namespace FakeRadio {
   inline void (*sentCallback)(const esp_now_send_info_t*, esp_now_send_status_t) = nullptr;
+  inline void (*recvCallback)(const esp_now_recv_info_t*, const uint8_t*, int)   = nullptr;
   inline std::vector<std::vector<uint8_t>> sent;
+  inline bool autoComplete = true;
 }  // namespace FakeRadio
 
-inline int esp_now_init() { return ESP_OK; }
+inline int esp_now_init() { return FakeHardware::peerResult; }
+
+inline int esp_now_deinit() { return ESP_OK; }
 
 inline int esp_now_set_pmk(const uint8_t*) { return ESP_OK; }
 
 inline int esp_now_add_peer(const esp_now_peer_info_t*) { return ESP_OK; }
 
-inline int esp_now_register_recv_cb(void (*)(const esp_now_recv_info_t*, const uint8_t*, int)) {
+inline int esp_now_register_recv_cb(void (*callback)(const esp_now_recv_info_t*, const uint8_t*,
+                                                     int)) {
+  FakeRadio::recvCallback = callback;
   return ESP_OK;
 }
 
@@ -191,7 +215,7 @@ inline int esp_now_register_send_cb(void (*callback)(const esp_now_send_info_t*,
 
 inline int esp_now_send(const uint8_t*, const uint8_t* data, size_t size) {
   FakeRadio::sent.emplace_back(data, data + size);
-  FakeRadio::sentCallback(nullptr, ESP_NOW_SEND_SUCCESS);
+  if (FakeRadio::autoComplete) FakeRadio::sentCallback(nullptr, ESP_NOW_SEND_SUCCESS);
   return ESP_OK;
 }
 

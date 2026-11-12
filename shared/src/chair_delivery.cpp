@@ -9,8 +9,11 @@ namespace SmartChair {
     f.type            = type;
     f.id              = identity;
     f.boot_generation = durable.boot_generation;
-    // The hardware adapter rotates boot identity before sequence exhaustion.
-    if (identity.seq != UINT32_MAX) ++identity.seq;
+    // UINT32_MAX is a sentinel: never allocate the same identity twice if storage is down.
+    if (identity.seq == UINT32_MAX)
+      f.id.seq = 0;
+    else
+      ++identity.seq;
     f.common = {
         uint32_t(now), occupied, UINT16_MAX, durable.config.revision,
         uint8_t(Health::BATTERY_UNAVAILABLE | (imuAvailable ? 0 : Health::IMU_UNAVAILABLE))};
@@ -18,7 +21,7 @@ namespace SmartChair {
   }
 
   void Engine::rotateBoot(uint64_t boot, uint64_t now) {
-    if (!boot || boot == identity.boot) return;
+    if (!boot || boot == identity.boot || statePending_) return;
 
     identity.boot = boot;
     identity.seq  = 1;
@@ -27,15 +30,25 @@ namespace SmartChair {
   }
 
   void Engine::ready(Reason reason, uint64_t now) {
-    if (best_.size() >= Limits::BEST_EFFORT_QUEUE) best_.pop_front();
-    auto f   = frame(Type::READY, now);
+    for (const auto& pending : best_)
+      if (pending.type == Type::READY && pending.reason < reason) reason = pending.reason;
+    clearReady();
+    auto f = frame(Type::READY, now);
+    if (!f.id.seq) return;
+    if (best_.size() >= Limits::BEST_EFFORT_QUEUE) discardBest();
     f.reason = reason;
     best_.push_back(std::move(f));
   }
 
+  void Engine::clearReady() {
+    std::erase_if(best_, [](const Frame& f) { return f.type == Type::READY; });
+    readyRefresh_ = 0;
+  }
+
   bool Engine::next(Frame& output, uint64_t now) {
-    if (communication.state != Communication::OPEN &&
-        communication.state != Communication::SETTLING)
+    if (!radioReady_ || shutdownStarted_ ||
+        (communication.state != Communication::OPEN &&
+         communication.state != Communication::SETTLING))
       return false;
     std::erase_if(rounds_, [&](const auto& r) {
       return std::none_of(durable.outbox.begin(), durable.outbox.end(),
@@ -61,20 +74,57 @@ namespace SmartChair {
       }
     }
     delivery = durable.outbox.empty() ? Delivery::IDLE : Delivery::WAITING;
+    if (droppedBatches_) {
+      output = frame(Type::MOVEMENT_LOSS, now);
+      if (!output.id.seq) return false;
+      output.dropped_batches = droppedBatches_;
+      droppedBatches_        = 0;
+      return true;
+    }
     if (best_.empty()) return false;
     output = std::move(best_.front());
     best_.pop_front();
-    if (output.type == Type::READY) output.listen = communication.remaining(now);
+    if (output.type == Type::READY) {
+      output.listen = communication.remaining(now);
+      if (!occupied || communication.state != Communication::OPEN || !output.listen) return false;
+      if (motionHold_ && output.listen != UINT32_MAX)
+        readyRefresh_ = deadlineAfter(now, std::max<uint32_t>(1, (output.listen - 1) / 2));
+    }
     return true;
+  }
+
+  void Engine::discardBest() {
+    if (best_.front().type == Type::MOVEMENT_BATCH && droppedBatches_ != UINT32_MAX)
+      ++droppedBatches_;
+    best_.pop_front();
   }
 
   void Engine::receive(const Frame& f, uint64_t now) {
     if (!valid(f) || f.id.node != identity.node) return;
+    if (motionHold_ && occupied && communication.state == Communication::OPEN &&
+        durable.config.radio_windows_enabled)
+      communication.closes =
+          std::max(communication.closes,
+                   deadlineAfter(now, milliseconds(durable.config.radio_motion_tail_s)));
+    if (communication.state == Communication::OPEN && !communication.unlimited &&
+        now >= communication.closes) {
+      communication.settle(communication.closes);
+      clearReady();
+    }
     if (f.type == Type::EVENT_ACK) {
       acknowledge(f);
       return;
     }
     if (f.type != Type::CONFIG_SET) return;
+    // One additional identity may be needed for a coalesced STATE_SYNC.
+    if (identity.seq >= UINT32_MAX - 1) return;
+    if (statePending_) {
+      auto receipt    = frame(Type::COMMAND_RECEIPT, now);
+      receipt.command = f.command;
+      receipt.status  = Status::busy;
+      if (receipt.id.seq && best_.size() < Limits::BEST_EFFORT_QUEUE) best_.push_back(receipt);
+      return;
+    }
     const auto* record  = findCommand(f.command);
     const Status result = commandResult(f, record);
     if (record && resultQueued(f.command, result)) return;
@@ -83,10 +133,11 @@ namespace SmartChair {
       auto receipt    = frame(Type::COMMAND_RECEIPT, now);
       receipt.command = f.command;
       receipt.status  = Status::busy;
-      if (best_.size() < Limits::BEST_EFFORT_QUEUE) best_.push_back(receipt);
+      if (receipt.id.seq && best_.size() < Limits::BEST_EFFORT_QUEUE) best_.push_back(receipt);
       return;
     }
-    Durable changed = durable;
+    Durable changed           = durable;
+    const auto previousConfig = durable.config;
     // A repeated UUID returns its historical result without rolling back newer settings.
     if (record == nullptr && result == Status::applied) changed.config = f.config;
     if (record == nullptr && !rememberCommand(changed, f, result)) return;
@@ -97,19 +148,49 @@ namespace SmartChair {
     reserve(changed, now);
     changed.outbox.push_back(event);
     if (commit(changed)) {
-      if (communication.state == Communication::CLOSED) communication.open();
+      const auto& nextConfig = durable.config;
+      const bool policyChanged =
+          previousConfig.radio_windows_enabled != nextConfig.radio_windows_enabled ||
+          previousConfig.radio_interval_s != nextConfig.radio_interval_s ||
+          previousConfig.radio_open_s != nextConfig.radio_open_s ||
+          previousConfig.radio_motion_tail_s != nextConfig.radio_motion_tail_s;
+      if (occupied && policyChanged) {
+        clearReady();
+        scheduleActive_ = true;
+        nextSchedule_   = deadlineAfter(now, milliseconds(nextConfig.radio_interval_s));
+        if (communication.state == Communication::SETTLING) {
+          // A command received at expiry can finish in settling without renewing the lease.
+          if (!nextConfig.radio_windows_enabled) reopenAfterStop_ = true;
+        } else {
+          const auto openTime     = milliseconds(nextConfig.radio_open_s);
+          communication.unlimited = !nextConfig.radio_windows_enabled;
+          if (communication.state == Communication::OPEN)
+            communication.closes = deadlineAfter(now, openTime);
+          else if (communication.state == Communication::OPENING)
+            communication.duration = openTime;
+          requestOpen(Reason::scheduled, now);
+        }
+      }
+      if (occupied && !policyChanged && communication.state == Communication::CLOSED)
+        requestOpen(Reason::scheduled, now);
 
       if (!durable.config.movement_enabled) {
-        if (moving_) flush(End::disabled, now);
+        if (moving_) {
+          flush(End::disabled, now);
+          if (occupied && communication.state == Communication::OPEN &&
+              durable.config.radio_windows_enabled)
+            communication.extend(now, milliseconds(durable.config.radio_motion_tail_s));
+        }
         batch_.clear();
         candidateMotion_ = false;
+        motionHold_      = false;
         moving_ = stopping_ = false;
         if (occupied) operating = Operating::OCCUPIED_IDLE;
       }
       auto receipt    = frame(Type::COMMAND_RECEIPT, now);
       receipt.command = f.command;
       receipt.status  = Status::received;
-      if (best_.size() < Limits::BEST_EFFORT_QUEUE) best_.push_back(receipt);
+      if (receipt.id.seq && best_.size() < Limits::BEST_EFFORT_QUEUE) best_.push_back(receipt);
     }
   }
 
@@ -117,6 +198,8 @@ namespace SmartChair {
     Durable changed = durable;
     std::erase_if(changed.outbox, [&](const auto& event) { return matchesAck(event.id, ack); });
     if (changed.outbox.size() == durable.outbox.size() || !commit(changed)) return;
+
+    if (durable.outbox.empty()) delivery = Delivery::IDLE;
 
     std::erase_if(rounds_, [&](const auto& round) { return matchesAck(round.id, ack); });
   }
@@ -191,6 +274,35 @@ namespace SmartChair {
   }
 
   void Engine::queueEvent(Type type, uint64_t now) {
+    Frame event;
+    if (identity.seq == UINT32_MAX) {
+      if (!statePending_ || pendingStorage_.empty()) {
+        statePending_ = storageFailed = true;
+        return;
+      }
+      // Reuse only an identity that was never persisted or transmitted.
+      const auto pendingId = pendingStorage_.back().id;
+      pendingStorage_.clear();
+      event    = frame(Type::STATE_SYNC, now);
+      event.id = pendingId;
+    } else {
+      event = frame(type, now);
+    }
+    if (pendingStorage_.size() >= Limits::OUTBOX_CAPACITY) {
+      // As with the durable outbox, bounded overflow preserves current state, not history.
+      pendingStorage_.clear();
+      event.type = Type::STATE_SYNC;
+    }
+    pendingStorage_.push_back(std::move(event));
+    statePending_ = true;
+    persistPending(now);
+  }
+
+  void Engine::persistPending(uint64_t now) {
+    if (pendingStorage_.empty()) {
+      statePending_ = storageFailed = true;
+      return;
+    }
     Durable changed = durable;
     if (newBoot_) {
       if (changed.boot_generation == MAX_BOOT_GENERATION) {
@@ -200,18 +312,30 @@ namespace SmartChair {
       ++changed.boot_generation;
     }
 
-    reserve(changed, now);
-    if (changed.outbox.size() >= Limits::OUTBOX_CAPACITY) {
-      // Protected results must survive; replace only the reserved state snapshot.
-      std::erase_if(changed.outbox, [](const auto& f) { return f.type == Type::STATE_SYNC; });
-      type = Type::STATE_SYNC;
+    for (auto event : pendingStorage_) {
+      if (identity.seq == UINT32_MAX && changed.outbox.size() >= Limits::MAX_COMMAND_RESULTS) {
+        std::erase_if(changed.outbox, [](const auto& f) { return f.type != Type::COMMAND_RESULT; });
+        event                 = pendingStorage_.back();
+        event.type            = Type::STATE_SYNC;
+        event.boot_generation = changed.boot_generation;
+        changed.outbox.push_back(std::move(event));
+        break;
+      }
+      reserve(changed, now);
+      if (changed.outbox.size() >= Limits::OUTBOX_CAPACITY) {
+        // Protected results must survive; replace only the reserved state snapshot.
+        std::erase_if(changed.outbox, [](const auto& f) { return f.type == Type::STATE_SYNC; });
+        event.type = Type::STATE_SYNC;
+      }
+      event.boot_generation = changed.boot_generation;
+      changed.outbox.push_back(std::move(event));
     }
-    auto event            = frame(type, now);
-    event.boot_generation = changed.boot_generation;
-    changed.outbox.push_back(std::move(event));
     statePending_ = !commit(changed);
-    if (!statePending_) newBoot_ = false;
+    if (!statePending_) {
+      newBoot_ = false;
+      pendingStorage_.clear();
+    }
     storageFailed = statePending_;
-    if (!statePending_ && communication.state == Communication::CLOSED) communication.open();
+    if (!statePending_ && occupied) requestOpen(Reason::scheduled, now);
   }
 }  // namespace SmartChair

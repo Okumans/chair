@@ -16,7 +16,8 @@ while vacant it can deep sleep and wake from the seat switch or heartbeat timer.
 1. Follow [Setup and dependencies](docs/SETUP.md) for Arch Linux, Debian or Ubuntu.
 2. [Read both boards' station MACs](docs/TRANSPORT.md#read-a-boards-mac-for-esp-now)
    and configure the shared, ignored pairing file.
-3. Build and upload the normal sensor and gateway firmware using explicit serial ports.
+3. For a v1-to-v2 upgrade, follow the [explicit test reset procedure](docs/TRANSPORT.md#explicit-v2-test-reset).
+   Build and upload the normal sensor and gateway firmware using explicit serial ports.
 4. Run the bridge with the gateway port, node mapping, and SQLite path:
 
    ```sh
@@ -64,6 +65,7 @@ are separate; see [development checks](docs/SETUP.md#development-checks).
 - The confirmed radio-window design covers wire v2, state-machine integration and implementation
   acceptance. [Radio windows specification](docs/RADIO_WINDOWS_SPEC.md)
 
-Battery measurement, MQTT, systemd deployment, actual occupied light sleep and scheduled
-radio windows remain deferred. Native tests do not establish physical radio reliability,
+Battery measurement, MQTT, systemd deployment and actual occupied light sleep remain
+deferred. The occupied radio uses a test schedule; physical validation is still required.
+Native tests do not establish physical radio reliability,
 sample timing, power use or correct wiring; those require board testing.

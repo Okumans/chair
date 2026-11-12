@@ -23,6 +23,7 @@ namespace SmartChair {
 
   /// Observable outbox status; MAC delivery never substitutes for a durable Pi ACK.
   enum class Delivery { IDLE, RETRYING, WAITING };
+  enum class RadioAction { NONE, START, STOP };
 
   /// Cooperative chair logic with hardware-independent time and samples.
   /// The save adapter must durably commit the entire snapshot before returning true.
@@ -37,8 +38,6 @@ namespace SmartChair {
     Delivery delivery = Delivery::IDLE;
     bool occupied = false, imuAvailable = false, storageFailed = false;
     uint32_t occupied_sleep_ms = 0;
-    // Internal future-window policy only; no hardware schedule or CONFIG_SET field is enabled.
-    uint64_t movement_window_ms = 0;
     Header identity;
 
     /// Restore durable work under the current wake identity and request startup communication.
@@ -55,6 +54,14 @@ namespace SmartChair {
 
     /// Complete radio opening and announce occupied availability with a fresh READY.
     void radioReady(uint64_t now);
+    /// Report lifecycle outcomes after executing a requested hardware action.
+    void radioStopped(uint64_t now);
+    void radioStartFailed(uint64_t now, bool stopped);
+    void radioStopFailed(uint64_t now, bool stillReady);
+    /// End the current availability after a transport fault and reopen after cleanup.
+    void radioFault(uint64_t now);
+    /// Request one lifecycle operation; callers report its outcome before requesting another.
+    RadioAction radioAction(uint64_t now, bool radioBusy);
 
     /// Queue fresh RAM-only availability. Remaining listen time is filled when next() transmits it.
     void ready(Reason reason, uint64_t now);
@@ -133,6 +140,12 @@ namespace SmartChair {
     std::vector<Round> rounds_;
     std::deque<Frame> best_;
     std::vector<Sample> batch_;
+    std::deque<Frame> pendingStorage_;
+    uint32_t droppedBatches_ = 0;
+    bool radioReady_ = false, stoppingRadio_ = false, shutdownStarted_ = false,
+         reopenAfterStop_ = false;
+    bool motionHold_ = false, scheduleActive_ = false, openingWanted_ = false;
+    uint64_t nextSchedule_ = 0, lifecycleRetry_ = 0, readyRefresh_ = 0;
     Save save_;
     bool statePending_    = false;
     bool newBoot_         = false;
@@ -148,7 +161,14 @@ namespace SmartChair {
 
     void queueEvent(Type type, uint64_t now);
 
+    void persistPending(uint64_t now);
+
     void append(Sample s, uint64_t now);
+
+    void discardBest();
+
+    void requestOpen(Reason reason, uint64_t now);
+    void clearReady();
 
     void flush(End end, uint64_t now);
   };

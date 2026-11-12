@@ -14,7 +14,7 @@ namespace SmartChair {
   void Window::radioReady(uint64_t now) {
     if (state == Communication::OPENING) {
       state  = Communication::OPEN;
-      closes = now + duration;
+      closes = deadlineAfter(now, duration);
     }
   }
 
@@ -27,19 +27,19 @@ namespace SmartChair {
     } else {
       unlimited = unlimited || length == 0;
       state     = Communication::OPEN;
-      closes    = std::max(closes, now + length);
+      closes    = std::max(closes, deadlineAfter(now, length));
     }
   }
 
   void Window::settle(uint64_t now) {
+    if (state == Communication::SETTLING) return;
     state    = Communication::SETTLING;
-    deadline = now + Timing::DELIVERY_ROUND_MS;
+    deadline = deadlineAfter(now, Timing::DELIVERY_ROUND_MS);
   }
 
   void Window::tick(uint64_t now, bool pending) {
-    if (state == Communication::OPEN && !unlimited && now >= closes) settle(now);
-    if (state == Communication::SETTLING && (!pending || now >= deadline))
-      state = Communication::CLOSED;
+    if (state == Communication::OPEN && !unlimited && now >= closes) settle(closes);
+    (void)pending;
   }
 
   uint32_t Window::remaining(uint64_t now) const {

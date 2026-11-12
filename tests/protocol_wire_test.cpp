@@ -27,6 +27,22 @@ namespace {
 }  // namespace
 
 int main() {
+  {
+    Frame command      = config(7);
+    const auto encoded = encode(command);
+    assert(encoded.size() == HEADER_SIZE + 42 && encoded[0] == 2 && encoded[2] == 42);
+    assert(encoded[HEADER_SIZE + 29] == 1 && encoded[HEADER_SIZE + 30] == 30 &&
+           encoded[HEADER_SIZE + 34] == 5 && encoded[HEADER_SIZE + 38] == 10);
+    Frame decoded;
+    assert(decode(encoded, decoded) && decoded.config == command.config);
+    auto malformed              = encoded;
+    malformed[HEADER_SIZE + 29] = 2;
+    assert(!decode(malformed, decoded));
+    command.config.radio_open_s = 31;
+    assert(!valid(command));
+    command.config.radio_open_s = 30;
+    assert(valid(command));
+  }
   assert(milliseconds(UINT32_MAX) == 4294967295000ULL);
   for (auto n : {0U, 1U, UINT32_MAX}) {
     auto f               = config(1);
@@ -39,9 +55,10 @@ int main() {
     }
   }
   Frame f;
-  f.id       = id();
-  auto bytes = encode(f);
-  assert(bytes.size() == 52 && bytes[0] == 1 && bytes[1] == 4 && bytes[2] == 20);
+  f.id              = id();
+  f.boot_generation = 1;
+  auto bytes        = encode(f);
+  assert(bytes.size() == 52 && bytes[0] == 2 && bytes[1] == 4 && bytes[2] == 20);
   for (unsigned i = 0; i < 8; ++i) assert(bytes[20 + i] == i + 1);
   Frame decoded;
   assert(decode(bytes, decoded) && decoded.id == f.id);
@@ -49,14 +66,16 @@ int main() {
   auto legacy = bytes;
   legacy.resize(44);
   legacy[2] = 12;
-  assert(decode(legacy, decoded) && decoded.boot_generation == 0);
+  assert(!decode(legacy, decoded));
   f.boot_generation = MAX_BOOT_GENERATION;
   assert(decode(encode(f), decoded) && decoded.boot_generation == MAX_BOOT_GENERATION);
   f.boot_generation = MAX_BOOT_GENERATION + 1;
   assert(!valid(f));
   f.boot_generation = 0;
+  assert(!valid(f));
+  f.boot_generation = 1;
   auto bad          = bytes;
-  bad[0]            = 2;
+  bad[0]            = 1;
   assert(!decode(bad, decoded));
   bad    = bytes;
   bad[1] = 100;

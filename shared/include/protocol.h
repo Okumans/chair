@@ -10,7 +10,7 @@
 #include "chair_constants.h"
 
 namespace SmartChair {
-  constexpr uint8_t PROTOCOL_VERSION = 1;
+  constexpr uint8_t PROTOCOL_VERSION = 2;
   // Keep the durable generation within SQLite's exact signed INTEGER range.
   constexpr uint64_t MAX_BOOT_GENERATION = INT64_MAX;
   constexpr size_t HEADER_SIZE = 32, MAX_FRAME = 1470, MAX_SAMPLES = 75;
@@ -26,7 +26,8 @@ namespace SmartChair {
     READY,
     EVENT_ACK,
     CONFIG_SET,
-    COMMAND_RECEIPT
+    COMMAND_RECEIPT,
+    MOVEMENT_LOSS
   };
   /// Command outcomes; received confirms receipt only and busy permits a later retry.
   enum class Status : uint8_t {
@@ -48,8 +49,12 @@ namespace SmartChair {
   /// Complete persisted settings. Seconds accept the full nonzero uint32 range.
   struct Configuration {
     uint32_t revision = 0, heartbeat_s = Defaults::HEARTBEAT_S,
-             movement_batch_s = Defaults::MOVEMENT_BATCH_S;
-    bool movement_enabled     = Defaults::MOVEMENT_ENABLED;
+             movement_batch_s    = Defaults::MOVEMENT_BATCH_S;
+    bool movement_enabled        = Defaults::MOVEMENT_ENABLED;
+    bool radio_windows_enabled   = Defaults::RADIO_WINDOWS_ENABLED;
+    uint32_t radio_interval_s    = Defaults::RADIO_INTERVAL_S;
+    uint32_t radio_open_s        = Defaults::RADIO_OPEN_S;
+    uint32_t radio_motion_tail_s = Defaults::RADIO_MOTION_TAIL_S;
     /// Compare revision and all settings for idempotent configuration application.
     bool operator==(const Configuration&) const = default;
   };
@@ -60,7 +65,10 @@ namespace SmartChair {
   }
 
   /// Reject zero timing intervals; recommendations are not upper validation bounds.
-  inline bool valid(const Configuration& c) { return c.heartbeat_s && c.movement_batch_s; }
+  inline bool valid(const Configuration& c) {
+    return c.heartbeat_s && c.movement_batch_s && c.radio_interval_s && c.radio_open_s &&
+           c.radio_open_s <= c.radio_interval_s && c.radio_motion_tail_s;
+  }
 
   /// Event identity. Node bytes are zero padded; boot and sequence must be nonzero.
   struct Header {
@@ -102,7 +110,8 @@ namespace SmartChair {
     uint64_t ack_boot        = 0;
     uint32_t ack_seq         = 0;
     uint32_t start = 0, duration = 0;
-    End end = End::interval;
+    uint32_t dropped_batches = 0;
+    End end                  = End::interval;
     std::vector<Sample> samples;
   };
 
@@ -110,7 +119,9 @@ namespace SmartChair {
   inline bool reliable(Type t) { return t >= Type::OCCUPIED && t <= Type::COMMAND_RESULT; }
 
   /// Return whether this type carries the 12-byte common physical-state snapshot.
-  inline bool telemetry(Type t) { return t >= Type::OCCUPIED && t <= Type::READY; }
+  inline bool telemetry(Type t) {
+    return (t >= Type::OCCUPIED && t <= Type::READY) || t == Type::MOVEMENT_LOSS;
+  }
 
   /// Reject the all-zero UUID reserved for an absent command identity.
   inline bool nonzero(const Uuid& uuid) {
@@ -139,12 +150,13 @@ namespace SmartChair {
   inline bool valid(const Frame& f) {
     // Every frame needs a provisioned node name, nonzero identity and a supported message type.
     if (!validNode(f.id.node) || !f.id.boot || !f.id.seq || f.type < Type::OCCUPIED ||
-        f.type > Type::COMMAND_RECEIPT)
+        f.type > Type::MOVEMENT_LOSS)
       return false;
 
-    // Zero denotes an older snapshot without ordering metadata; only positive generations
-    // establish current state on the Pi. New firmware never creates an untracked boot.
-    if (f.type == Type::STATE_SYNC && f.boot_generation > MAX_BOOT_GENERATION) return false;
+    // V2 snapshots must establish an explicit, durable boot ordering generation.
+    if (f.type == Type::STATE_SYNC &&
+        (!f.boot_generation || f.boot_generation > MAX_BOOT_GENERATION))
+      return false;
 
     // Contact transitions must agree with the physical occupancy carried in the same message.
     if ((f.type == Type::OCCUPIED && !f.common.occupied) ||
@@ -156,6 +168,8 @@ namespace SmartChair {
 
     // An ACK must identify the exact original event; neither target field may be zero.
     if (f.type == Type::EVENT_ACK) return f.ack_boot && f.ack_seq;
+
+    if (f.type == Type::MOVEMENT_LOSS) return f.dropped_batches != 0;
 
     // Configuration requires a command UUID and valid values for the complete configuration.
     if (f.type == Type::CONFIG_SET) return nonzero(f.command) && valid(f.config);
@@ -190,9 +204,9 @@ namespace SmartChair {
     return true;
   }
 
-  inline constexpr std::array<std::string_view, 11> TYPE_NAMES{
-      "OCCUPIED",       "VACATED", "HEARTBEAT", "STATE_SYNC", "BATTERY_LOW",    "COMMAND_RESULT",
-      "MOVEMENT_BATCH", "READY",   "EVENT_ACK", "CONFIG_SET", "COMMAND_RECEIPT"};
+  inline constexpr std::array<std::string_view, 12> TYPE_NAMES{
+      "OCCUPIED",       "VACATED", "HEARTBEAT", "STATE_SYNC", "BATTERY_LOW",     "COMMAND_RESULT",
+      "MOVEMENT_BATCH", "READY",   "EVENT_ACK", "CONFIG_SET", "COMMAND_RECEIPT", "MOVEMENT_LOSS"};
 
   /// Return the stable JSON type name. Precondition: type has passed valid().
   constexpr std::string_view name(Type type) { return TYPE_NAMES[uint8_t(type) - 1]; }
@@ -244,6 +258,7 @@ namespace SmartChair {
       w.put(f.common.health, 1);
     }
     if (f.type == Type::STATE_SYNC) w.put(f.boot_generation, 8);
+    if (f.type == Type::MOVEMENT_LOSS) w.put(f.dropped_batches, 4);
     if (f.type == Type::CONFIG_SET || f.type == Type::COMMAND_RESULT ||
         f.type == Type::COMMAND_RECEIPT)
       for (auto b : f.command) w.put(b, 1);
@@ -254,6 +269,10 @@ namespace SmartChair {
       w.put(f.config.heartbeat_s, 4);
       w.put(f.config.movement_batch_s, 4);
       w.put(f.config.movement_enabled, 1);
+      w.put(f.config.radio_windows_enabled, 1);
+      w.put(f.config.radio_interval_s, 4);
+      w.put(f.config.radio_open_s, 4);
+      w.put(f.config.radio_motion_tail_s, 4);
     } else if (f.type == Type::EVENT_ACK) {
       w.put(f.ack_boot, 8);
       w.put(f.ack_seq, 4);
@@ -299,9 +318,8 @@ namespace SmartChair {
       f.common.revision = r.get(4);
       f.common.health   = r.get(1);
     }
-    // Earlier development snapshots carried only common telemetry; preserve them as facts.
-    if (f.type == Type::STATE_SYNC && bytes.size() != HEADER_SIZE + 12)
-      f.boot_generation = r.get(8);
+    if (f.type == Type::STATE_SYNC) f.boot_generation = r.get(8);
+    if (f.type == Type::MOVEMENT_LOSS) f.dropped_batches = r.get(4);
     if (f.type == Type::CONFIG_SET || f.type == Type::COMMAND_RESULT ||
         f.type == Type::COMMAND_RECEIPT)
       for (auto& b : f.command) b = r.get(1);
@@ -314,6 +332,12 @@ namespace SmartChair {
       auto enabled              = r.get(1);
       if (enabled > 1) return false;
       f.config.movement_enabled = enabled;
+      auto windows              = r.get(1);
+      if (windows > 1) return false;
+      f.config.radio_windows_enabled = windows;
+      f.config.radio_interval_s      = r.get(4);
+      f.config.radio_open_s          = r.get(4);
+      f.config.radio_motion_tail_s   = r.get(4);
     } else if (f.type == Type::EVENT_ACK) {
       f.ack_boot = r.get(8);
       f.ack_seq  = r.get(4);

@@ -11,6 +11,14 @@ struct Preferences {
 
   bool isKey(const char*) { return !bytes.empty(); }
 
+  bool remove(const char*) {
+    if (!available) return false;
+    bytes.clear();
+    return true;
+  }
+
+  void end() {}
+
   size_t getBytesLength(const char*) { return bytes.size(); }
 
   size_t getBytes(const char*, void* out, size_t size) {

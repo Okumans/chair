@@ -4,7 +4,7 @@
 ENV ?= sensor
 PORT ?=
 
-CPP_FILES := $(shell find sensor gateway shared tests tools/mac_address -name '*.cpp' -o -name '*.h' 2>/dev/null)
+CPP_FILES := $(shell find sensor gateway shared tests tools -name '*.cpp' -o -name '*.h' 2>/dev/null)
 
 .PHONY: help build upload monitor flash mac lsp compiledb format format-check lint test check setup-hooks clean
 
@@ -65,6 +65,8 @@ compiledb:
 	subprocess.run(['pio', 'run', '-e', 'mac-sensor', '-t', 'compiledb'], check=True, stdout=subprocess.DEVNULL); \
 	cmds.extend(json.load(open('compile_commands.json'))); \
 	subprocess.run(['pio', 'run', '-e', 'mac-gateway', '-t', 'compiledb'], check=True, stdout=subprocess.DEVNULL); \
+	cmds.extend(json.load(open('compile_commands.json'))); \
+	subprocess.run(['pio', 'run', '-e', 'reset-sensor', '-t', 'compiledb'], check=True, stdout=subprocess.DEVNULL); \
 	cmds.extend(json.load(open('compile_commands.json'))); \
 	cmds.extend({'directory': str(pathlib.Path.cwd()), 'file': str(p.resolve()), 'arguments': ['c++', '-std=c++23', *(['-Itests/radio_fakes'] if p.name == 'radio_usb_test.cpp' else []), '-Itests/fakes', '-Isensor/include', '-Ishared/include', '-Ithird_party/glaze/include', '-c', str(p)]} for p in pathlib.Path('tests').glob('*.cpp')); \
 	seen = set(); unique = []; \

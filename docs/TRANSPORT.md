@@ -147,20 +147,25 @@ error without an ACK. JSON output is structured for a future MQTT adapter.
 Bridge output includes `accepted` (with duplicate flag and reception time), `hello`,
 `tx_result`, `error` and `disconnected`. `mac_delivered` reports MAC delivery only.
 Reliable events remain in SQLite; movement and READY are streamed. READY is never stored
-as an event or retained as availability across reconnect. The current-state row tracks the chair's durable boot-generation counter and increasing
+as an event or retained as availability across reconnect. The bridge waits for a matching
+request-ID hello response after reconnect, and the gateway discards earlier queued READY
+packets. Lease timing uses the Pi's monotonic clock. The current-state row tracks the chair's durable boot-generation counter and increasing
 sequence numbers. Only STATE_SYNC establishes a previously unseen boot. Even an unseen
 older boot cannot roll current state back. Generations are 16-character hex strings in
 JSON and exact signed SQLite integers internally. A boot cannot change its generation
-or reuse another boot's generation. Legacy snapshots without the counter are stored as
-facts and ACKed, but cannot establish current state. Upgrading old Pi databases clears
-only derived ordering rows; durable events and queued commands remain intact.
+or reuse another boot's generation. The v2 bridge rejects older databases without modifying
+their contents; choose a new database or explicitly reset disposable test data.
 
 ## Submit and inspect configuration
 
-Configuration is a complete transaction. Both intervals accept 1..4294967295 seconds;
+Configuration is a complete transaction. Heartbeat and movement intervals accept 1..4294967295 seconds;
 zero is invalid. Values do not have to fit within the heartbeat interval. Recommended
 movement interval: 1–3 s; a 75-sample buffer flushes earlier regardless of the setting.
 Use a larger revision for changed settings. Revision zero contains the firmware defaults.
+
+Radio fields are `--radio-windows-enabled true|false`, `--radio-interval-s`,
+`--radio-open-s`, and `--radio-motion-tail-s`. They default to `true`, 30, 5, and 10.
+All values are validated even when windows are disabled; open time cannot exceed interval.
 
 The configuration command runs independently of the serial-owning bridge and adds a
 row to the same SQLite database. `--expires-at` is UTC Unix time in seconds. This example
@@ -212,19 +217,21 @@ flushes early. No idle-only batches are emitted.
 Reliable events and exact ACK removal use an atomic versioned NVS blob. Cold resets
 create a new boot ID and atomically persist a larger generation with STATE_SYNC while
 retaining old pending identities. Deep sleep retains the active boot and next sequence
-in RTC memory, and keeps the same generation. The NVS decoder upgrades the earlier
-counter-free blob format without dropping pending events. Never erase NVS and reuse the
+in RTC memory, and keeps the same generation. V2 rejects earlier storage formats. Never erase NVS and reuse the
 same node identity without explicit reprovisioning or reconciliation on the Pi; reused
 generations are rejected. Counter exhaustion fails closed without wrapping. Ordinary overflow coalesces
 history into current STATE_SYNC while retaining command results. A storage failure
 keeps new transitions unsent and the chair awake until a current snapshot persists.
 Corrupt stored data is reported and never silently overwritten with empty defaults.
 
-Awake occupied operation keeps communication open and bypasses occupied sleep. Vacant
+Occupied sensing stays awake while communication follows the configured policy. Vacant
 sleep preparation allows up to 2500 ms for pending work, cancels on reseating, and
 rechecks the physical pin before radio stop. Wake is GPIO5 low or the configured
-heartbeat timer. Communication windows and occupied sleep are represented/tested in the
-engine, but no hardware schedule or downstream window configuration is enabled.
+heartbeat timer. While occupied, the sensor defaults to a five-second radio window every
+30 seconds and holds the radio through movement plus a ten-second tail. The gateway listens
+continuously. The sensor keeps sampling while its radio is off; occupied light sleep remains
+deferred. See [the radio-window specification](RADIO_WINDOWS_SPEC.md) for the v2 configuration,
+upgrade procedure and failure semantics. Upgrade the bridge and both firmware images together.
 
 ## USB details and diagnostics
 
@@ -270,6 +277,22 @@ Hello readiness is local initialization evidence. The existing 8.5 dBm transmit 
 retained from bench bring-up. Match channel, peer MACs and key fingerprints on both
 boards when diagnosing radio issues. This code does not claim physical delivery.
 
+## Explicit v2 test reset
+
+This procedure discards the sensor's persisted configuration, event outbox and command
+records. Stop the bridge and serial monitors first; keep the pairing header and keys.
+Choose a new empty SQLite database path, or remove the disposable database and its WAL/SHM
+files while all database connections are closed. Do not reuse the old Pi history with a
+reset sensor generation.
+
+Flash `pio run -e reset-sensor -t upload --upload-port YOUR_SENSOR_PORT`, then open a
+115200-baud monitor on that same port. Send the exact line `RESET-CHAIR-V2` and wait for
+the success message. Disconnect power to clear the retained identity, reconnect and flash
+the normal `sensor` firmware. Upgrade the gateway and bridge to v2 before starting them.
+The reset utility only removes the chair application state key; it never runs at ordinary
+startup. Verify a new STATE_SYNC, occupied READY, scheduled closure/reopening and a full
+configuration round trip.
+
 ## Acceptance boundary
 
 Native tests cover wire validation and sizes, motion timing and debounce, future radio
@@ -280,4 +303,13 @@ Both firmware targets must build and clangd must report zero source errors.
 Physical acceptance remains required for encrypted 1108-byte delivery, actual sample
 timing, sensor calibration, configuration round trips, reset durability, seat/timer wake,
 and power/radio measurements. MQTT, systemd, battery hardware, actual occupied light
-sleep and hardware communication schedules are deferred.
+sleep are deferred. Validate the test schedule, radio restart, discovery after resets and
+missed windows, movement loss reporting, and power consumption on the actual boards.
+
+There are two known recovery limits. READY leases are measured by the bridge from USB
+receipt, so a READY delayed in gateway or operating-system buffers can appear valid after
+the sensor's window has expired. Reconnection has a fresh-hello barrier, but it does not
+bound delays on an otherwise open connection. Also, a Wi-Fi SDK lifecycle call that never
+returns cannot be cancelled safely by the worker: sensing continues and the timeout is
+reported, but radio cleanup and retries wait for that call. Eight missing send callbacks
+can exhaust the quarantined callback slots and prevent further radio starts until reboot.

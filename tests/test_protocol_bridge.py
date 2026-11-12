@@ -18,12 +18,21 @@ import transport  # noqa: E402
 
 MAPPING = {"chair-01": "02:00:00:00:00:01"}
 COMMAND_ID = "11111111-1111-4111-8111-111111111111"
-CONFIG = dict(revision=1, heartbeat_s=900, movement_batch_s=3, movement_enabled=True)
+CONFIG = dict(
+    revision=1,
+    heartbeat_s=900,
+    movement_batch_s=3,
+    movement_enabled=True,
+    radio_windows_enabled=True,
+    radio_interval_s=30,
+    radio_open_s=5,
+    radio_motion_tail_s=10,
+)
 
 
 def event(kind="STATE_SYNC", boot="0000000000000001", seq=1, **fields):
     message = dict(
-        version=1,
+        version=2,
         type=kind,
         node_id="chair-01",
         boot_id=boot,
@@ -175,38 +184,23 @@ class ProtocolTests(unittest.TestCase):
                 envelope(dict(newest, seq=2, boot_generation="0000000000000011")), 5
             )
 
-    def test_legacy_snapshots_do_not_establish_current_state(self):
-        legacy = event(boot_generation=None)
-        self.bridge.receive(envelope(legacy), 1)
-        self.assertEqual(
-            self.store.db.execute("SELECT COUNT(*) FROM current_state").fetchone()[0], 0
-        )
-        self.assertEqual(self.bridge.next(1)["kind"], "event_ack")
-        replay = dict(legacy, boot_generation="0000000000000000")
-        self.assertTrue(self.bridge.receive(envelope(replay), 2)["duplicate"])
-        upgraded = event(seq=2)
-        self.bridge.receive(envelope(upgraded), 3)
-        self.assertEqual(
-            self.store.db.execute("SELECT COUNT(*) FROM current_state").fetchone()[0], 1
-        )
+    def test_v2_snapshot_requires_a_nonzero_generation(self):
+        for generation in (None, "0000000000000000"):
+            with self.assertRaises(ValueError):
+                self.bridge.receive(envelope(event(boot_generation=generation)), 1)
+        self.assertFalse(self.bridge.acks)
 
-    def test_ordering_migration_preserves_durable_facts(self):
+    def test_old_schema_is_rejected_without_destroying_facts(self):
         self.store.accept(event(), 1)
         self.store.queue("chair-01", COMMAND_ID, CONFIG, 200, 1)
         self.store.db.execute("PRAGMA user_version=0")
-        self.store.db.close()
-        self.store = protocol.Store(str(Path(self.directory.name) / "bridge.sqlite"))
+        with self.assertRaisesRegex(ValueError, "reset"):
+            protocol.Store(str(Path(self.directory.name) / "bridge.sqlite"))
         self.assertEqual(
             self.store.db.execute("SELECT COUNT(*) FROM events").fetchone()[0], 1
         )
         self.assertEqual(len(self.store.listing(2)), 1)
-        self.assertEqual(
-            self.store.db.execute("SELECT COUNT(*) FROM current_state").fetchone()[0], 0
-        )
-        self.store.accept(event(seq=2), 2)
-        self.assertEqual(
-            self.store.db.execute("SELECT generation FROM boots").fetchone()[0], 1
-        )
+        self.assertEqual(self.store.db.execute("PRAGMA user_version").fetchone()[0], 0)
 
     def test_commands_uuid_conflict_expiry_and_late_result(self):
         for value in [0, 1, protocol.UINT32_MAX]:
@@ -249,8 +243,102 @@ class ProtocolTests(unittest.TestCase):
         self.assertFalse(self.bridge.available)
         self.assertIsNone(self.bridge.next(202))
 
+    def test_policy_result_requires_fresh_ready(self):
+        self.store.queue("chair-01", COMMAND_ID, CONFIG, 500, 100)
+        self.bridge.receive(
+            envelope(event("READY", reason="scheduled", listen_remaining_ms=10000)), 101
+        )
+        self.assertEqual(self.bridge.next(101)["kind"], "command")
+        self.bridge.receive(
+            envelope(
+                event("COMMAND_RESULT", seq=2, command_id=COMMAND_ID, status="applied")
+            ),
+            102,
+        )
+        self.assertNotIn("chair-01", self.bridge.available)
+        # A delayed or duplicate pre-result announcement cannot recreate a lease.
+        self.bridge.receive(
+            envelope(event("READY", reason="scheduled", listen_remaining_ms=10000)),
+            102.5,
+        )
+        self.assertNotIn("chair-01", self.bridge.available)
+        self.bridge.receive(
+            envelope(
+                event("READY", seq=3, reason="scheduled", listen_remaining_ms=5000)
+            ),
+            103,
+        )
+        self.assertEqual(self.bridge.available["chair-01"], 108)
+
+    def test_radio_configuration_boundaries(self):
+        for field in ("radio_interval_s", "radio_open_s", "radio_motion_tail_s"):
+            self.assertFalse(protocol.configuration(dict(CONFIG, **{field: 0})))
+            self.assertFalse(protocol.configuration(dict(CONFIG, **{field: True})))
+        self.assertTrue(protocol.configuration(dict(CONFIG, radio_open_s=30)))
+        self.assertFalse(protocol.configuration(dict(CONFIG, radio_open_s=31)))
+        self.assertFalse(
+            protocol.configuration(
+                dict(CONFIG, radio_windows_enabled=False, radio_open_s=31)
+            )
+        )
+        self.assertTrue(
+            protocol.configuration(
+                dict(
+                    CONFIG,
+                    radio_interval_s=protocol.UINT32_MAX,
+                    radio_open_s=protocol.UINT32_MAX,
+                    radio_motion_tail_s=protocol.UINT32_MAX,
+                )
+            )
+        )
+
+    def test_ready_lease_uses_monotonic_time(self):
+        self.store.queue("chair-01", COMMAND_ID, CONFIG, 1000, 100)
+        self.bridge.receive(
+            envelope(event("READY", reason="scheduled", listen_remaining_ms=5000)),
+            100,
+            monotonic=10,
+        )
+        # A wall-clock rollback must not extend the five-second lease.
+        self.assertIsNone(self.bridge.next(90, monotonic=15))
+
+    def test_reconnect_requires_matching_gateway_hello(self):
+        hello = self.bridge.reset()
+        ready = event("READY", seq=5, reason="scheduled", listen_remaining_ms=5000)
+        self.assertEqual(
+            self.bridge.receive(envelope(ready), 10)["reason"],
+            "awaiting_fresh_connection",
+        )
+        self.bridge.receive(
+            {"kind": "hello", "request_id": hello["request_id"] + 1}, 11
+        )
+        self.assertFalse(self.bridge.available)
+        self.bridge.receive({"kind": "hello", "request_id": hello["request_id"]}, 12)
+        self.bridge.receive(envelope(dict(ready, seq=6)), 13)
+        self.assertEqual(self.bridge.available["chair-01"], 18)
+
+    def test_loss_report_sent_before_ready_does_not_invalidate_lease(self):
+        self.bridge.receive(
+            envelope(event("MOVEMENT_LOSS", seq=6, dropped_batches=1)), 10
+        )
+        self.bridge.receive(
+            envelope(
+                event("READY", seq=5, reason="scheduled", listen_remaining_ms=5000)
+            ),
+            11,
+        )
+        self.assertEqual(self.bridge.available["chair-01"], 16)
+
     def test_usb_validation(self):
+        loss = event("MOVEMENT_LOSS", dropped_batches=3)
+        self.assertEqual(protocol.validate(envelope(loss), MAPPING), loss)
+        for count in (0, -1, True):
+            with self.assertRaises(ValueError):
+                protocol.validate(
+                    envelope(event("MOVEMENT_LOSS", dropped_batches=count)), MAPPING
+                )
         for changes in [
+            dict(version=1),
             dict(version=True),
             dict(seq=True),
             dict(seq=0),
@@ -274,6 +362,13 @@ class ProtocolTests(unittest.TestCase):
                 ),
                 MAPPING,
             )
+        missing_listen = event("READY", reason="scheduled")
+        with self.assertRaises(ValueError):
+            protocol.validate(envelope(missing_listen), MAPPING)
+        missing_battery = event()
+        del missing_battery["battery_mv"]
+        with self.assertRaises(ValueError):
+            protocol.validate(envelope(missing_battery), MAPPING)
         sample = dict(offset_ms=0, ax=-32768, ay=32767, az=16384, gx=0, gy=0, gz=0)
         batch = event(
             "MOVEMENT_BATCH",
@@ -438,7 +533,8 @@ class ProtocolTests(unittest.TestCase):
             self.fail(f"missing USB {kind}")
 
         try:
-            self.assertEqual(read_message(master, "hello"), dict(kind="hello"))
+            hello = read_message(master, "hello")
+            os.write(master, json.dumps(hello).encode() + b"\n")
             line = json.dumps(envelope(event())).encode() + b"\n"
             os.write(master, line[:20])
             os.write(master, line[20:])
@@ -449,7 +545,8 @@ class ProtocolTests(unittest.TestCase):
             device.unlink()
             device.symlink_to(os.ttyname(slave))
             pending.clear()
-            self.assertEqual(read_message(master, "hello"), dict(kind="hello"))
+            hello = read_message(master, "hello")
+            os.write(master, json.dumps(hello).encode() + b"\n")
             # Partial old input must not poison a fresh connection; retry gets another ACK.
             os.write(master, line)
             self.assertEqual(read_message(master, "event_ack")["message"]["ack_seq"], 1)
