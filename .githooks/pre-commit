@@ -1,0 +1,14 @@
+#!/bin/sh
+set -eu
+
+cd "$(git rev-parse --show-toplevel)"
+check_dir=$(mktemp -d "${TMPDIR:-/tmp}/chair-pre-commit.XXXXXX")
+trap 'rm -rf "$check_dir"' EXIT
+trap 'exit 1' HUP INT TERM
+
+git diff --cached --check
+git checkout-index --all --prefix="$check_dir/"
+
+# Checks create temporary Git repositories; do not let Git's hook environment redirect them.
+unset $(git rev-parse --local-env-vars)
+make --no-print-directory -C "$check_dir" check

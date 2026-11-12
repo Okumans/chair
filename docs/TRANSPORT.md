@@ -110,6 +110,26 @@ pio run -e sensor -t upload --upload-port /dev/serial/by-id/YOUR_SENSOR
 pio run -e gateway -t upload --upload-port /dev/serial/by-id/YOUR_GATEWAY
 ```
 
+## Pre-commit checks
+
+Install the repository's hook once per clone:
+
+```sh
+make setup-hooks
+```
+
+Development checks require Git, Make, clang-format, Ruff, uv and a C++23 compiler.
+`make format` applies C/C++ and Python formatting. `make check` verifies formatting,
+checks the hook's shell syntax, runs Python lint, and runs the Python/native C++ tests.
+The native tests compile with warnings treated as errors; uv supplies pinned pyserial
+3.5 for the tests. Individual targets are `format-check`, `lint` and `test`.
+
+The pre-commit hook runs `make check` on a temporary copy of exactly the Git index.
+Unstaged edits and untracked files remain untouched, and the hook does not stage changes
+automatically. Any formatting, lint, test or staged-whitespace failure blocks the commit.
+Fix the reported problem, run `make format` if needed, stage the corrected files, and
+retry the commit. Firmware builds and physical acceptance use the commands above.
+
 ## Run the Pi bridge
 
 The Python tool needs pyserial 3.5. `uv run tools/transport.py ...` installs the script's

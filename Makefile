@@ -6,7 +6,7 @@ PORT ?=
 
 CPP_FILES := $(shell find sensor gateway shared tests tools/mac_address -name '*.cpp' -o -name '*.h' 2>/dev/null)
 
-.PHONY: help build upload monitor flash mac lsp compiledb format clean
+.PHONY: help build upload monitor flash mac lsp compiledb format format-check lint test check setup-hooks clean
 
 help:
 	@echo -e "Smart Chair Monorepo — Build & Development Shortcuts"
@@ -20,7 +20,9 @@ help:
 	@echo -e "  \033[36mmake mac\033[0m     ENV=sensor|gateway PORT=...   Upload MAC-only firmware & monitor"
 	@echo -e "  \033[36mmake monitor\033[0m             Open serial monitor (115200 baud)"
 	@echo -e "  \033[36mmake lsp\033[0m     [ENV=...]   Regenerate compile_commands.json for Neovim"
-	@echo -e "  \033[36mmake format\033[0m              Run clang-format on all C/C++ files"
+	@echo -e "  \033[36mmake format\033[0m              Format C/C++ and Python files"
+	@echo -e "  \033[36mmake check\033[0m               Check formatting, Python lint and native tests"
+	@echo -e "  \033[36mmake setup-hooks\033[0m         Install the staged-file pre-commit checks"
 	@echo -e "  \033[36mmake clean\033[0m               Clean PlatformIO build output"
 	@echo -e ""
 	@echo -e "  \033[33mExamples:\033[0m"
@@ -74,6 +76,24 @@ lsp: compiledb
 
 format:
 	clang-format -i $(CPP_FILES)
+	ruff format tools tests
+
+format-check:
+	clang-format --dry-run --Werror $(CPP_FILES)
+	ruff format --check tools tests
+
+lint:
+	sh -n .githooks/pre-commit
+	ruff check tools tests
+
+test:
+	uv run --no-project --with pyserial==3.5 python -m unittest discover -s tests -v
+
+check: format-check lint test
+
+setup-hooks:
+	git config --local core.hooksPath .githooks
+	@echo "Pre-commit checks installed. Run make format before staging your changes."
 
 clean:
 	pio run -t clean
