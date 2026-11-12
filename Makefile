@@ -2,10 +2,11 @@
 
 # Target environment: `sensor` (ESP32-C3 SuperMini) or `gateway` (ESP32-S3 DevKit)
 ENV ?= sensor
+PORT ?=
 
 CPP_FILES := $(shell find sensor gateway shared tests tools/mac_address -name '*.cpp' -o -name '*.h' 2>/dev/null)
 
-.PHONY: help build upload monitor flash lsp compiledb format clean
+.PHONY: help build upload monitor flash mac lsp compiledb format clean
 
 help:
 	@echo -e "Smart Chair Monorepo — Build & Development Shortcuts"
@@ -16,6 +17,7 @@ help:
 	@echo -e "  \033[36mmake build\033[0m   [ENV=...]   Build firmware"
 	@echo -e "  \033[36mmake upload\033[0m  [ENV=...]   Upload firmware"
 	@echo -e "  \033[36mmake flash\033[0m   [ENV=...]   Upload and open serial monitor"
+	@echo -e "  \033[36mmake mac\033[0m     ENV=sensor|gateway PORT=...   Upload MAC-only firmware & monitor"
 	@echo -e "  \033[36mmake monitor\033[0m             Open serial monitor (115200 baud)"
 	@echo -e "  \033[36mmake lsp\033[0m     [ENV=...]   Regenerate compile_commands.json for Neovim"
 	@echo -e "  \033[36mmake format\033[0m              Run clang-format on all C/C++ files"
@@ -25,8 +27,8 @@ help:
 	@echo -e "    make build                 # Builds sensor node (default)"
 	@echo -e "    make build ENV=gateway     # Builds desk gateway"
 	@echo -e "    make flash ENV=gateway     # Flashes gateway & opens monitor"
-	@echo -e "    make flash ENV=mac-sensor  # MAC-only firmware for C3"
-	@echo -e "    make flash ENV=mac-gateway # MAC-only firmware for S3"
+	@echo -e "    make mac ENV=sensor PORT=/dev/ttyACM0  # MAC-only firmware for C3"
+	@echo -e "    make mac ENV=gateway PORT=/dev/ttyACM1 # MAC-only firmware for S3"
 	@echo -e "    make lsp                   # Updates LSP database for sensor"
 	@echo -e "    make lsp ENV=gateway       # Updates LSP database for gateway"
 	@echo -e ""
@@ -39,6 +41,14 @@ upload:
 
 flash:
 	pio run -e $(ENV) -t upload -t monitor
+
+mac:
+	@case "$(ENV)" in \
+		sensor|gateway) ;; \
+		*) echo "ENV must be sensor or gateway" >&2; exit 1 ;; \
+	esac
+	@test -n "$(PORT)" || { echo "Set PORT to the board's serial device" >&2; exit 1; }
+	pio run -e "mac-$(ENV)" -t upload -t monitor --port "$(PORT)"
 
 monitor:
 	pio device monitor

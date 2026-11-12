@@ -23,8 +23,7 @@ pio device list
 **C3 chair sensor:** replace `YOUR_C3` with its actual serial-by-id device name.
 
 ```sh
-pio run -e mac-sensor -t upload --upload-port /dev/serial/by-id/YOUR_C3
-pio device monitor --port /dev/serial/by-id/YOUR_C3 --baud 115200
+make mac ENV=sensor PORT=/dev/serial/by-id/YOUR_C3
 ```
 
 Record the printed address as the C3 sensor's STA MAC, then exit the monitor with Ctrl+C.
@@ -32,14 +31,16 @@ Record the printed address as the C3 sensor's STA MAC, then exit the monitor wit
 **S3 gateway:** replace `YOUR_S3` with its actual device name.
 
 ```sh
-pio run -e mac-gateway -t upload --upload-port /dev/serial/by-id/YOUR_S3
-pio device monitor --port /dev/serial/by-id/YOUR_S3 --baud 115200
+make mac ENV=gateway PORT=/dev/serial/by-id/YOUR_S3
 ```
 
 Record this address separately, then exit with Ctrl+C. A current `/dev/ttyACM0` or
 `/dev/ttyACM1` path also works, but port numbers can change when boards reconnect.
-With only one board connected, `make flash ENV=mac-sensor` or
-`make flash ENV=mac-gateway` uploads the utility and starts its monitor automatically.
+The `mac` target uploads the matching MAC-only environment and opens a monitor at
+115200 baud on the same port. `PORT` is required, and `ENV` accepts `sensor` (the
+default) or `gateway`. For example, `make mac ENV=gateway PORT=/dev/ttyACM1`.
+The equivalent direct PlatformIO command for the S3 is
+`pio run -e mac-gateway -t upload -t monitor --port /dev/ttyACM1`.
 
 Put the recorded addresses in the ignored `shared/include/link_config.local.h`:
 
