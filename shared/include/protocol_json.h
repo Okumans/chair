@@ -118,12 +118,12 @@ namespace SmartChair {
       j.command_id = uuidString(f.command);
     if (f.type == Type::COMMAND_RESULT || f.type == Type::COMMAND_RECEIPT)
       j.status = STATUS_NAMES[uint8_t(f.status)];
-    if (f.type == Type::READY) {
-      j.reason = REASON_NAMES[uint8_t(f.reason)];
+    if (f.type == Type::READY || f.type == Type::READY_PROOF) {
+      if (f.type == Type::READY) j.reason = REASON_NAMES[uint8_t(f.reason)];
       j.listen_remaining_ms.emplace();
       if (f.listen != UINT32_MAX) j.listen_remaining_ms->emplace(f.listen);
     }
-    if (f.type == Type::EVENT_ACK) {
+    if (f.type == Type::EVENT_ACK || f.type == Type::READY_PROOF) {
       j.ack_boot_id = hex64(f.ack_boot);
       j.ack_seq     = f.ack_seq;
     }
@@ -162,7 +162,13 @@ namespace SmartChair {
     f.id.node.fill(0);
     std::copy(j.node_id.begin(), j.node_id.end(), f.id.node.begin());
     f.id.seq = j.seq;
-    if (j.type == name(Type::EVENT_ACK)) {
+    if (j.type == name(Type::READY_PROBE)) {
+      if (j.ack_boot_id || j.ack_seq || j.command_id || j.revision || j.heartbeat_s ||
+          j.movement_batch_s || j.movement_enabled || j.radio_windows_enabled ||
+          j.radio_interval_s || j.radio_open_s || j.radio_motion_tail_s)
+        return false;
+      f.type = Type::READY_PROBE;
+    } else if (j.type == name(Type::EVENT_ACK)) {
       if (j.command_id || j.revision || j.heartbeat_s || j.movement_batch_s || j.movement_enabled ||
           j.radio_windows_enabled || j.radio_interval_s || j.radio_open_s || j.radio_motion_tail_s)
         return false;

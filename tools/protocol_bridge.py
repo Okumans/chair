@@ -17,6 +17,8 @@ MAX_BOOT_GENERATION = 0x7FFFFFFFFFFFFFFF
 SCHEMA_VERSION = 2
 MAX_PENDING_ACKS = 128
 RADIO_TIMEOUT_S = 1
+PROBE_LEASE_CAP_S = 5
+PROBE_RETRY_S = 5
 COMMAND_RETRY_S = 0.75
 RETRY_DELAY_S = 1
 SERIAL_POLL_S = 0.02
@@ -126,6 +128,7 @@ def validate(message, mapping):
         "MOVEMENT_BATCH",
         "MOVEMENT_LOSS",
         "COMMAND_RECEIPT",
+        "READY_PROOF",
     }:
         raise ValueError("unknown event type")
     generation = m.get("boot_generation")
@@ -162,21 +165,32 @@ def validate(message, mapping):
             kind == "COMMAND_RESULT" and m["status"] == "received"
         ):
             raise ValueError("invalid command status")
-    if kind == "READY":
+    if kind in {"READY", "READY_PROOF"}:
         if (
             "listen_remaining_ms" not in m
-            or m.get("reason")
-            not in {
-                "seat_occupied",
-                "movement_started",
-                "scheduled",
-            }
+            or (
+                kind == "READY"
+                and m.get("reason")
+                not in {
+                    "seat_occupied",
+                    "movement_started",
+                    "scheduled",
+                }
+            )
             or (
                 m.get("listen_remaining_ms") is not None
                 and not integer(m["listen_remaining_ms"], 0, UINT32_MAX - 1)
             )
         ):
             raise ValueError("invalid availability")
+        if kind == "READY_PROOF" and (
+            not m["occupied"]
+            or not isinstance(m.get("ack_boot_id"), str)
+            or not re.fullmatch(r"[0-9a-f]{16}", m["ack_boot_id"])
+            or int(m["ack_boot_id"], 16) == 0
+            or not integer(m.get("ack_seq"), 1)
+        ):
+            raise ValueError("invalid availability proof")
     if kind == "MOVEMENT_BATCH":
         samples = m.get("samples")
         if (
@@ -299,7 +313,11 @@ class Store:
                     (node, boot, seq, payload, now),
                 )
             generation = self._generation(m)
-            if generation and m["type"] not in {"COMMAND_RECEIPT", "READY"}:
+            if generation and m["type"] not in {
+                "COMMAND_RECEIPT",
+                "READY",
+                "READY_PROOF",
+            }:
                 self.db.execute(
                     """INSERT INTO current_state VALUES (?,?,?,?) ON CONFLICT(node) DO UPDATE SET
                     generation=excluded.generation,seq=excluded.seq,payload=excluded.payload
@@ -374,6 +392,9 @@ class Bridge:
         self.seq = 0
         self.acks = {}
         self.available = {}
+        self.available_identity = {}
+        self.ready_hints = {}
+        self.probes = {}
         self.last_command = {}
         # Keep per-boot watermarks across serial reconnects within this bridge process.
         self.last_telemetry = {}
@@ -386,11 +407,41 @@ class Bridge:
         """Discard connection-local framing work and availability before serial reconnect."""
         self.acks.clear()
         self.available.clear()
+        self.available_identity.clear()
+        self.ready_hints.clear()
+        self.probes.clear()
         self.radio_pending = None
         self.last_command.clear()
         self.request = self.request % UINT32_MAX + 1
         self.hello_request = self.request
         return {"kind": "hello", "request_id": self.hello_request}
+
+    def clear_available(self, node):
+        """Discard a lease together with the identity of the READY that granted it."""
+        self.available.pop(node, None)
+        self.available_identity.pop(node, None)
+
+    def precedes(self, message, reference):
+        """Identify events known to precede a READY or proof from the same node."""
+        if reference is None:
+            return False
+        boot, seq, generation = reference
+        if message["boot_id"] == boot:
+            return message["seq"] < seq
+        row = self.store.db.execute(
+            "SELECT generation FROM boots WHERE node=? AND boot=?",
+            (message["node_id"], message["boot_id"]),
+        ).fetchone()
+        return bool(row and generation is not None and row[0] < generation)
+
+    def invalidate_before(self, message):
+        """Invalidate older leases and hints independently when a newer fact arrives."""
+        node = message["node_id"]
+        if not self.precedes(message, self.available_identity.get(node)):
+            self.clear_available(node)
+        if not self.precedes(message, self.ready_hints.get(node)):
+            self.ready_hints.pop(node, None)
+            self.probes.pop(node, None)
 
     def control(self, node, kind, **fields):
         """Allocate a typed downstream control identity without changing its target event identity."""
@@ -414,6 +465,7 @@ class Bridge:
             if (
                 envelope.get("kind") == "hello"
                 and envelope.get("request_id") == self.hello_request
+                and self.hello_request is not None
             ):
                 self.hello_request = None
             if (
@@ -423,20 +475,28 @@ class Bridge:
                 self.radio_pending = None
             return envelope
         m = validate(envelope, self.mapping)
-        if m["type"] == "READY" and self.hello_request is not None:
+        if m["type"] in {"READY", "READY_PROOF"} and self.hello_request is not None:
             return dict(kind="ignored", reason="awaiting_fresh_connection", message=m)
         fresh, received_at = self.store.accept(m, now)
         identity = (m["node_id"], m["boot_id"])
+        if m["type"] == "READY_PROOF":
+            probe = self.probes.get(m["node_id"])
+            if (
+                not probe
+                or (m["ack_boot_id"], m["ack_seq"]) != probe[:2]
+                or m["boot_id"] != probe[3]
+            ):
+                return dict(kind="ignored", reason="unmatched_ready_proof", message=m)
         newer = m["seq"] > self.last_telemetry.get(identity, 0)
         # Best-effort batches and loss reports can be sent ahead of an older queued READY;
         # only state-changing reliable events and READY itself invalidate an older lease.
-        if newer and (m["type"] in RELIABLE or m["type"] == "READY"):
+        if newer and (m["type"] in RELIABLE or m["type"] in {"READY", "READY_PROOF"}):
             self.last_telemetry[identity] = m["seq"]
         if m["type"] == "COMMAND_RESULT" and m["status"] in {
             "applied",
             "already_applied",
         }:
-            self.available.pop(m["node_id"], None)
+            self.invalidate_before(m)
         if m["type"] in RELIABLE:
             key = (m["node_id"], m["boot_id"], m["seq"])
             if len(self.acks) < MAX_PENDING_ACKS or key in self.acks:
@@ -448,8 +508,8 @@ class Bridge:
                 )
         if m["type"] != "COMMAND_RECEIPT":
             if not m["occupied"]:
-                self.available.pop(m["node_id"], None)
-            elif m["type"] == "READY" and newer:
+                self.invalidate_before(m)
+            elif m["type"] in {"READY", "READY_PROOF"} and newer:
                 current = self.store.db.execute(
                     "SELECT generation FROM current_state WHERE node=?", (m["node_id"],)
                 ).fetchone()
@@ -457,12 +517,43 @@ class Bridge:
                     "SELECT generation FROM boots WHERE node=? AND boot=?", identity
                 ).fetchone()
                 if not current or (known and known[0] == current[0]):
-                    remaining = m.get("listen_remaining_ms")
-                    self.available[m["node_id"]] = (
-                        float("inf")
-                        if remaining is None
-                        else lease_now + remaining / 1000
-                    )
+                    node = m["node_id"]
+                    if m["type"] == "READY":
+                        self.ready_hints[node] = (
+                            m["boot_id"],
+                            m["seq"],
+                            known[0] if known else None,
+                        )
+                    else:
+                        probe = self.probes.get(node)
+                        if (
+                            not probe
+                            or (m["ack_boot_id"], m["ack_seq"]) != probe[:2]
+                            or m["boot_id"] != probe[3]
+                        ):
+                            return dict(
+                                kind="ignored",
+                                reason="unmatched_ready_proof",
+                                message=m,
+                            )
+                        self.probes.pop(node, None)
+                        remaining = m["listen_remaining_ms"]
+                        # The probe left the Pi before the sensor calculated this duration.
+                        # Its complete round trip is therefore a conservative age bound.
+                        expires = probe[2] + min(
+                            PROBE_LEASE_CAP_S,
+                            PROBE_LEASE_CAP_S
+                            if remaining is None
+                            else remaining / 1000,
+                        )
+                        self.clear_available(node)
+                        if expires > lease_now:
+                            self.available[node] = expires
+                            self.available_identity[node] = (
+                                m["boot_id"],
+                                m["seq"],
+                                known[0] if known else None,
+                            )
         return dict(
             kind="accepted", duplicate=not fresh, received_at=received_at, message=m
         )
@@ -481,6 +572,21 @@ class Bridge:
         else:
             for command in pending:
                 node = command["node"]
+                probe = self.probes.get(node)
+                if (
+                    self.available.get(node, 0) <= clock
+                    and node in self.ready_hints
+                    and (not probe or clock - probe[2] >= PROBE_RETRY_S)
+                ):
+                    control = self.control(node, "READY_PROBE")
+                    self.probes[node] = (
+                        control["boot_id"],
+                        control["seq"],
+                        clock,
+                        self.ready_hints[node][0],
+                    )
+                    message = dict(kind="ready_probe", message=control)
+                    break
                 if (
                     self.available.get(node, 0) > clock
                     and clock - self.last_command.get(command["id"], 0)

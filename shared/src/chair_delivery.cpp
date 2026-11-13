@@ -41,7 +41,8 @@ namespace SmartChair {
   }
 
   void Engine::clearReady() {
-    std::erase_if(best_, [](const Frame& f) { return f.type == Type::READY; });
+    std::erase_if(
+        best_, [](const Frame& f) { return f.type == Type::READY || f.type == Type::READY_PROOF; });
     readyRefresh_ = 0;
   }
 
@@ -84,10 +85,10 @@ namespace SmartChair {
     if (best_.empty()) return false;
     output = std::move(best_.front());
     best_.pop_front();
-    if (output.type == Type::READY) {
+    if (output.type == Type::READY || output.type == Type::READY_PROOF) {
       output.listen = communication.remaining(now);
       if (!occupied || communication.state != Communication::OPEN || !output.listen) return false;
-      if (motionHold_ && output.listen != UINT32_MAX)
+      if (output.type == Type::READY && motionHold_ && output.listen != UINT32_MAX)
         readyRefresh_ = deadlineAfter(now, std::max<uint32_t>(1, (output.listen - 1) / 2));
     }
     return true;
@@ -113,6 +114,19 @@ namespace SmartChair {
     }
     if (f.type == Type::EVENT_ACK) {
       acknowledge(f);
+      return;
+    }
+    if (f.type == Type::READY_PROBE) {
+      if (!occupied || !radioReady_ || communication.state != Communication::OPEN ||
+          shutdownStarted_)
+        return;
+      std::erase_if(best_, [](const Frame& queued) { return queued.type == Type::READY_PROOF; });
+      auto proof = frame(Type::READY_PROOF, now);
+      if (!proof.id.seq) return;
+      proof.ack_boot = f.id.boot;
+      proof.ack_seq  = f.id.seq;
+      if (best_.size() >= Limits::BEST_EFFORT_QUEUE) discardBest();
+      best_.push_front(std::move(proof));
       return;
     }
     if (f.type != Type::CONFIG_SET) return;

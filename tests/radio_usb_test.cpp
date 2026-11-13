@@ -115,6 +115,29 @@ int main(int argc, char**) {
   }));
   checkNoParseError();
 
+  Serial.feed(
+      "{\"kind\":\"ready_probe\",\"request_id\":78,\"message\":{"
+      "\"version\":2,\"type\":\"READY_PROBE\",\"node_id\":\"chair-01\","
+      "\"boot_id\":\"0000000000000001\",\"seq\":9}}\n");
+  drain();
+  SmartChair::Frame challenge;
+  assert(FakeRadio::sent.size() == 1 && SmartChair::decode(FakeRadio::sent.back(), challenge));
+  assert(challenge.type == SmartChair::Type::READY_PROBE && challenge.id.seq == 9);
+  FakeRadio::sent.clear();
+  takeMessages();
+  availability.type     = SmartChair::Type::READY_PROOF;
+  availability.ack_boot = 1;
+  availability.ack_seq  = 9;
+  const auto proofBytes = SmartChair::encode(availability);
+  fakeRadioTime         = 2200000;
+  FakeRadio::recvCallback(&sender, proofBytes.data(), proofBytes.size());
+  drain();
+  const auto proofMessages = takeMessages();
+  assert(std::any_of(proofMessages.begin(), proofMessages.end(), [](const auto& message) {
+    return message.contains("message") &&
+           message.at("message").str.find("READY_PROOF") != std::string::npos;
+  }));
+
   // A maximum-length line must fit the underlying driver queue before the loop drains it.
   std::string maximum = "{\"kind\":\"hello\"}";
   maximum.resize(Transport::MAX_LINE, ' ');

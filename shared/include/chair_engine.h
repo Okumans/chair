@@ -145,6 +145,7 @@ namespace SmartChair {
     bool radioReady_ = false, stoppingRadio_ = false, shutdownStarted_ = false,
          reopenAfterStop_ = false;
     bool motionHold_ = false, scheduleActive_ = false, openingWanted_ = false;
+    uint64_t motionTailUntil_ = 0;
     uint64_t nextSchedule_ = 0, lifecycleRetry_ = 0, readyRefresh_ = 0;
     Save save_;
     bool statePending_    = false;

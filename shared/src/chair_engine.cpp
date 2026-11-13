@@ -12,6 +12,8 @@ namespace SmartChair {
     radioReady_    = true;
     openingWanted_ = false;
     communication.radioReady(now);
+    if (occupied && durable.config.radio_windows_enabled)
+      communication.closes = std::max(communication.closes, motionTailUntil_);
     rounds_.clear();
     if (occupied) {
       if (motionHold_ && durable.config.radio_windows_enabled)
@@ -151,6 +153,7 @@ namespace SmartChair {
         requestOpen(Reason::seat_occupied, now);
       } else {
         scheduleActive_ = motionHold_ = false;
+        motionTailUntil_              = 0;
         reopenAfterStop_              = false;
         clearReady();
         openingWanted_ = communication.state == Communication::CLOSED;
@@ -215,6 +218,11 @@ namespace SmartChair {
           flush(End::stopped, now);
           moving_ = stopping_ = false;
           motionHold_         = false;
+          if (durable.config.radio_windows_enabled) {
+            motionTailUntil_ =
+                std::max(motionTailUntil_,
+                         deadlineAfter(now, milliseconds(durable.config.radio_motion_tail_s)));
+          }
           if (communication.state == Communication::OPEN && durable.config.radio_windows_enabled)
             communication.extend(now, milliseconds(durable.config.radio_motion_tail_s));
           operating = Operating::OCCUPIED_IDLE;

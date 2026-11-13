@@ -66,6 +66,67 @@ int main() {
   ready = nextOf(e, 30250, Type::READY);
   assert(ready.reason == Reason::scheduled && ready.listen == 5000);
 
+  // Motion can stop before the radio becomes ready; retain the original stop deadline.
+  Engine startupTail(id(), {}, save);
+  startupTail.imuAvailable = true;
+  startupTail.seat(true, 0);
+  startupTail.seat(true, 50);
+  assert(startupTail.radioAction(50, false) == RadioAction::START);
+  for (uint64_t t : {100, 140, 180, 220}) startupTail.sample(active, t);
+  for (uint64_t t : {260, 300, 340, 380}) startupTail.sample(quiet, t);
+  startupTail.radioReady(450);
+  assert(startupTail.communication.closes >= 10380);
+
+  Frame probe;
+  probe.id      = id();
+  probe.id.boot = 123;
+  probe.id.seq  = 456;
+  probe.type    = Type::READY_PROBE;
+  startupTail.receive(probe, 451);
+  auto proof = nextOf(startupTail, 452, Type::READY_PROOF);
+  assert(proof.ack_boot == 123 && proof.ack_seq == 456);
+  assert(proof.listen == 10380 - 452);
+  const auto encodedProof = encode(proof);
+  Frame decodedProof;
+  assert(decode(encodedProof, decodedProof));
+  assert(decodedProof.type == Type::READY_PROOF && decodedProof.ack_boot == 123 &&
+         decodedProof.ack_seq == 456 && decodedProof.listen == proof.listen);
+
+  Engine retryTail(id(), {}, save);
+  retryTail.imuAvailable = true;
+  retryTail.seat(true, 0);
+  retryTail.seat(true, 50);
+  for (uint64_t t : {100, 140, 180, 220}) retryTail.sample(active, t);
+  for (uint64_t t : {260, 300, 340, 380}) retryTail.sample(quiet, t);
+  retryTail.radioStartFailed(400, true);
+  assert(retryTail.radioAction(1400, false) == RadioAction::START);
+  retryTail.radioReady(1500);
+  assert(retryTail.communication.closes >= 10380);
+
+  Engine cleanupTail(id(), {}, save);
+  cleanupTail.imuAvailable = true;
+  cleanupTail.seat(true, 0);
+  cleanupTail.seat(true, 50);
+  for (uint64_t t : {100, 140, 180, 220}) cleanupTail.sample(active, t);
+  for (uint64_t t : {260, 300, 340, 380}) cleanupTail.sample(quiet, t);
+  cleanupTail.radioStartFailed(400, false);
+  assert(cleanupTail.radioAction(1400, false) == RadioAction::STOP);
+  cleanupTail.radioStopped(1401);
+  assert(cleanupTail.radioAction(1401, false) == RadioAction::START);
+  cleanupTail.radioReady(1500);
+  assert(cleanupTail.communication.closes >= 10380);
+
+  Engine closedProof(id(), {}, save);
+  closedProof.seat(true, 0);
+  closedProof.seat(true, 50);
+  closedProof.radioReady(50);
+  auto closedSync = nextOf(closedProof, 50, Type::STATE_SYNC);
+  nextOf(closedProof, 50, Type::READY);
+  ack(closedProof, closedSync, 50);
+  closedProof.receive(probe, 5050);  // The expired window must not produce a proof.
+  Frame ignoredProof;
+  assert(!closedProof.next(ignoredProof, 5050));
+
   Engine motion(id(), {}, save);
   motion.durable.config.radio_interval_s = 100;
   motion.imuAvailable                    = true;
