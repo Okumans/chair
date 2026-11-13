@@ -33,6 +33,7 @@ namespace Transport {
     double tx_power_dbm = -1;
     bool ready          = false;
     size_t max_payload  = 0;
+    bool lifecycle_busy = false;
   };
 
   /// Structured diagnostic with optional request association; zero is unsolicited.

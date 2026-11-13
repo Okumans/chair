@@ -88,6 +88,15 @@ namespace SmartChair {
       return occupied_sleep_ms && occupied && !moving_ && communication.allowsSleep();
     }
 
+    /// Emergency restart may discard RAM batches, but never an uncommitted physical transition.
+    bool canRestart(uint64_t now) const {
+      return seatSeen_ && now - seatAt_ >= Timing::SEAT_DEBOUNCE_MS &&
+             operating != Operating::STARTING && candidate_ == occupied && !storageFailed &&
+             !statePending_ && !newBoot_ && pendingStorage_.empty();
+    }
+
+    bool motionActive() const { return moving_; }
+
     /// Take one due radio frame without waiting. Reliable data stays in the outbox until exact ACK.
     /// Call only when the radio can accept a send; best-effort frames are consumed when returned.
     bool next(Frame& output, uint64_t now);

@@ -65,6 +65,8 @@ are separate; see [development checks](docs/SETUP.md#development-checks).
 - The confirmed radio-window design covers wire v2, state-machine integration and implementation
   acceptance. [Radio windows specification](docs/RADIO_WINDOWS_SPEC.md)
 
+- [Radio-window bench tools](docs/RADIO_WINDOWS_BENCH.md): recovery policy, contact traces, fault tests and current measurement.
+
 Battery measurement, MQTT, systemd deployment and actual occupied light sleep remain
 deferred. The occupied radio uses a test schedule; physical validation is still required.
 Native tests do not establish physical radio reliability,

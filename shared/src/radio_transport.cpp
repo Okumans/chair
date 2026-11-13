@@ -5,6 +5,7 @@
 
 #include <atomic>
 
+#include "esp_mac.h"
 #include "esp_now.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
@@ -34,6 +35,9 @@ namespace Transport {
     uint8_t peer[MAC_BYTES]{};
     uint8_t expectedOwn[MAC_BYTES]{};
     char keyId[KEY_FINGERPRINT_BYTES * 2 + 1]{};
+    char stationMac[MAC_TEXT_BYTES]{};
+    std::atomic<uint8_t> snapshotChannel{0};
+    std::atomic<int> snapshotPower{UNKNOWN_TX_POWER_QUARTERS}, snapshotSleep{-1};
     const char* nodeRole = nullptr;
     std::atomic<bool> ready{false};
     bool configured      = false;
@@ -42,6 +46,7 @@ namespace Transport {
     std::atomic<bool> sending{false};
     std::atomic<bool> restartRequired{false};
     std::atomic<bool> lifecycleBusy{false};
+    std::atomic<bool> rebootRequired{false};
     uint32_t pendingId = 0;
     bool usbAnnounced  = false;
     std::atomic<bool> usbBusReset{false};
@@ -54,27 +59,25 @@ namespace Transport {
     void usbResetCallback(void*, esp_event_base_t, int32_t, void*) { usbBusReset.store(true); }
 
     void hello(std::optional<uint32_t> requestId = std::nullopt) {
-      uint8_t channel = 0;
-      wifi_second_chan_t secondary;
-      if (esp_wifi_get_channel(&channel, &secondary) != ESP_OK) channel = 0;
-      int8_t txPower = UNKNOWN_TX_POWER_QUARTERS;
-      if (esp_wifi_get_max_tx_power(&txPower) != ESP_OK) txPower = UNKNOWN_TX_POWER_QUARTERS;
-      wifi_ps_type_t powerSave;
-      const int sleepMode = esp_wifi_get_ps(&powerSave) == ESP_OK ? powerSave : -1;
+      // Never enter Wi-Fi from the loop while a stalled lifecycle task may own its locks.
+      // These settings were confirmed by the worker; hardware MAC is read before it starts.
+      const bool running = wifiRunning.load();
       char peerMac[MAC_TEXT_BYTES];
       snprintf(peerMac, sizeof(peerMac), "%02x:%02x:%02x:%02x:%02x:%02x", peer[0], peer[1], peer[2],
                peer[3], peer[4], peer[5]);
       printJson(HelloMessage{
-          .request_id   = requestId,
-          .role         = nodeRole,
-          .mac          = WiFi.macAddress().c_str(),
-          .peer_mac     = peerMac,
-          .key_id       = keyId,
-          .channel      = channel,
-          .power_save   = sleepMode,
-          .tx_power_dbm = txPower / QUARTERS_PER_DBM,
-          .ready        = ready,
-          .max_payload  = MAX_PAYLOAD,
+          .request_id = requestId,
+          .role       = nodeRole,
+          .mac        = stationMac,
+          .peer_mac   = peerMac,
+          .key_id     = keyId,
+          .channel    = running ? snapshotChannel.load() : uint8_t{0},
+          .power_save = running ? snapshotSleep.load() : -1,
+          .tx_power_dbm =
+              (running ? snapshotPower.load() : UNKNOWN_TX_POWER_QUARTERS) / QUARTERS_PER_DBM,
+          .ready          = ready,
+          .max_payload    = MAX_PAYLOAD,
+          .lifecycle_busy = lifecycleBusy,
       });
     }
 
@@ -125,7 +128,10 @@ namespace Transport {
           slot = int(i);
           break;
         }
-      if (slot < 0) return false;
+      if (slot < 0) {
+        rebootRequired = true;
+        return false;
+      }
       uint8_t pmk[KEY_BYTES], lmk[KEY_BYTES];
       size_t size = 0;
       if (!decodeHex(LinkConfig::PMK, pmk, sizeof(pmk), size) || size != KEY_BYTES ||
@@ -144,7 +150,10 @@ namespace Transport {
       if (esp_now_set_pmk(pmk) == ESP_OK && esp_now_add_peer(&info) == ESP_OK &&
           esp_now_register_recv_cb(receiveCallback) == ESP_OK &&
           esp_now_register_send_cb(sentCallbacks[slot]) == ESP_OK) {
-        callbackSlot = slot;
+        callbackSlot    = slot;
+        snapshotChannel = LinkConfig::CHANNEL;
+        snapshotPower   = TX_POWER_QUARTER_DBM;
+        snapshotSleep   = WIFI_PS_NONE;
         return true;
       }
       esp_now_deinit();
@@ -204,6 +213,13 @@ namespace Transport {
     const bool rxBufferReady = Serial.setRxBufferSize(USB_RX_BUFFER_BYTES) == USB_RX_BUFFER_BYTES;
     Serial.onEvent(ARDUINO_HW_CDC_BUS_RESET_EVENT, usbResetCallback);
     Serial.begin(BAUD_RATE);
+    uint8_t actualMac[MAC_BYTES]{};
+    if (esp_read_mac(actualMac, ESP_MAC_WIFI_STA) != ESP_OK) {
+      error(ErrorCode::STATION_MAC_FAILED);
+      return;
+    }
+    snprintf(stationMac, sizeof(stationMac), "%02x:%02x:%02x:%02x:%02x:%02x", actualMac[0],
+             actualMac[1], actualMac[2], actualMac[3], actualMac[4], actualMac[5]);
     if (!rxBufferReady) {
       error(ErrorCode::USB_RX_BUFFER_FAILED);
       hello();
@@ -243,10 +259,12 @@ namespace Transport {
   }
 
   bool send(const uint8_t* data, size_t size, uint32_t requestId) {
-    if (!ready || sending || restartRequired || lifecycleBusy || !size || size > MAX_PAYLOAD) {
-      error(!ready                                        ? ErrorCode::RADIO_NOT_READY
-            : sending || restartRequired || lifecycleBusy ? ErrorCode::RADIO_BUSY
-                                                          : ErrorCode::INVALID_PAYLOAD,
+    if (!ready || sending || restartRequired || lifecycleBusy || rebootRequired || !size ||
+        size > MAX_PAYLOAD) {
+      error(!ready ? ErrorCode::RADIO_NOT_READY
+            : sending || restartRequired || lifecycleBusy || rebootRequired
+                ? ErrorCode::RADIO_BUSY
+                : ErrorCode::INVALID_PAYLOAD,
             requestId);
       return false;
     }
@@ -271,6 +289,8 @@ namespace Transport {
 
   bool needsRestart() { return restartRequired; }
 
+  bool needsReboot() { return rebootRequired; }
+
   void setLifecycleBusy(bool value) { lifecycleBusy = value; }
 
   void setReceiver(Receiver callback) { receiver = callback; }
@@ -293,6 +313,7 @@ namespace Transport {
   }
 
   bool resume(bool report) {
+    if (rebootRequired) return false;
     if (ready) return true;
     if (!configured) return false;
     if (!wifiInitialized) {

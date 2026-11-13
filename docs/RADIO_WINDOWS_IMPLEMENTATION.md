@@ -1,9 +1,8 @@
 # Radio windows implementation report
 
-This document describes the current uncommitted implementation of
+This document records the implementation and subsequent review fixes for
 [RADIO_WINDOWS_SPEC.md](RADIO_WINDOWS_SPEC.md) and the changes to the
-[protocol](PROTOCOL_SPEC.md). It is a review and handoff record; the known gaps below
-mean the implementation should not yet be considered fully compliant with the spec.
+[protocol](PROTOCOL_SPEC.md). It is a review and handoff record; physical acceptance limits are listed below.
 
 ## Behavior
 
@@ -54,13 +53,15 @@ acknowledgment-before-removal. They also:
 `shared/src/radio_transport.cpp`, `sensor/src/main.cpp`, and `gateway/src/main.cpp`:
 
 - Separate USB setup from radio start and stop so USB remains usable across radio cycles.
-- Run sensor radio lifecycle operations in a worker, allowing the sensing loop to continue.
+- Run both nodes' radio lifecycle operations in a worker, allowing sensing and USB work to continue.
 - Report startup timeouts and space failed lifecycle retries at least one second apart.
 - Clean up partially initialized hardware and restore the station, channel, power settings,
   keys, encrypted peer, and callbacks on restart.
 - Quarantine callback slots after timed-out sends so a late callback cannot complete a
   newer transmission.
 - Retry gateway radio failures while keeping the gateway normally available.
+- Request a durable-state-gated emergency reboot after a 15-second stuck worker or callback-slot
+  exhaustion. HELLO uses cached settings so it never takes Wi-Fi locks from the loop.
 - Require confirmed shutdown and safe persistence before vacant sleep, then recheck the
   physical seat contact.
 
@@ -112,7 +113,8 @@ acknowledgment-before-removal. They also:
 
 ## Validation completed
 
-- `make check` passed: formatting, lint, and 35 tests.
+- Initial implementation: `make check` passed formatting, lint, and 35 tests.
+  Subsequent verification is recorded in the follow-up reports below.
 - PlatformIO builds passed for `sensor`, `gateway`, and `reset-sensor`.
 - Affected clangd translation-unit checks and `git diff --check` passed.
 - Tests cover schedule and motion behavior, radio lifecycle failures, vacant sleep,
@@ -148,14 +150,13 @@ see [SETUP.md](SETUP.md#provision-the-boards).
 
 ## Known gaps and review items
 
-1. **Stuck Wi-Fi SDK call:** sensing continues and a timeout is reported, but a lifecycle
-   call that never returns cannot safely be cancelled by the worker. Cleanup and retries
-   must wait for that call.
-2. **Callback-slot exhaustion:** eight permanently missing send callbacks can exhaust the
-   quarantined slots and prevent further radio starts until reboot.
-3. **Physical acceptance:** test encrypted delivery after restarts, command round trips,
-   sample timing, seat and timer wake, radio-off periods, and power consumption on the
-   actual boards.
+1. **Physical acceptance:** complete repeatable motion-tail and precise sample-timing checks,
+   encrypted recovery after injected hardware faults, and current measurements on both boards.
+2. **Pressure contact:** raw input releases lasting longer than the existing 50 ms debounce
+   have been captured. Check the contact and its wiring before changing debounce.
+3. **Recovery limits:** emergency reset preserves durable events and configuration, but may
+   discard RAM-only movement. Failed storage or an unsettled contact postpones sensor reset.
+   The low-level reset depends on the pinned IDF internal API and needs hardware fault testing.
 
 The review fixes add a probe and proof exchange to bound READY age across both radio and
 USB, preserve the motion tail through startup, and ignore old command-result retries when
@@ -172,6 +173,16 @@ A further review fixes deadline checks after SQLite work and before USB writes, 
 preserves pending proofs during routine READY refreshes and queue overflow. These
 follow-up changes are covered by automated tests and firmware builds; the recorded
 physical observations used the earlier `dadfcc1` firmware.
+
+The next improvement adds shared asynchronous lifecycle handling on both nodes, a guarded
+emergency restart, named bridge availability/probe/dispatch records, optional contact and
+motion traces, and a reusable fault-injection CLI. See
+[RADIO_WINDOWS_BENCH.md](RADIO_WINDOWS_BENCH.md) for behavior, test commands and limits.
+Normal timing and sleep policy are unchanged. The new physical trace observed confirmed
+vacancy about 51 ms after a raw release; the startup-tail sequence was interrupted by
+vacant sleep and remains inconclusive. The production sensor image was restored without
+resetting stored state after that test. See the physical report for the precise validation
+boundary and restoration status.
 
 ## Upgrade boundary
 

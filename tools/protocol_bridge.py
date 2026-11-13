@@ -8,6 +8,7 @@ import secrets
 import sqlite3
 import time
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 
 import serial
@@ -382,6 +383,41 @@ class Store:
         ]
 
 
+@dataclass(frozen=True)
+class TelemetryIdentity:
+    boot: str
+    seq: int
+    generation: int | None
+
+
+@dataclass(frozen=True)
+class Availability:
+    expires: float
+    identity: TelemetryIdentity
+
+
+@dataclass(frozen=True)
+class ReadyProbe:
+    boot: str
+    seq: int
+    sent_at: float
+    sensor_boot: str
+
+    def matches(self, message):
+        return (
+            message["ack_boot_id"] == self.boot
+            and message["ack_seq"] == self.seq
+            and message["boot_id"] == self.sensor_boot
+        )
+
+
+@dataclass(frozen=True)
+class CommandDispatch:
+    command_id: str
+    expires: float
+    lease_expires: float
+
+
 class Bridge:
     """Serial-independent protocol orchestration; availability and ACK queues stay in RAM."""
 
@@ -395,7 +431,6 @@ class Bridge:
         self.seq = 0
         self.acks = {}
         self.available = {}
-        self.available_identity = {}
         self.ready_hints = {}
         self.probes = {}
         self.last_command = {}
@@ -410,7 +445,6 @@ class Bridge:
         """Discard connection-local framing work and availability before serial reconnect."""
         self.acks.clear()
         self.available.clear()
-        self.available_identity.clear()
         self.ready_hints.clear()
         self.probes.clear()
         self.radio_pending = None
@@ -423,25 +457,31 @@ class Bridge:
     def clear_available(self, node):
         """Discard a lease together with the identity of the READY that granted it."""
         self.available.pop(node, None)
-        self.available_identity.pop(node, None)
+
+    def available_until(self, node):
+        """Return a lease deadline from its single atomic identity/deadline record."""
+        lease = self.available.get(node)
+        return lease.expires if lease else 0
 
     def precedes(self, message, reference):
         """Identify events known to precede a READY or proof from the same node."""
         if reference is None:
             return False
-        boot, seq, generation = reference
-        if message["boot_id"] == boot:
-            return message["seq"] < seq
+        if message["boot_id"] == reference.boot:
+            return message["seq"] < reference.seq
         row = self.store.db.execute(
             "SELECT generation FROM boots WHERE node=? AND boot=?",
             (message["node_id"], message["boot_id"]),
         ).fetchone()
-        return bool(row and generation is not None and row[0] < generation)
+        return bool(
+            row and reference.generation is not None and row[0] < reference.generation
+        )
 
     def invalidate_before(self, message):
         """Invalidate older leases and hints independently when a newer fact arrives."""
         node = message["node_id"]
-        if not self.precedes(message, self.available_identity.get(node)):
+        lease = self.available.get(node)
+        if not self.precedes(message, lease.identity if lease else None):
             self.clear_available(node)
         if not self.precedes(message, self.ready_hints.get(node)):
             self.ready_hints.pop(node, None)
@@ -485,11 +525,7 @@ class Bridge:
         identity = (m["node_id"], m["boot_id"])
         if m["type"] == "READY_PROOF":
             probe = self.probes.get(m["node_id"])
-            if (
-                not probe
-                or (m["ack_boot_id"], m["ack_seq"]) != probe[:2]
-                or m["boot_id"] != probe[3]
-            ):
+            if not probe or not probe.matches(m):
                 return dict(kind="ignored", reason="unmatched_ready_proof", message=m)
         newer = m["seq"] > self.last_telemetry.get(identity, 0)
         # Best-effort batches and loss reports can be sent ahead of an older queued READY;
@@ -523,28 +559,16 @@ class Bridge:
                 if not current or (known and known[0] == current[0]):
                     node = m["node_id"]
                     if m["type"] == "READY":
-                        self.ready_hints[node] = (
-                            m["boot_id"],
-                            m["seq"],
-                            known[0] if known else None,
+                        self.ready_hints[node] = TelemetryIdentity(
+                            m["boot_id"], m["seq"], known[0] if known else None
                         )
                     else:
-                        probe = self.probes.get(node)
-                        if (
-                            not probe
-                            or (m["ack_boot_id"], m["ack_seq"]) != probe[:2]
-                            or m["boot_id"] != probe[3]
-                        ):
-                            return dict(
-                                kind="ignored",
-                                reason="unmatched_ready_proof",
-                                message=m,
-                            )
+                        probe = self.probes[node]  # Correlation was validated above.
                         self.probes.pop(node, None)
                         remaining = m["listen_remaining_ms"]
                         # The probe left the Pi before the sensor calculated this duration.
                         # Its complete round trip is therefore a conservative age bound.
-                        expires = probe[2] + min(
+                        expires = probe.sent_at + min(
                             PROBE_LEASE_CAP_S,
                             PROBE_LEASE_CAP_S
                             if remaining is None
@@ -552,11 +576,11 @@ class Bridge:
                         )
                         self.clear_available(node)
                         if expires > lease_now:
-                            self.available[node] = expires
-                            self.available_identity[node] = (
-                                m["boot_id"],
-                                m["seq"],
-                                known[0] if known else None,
+                            self.available[node] = Availability(
+                                expires,
+                                TelemetryIdentity(
+                                    m["boot_id"], m["seq"], known[0] if known else None
+                                ),
                             )
         return dict(
             kind="accepted", duplicate=not fresh, received_at=received_at, message=m
@@ -592,21 +616,21 @@ class Bridge:
                 node = command["node"]
                 probe = self.probes.get(node)
                 if (
-                    self.available.get(node, 0) <= clock
+                    self.available_until(node) <= clock
                     and node in self.ready_hints
-                    and (not probe or clock - probe[2] >= PROBE_RETRY_S)
+                    and (not probe or clock - probe.sent_at >= PROBE_RETRY_S)
                 ):
                     control = self.control(node, "READY_PROBE")
-                    self.probes[node] = (
+                    self.probes[node] = ReadyProbe(
                         control["boot_id"],
                         control["seq"],
                         clock,
-                        self.ready_hints[node][0],
+                        self.ready_hints[node].boot,
                     )
                     message = dict(kind="ready_probe", message=control)
                     break
                 if (
-                    self.available.get(node, 0) > clock
+                    self.available_until(node) > clock
                     and clock - self.last_command.get(command["id"], 0)
                     >= COMMAND_RETRY_S
                 ):
@@ -617,10 +641,10 @@ class Bridge:
                         **json.loads(command["config"]),
                     )
                     message = dict(kind="command", message=control)
-                    self.command_dispatch = (
+                    self.command_dispatch = CommandDispatch(
                         command["id"],
                         command["expires"],
-                        self.available[node],
+                        self.available_until(node),
                     )
                     self.last_command[command["id"]] = clock
                     break
@@ -639,22 +663,21 @@ class Bridge:
             return write_message(port, outgoing)
         dispatch = self.command_dispatch
         control = outgoing["message"]
-        if dispatch is None or control["command_id"] != dispatch[0]:
+        if dispatch is None or control["command_id"] != dispatch.command_id:
             return False
-        command_id, expires, lease = dispatch
 
         def allowed():
             return (
                 self.radio_pending == outgoing["request_id"]
-                and self.wall_clock() < expires
+                and self.wall_clock() < dispatch.expires
                 and self.monotonic_clock()
-                < min(lease, self.available.get(control["node_id"], 0))
+                < min(dispatch.lease_expires, self.available_until(control["node_id"]))
             )
 
         sent = write_message(port, outgoing, before_write=allowed)
         if not sent:
             self.radio_pending = None
-            self.last_command.pop(command_id, None)
+            self.last_command.pop(dispatch.command_id, None)
         self.command_dispatch = None
         return sent
 

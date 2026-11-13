@@ -23,6 +23,8 @@ namespace Transport {
   bool stopped();
   /// A timed-out MAC send requires a radio cycle before another transmission.
   bool needsRestart();
+  /// Callback quarantine exhausted: only a system restart can safely reclaim every slot.
+  bool needsReboot();
   /// Perform bounded USB work, drain callback queues and resume partial output writes.
   void poll();
   /// Return whether one MAC transmission is still awaiting completion or its timeout.

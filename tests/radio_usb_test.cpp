@@ -58,6 +58,16 @@ int main(int argc, char**) {
     return 0;
   }
   assert(Transport::available() && Serial.rxCapacity >= Transport::MAX_LINE + 1);
+  Transport::setLifecycleBusy(true);
+  FakeHardware::forbidWifiCalls = true;
+  Serial.feed("{\"kind\":\"hello\",\"request_id\":76}\n");
+  drain();
+  const auto busyMessages = takeMessages();
+  assert(std::any_of(busyMessages.begin(), busyMessages.end(), [](const auto& message) {
+    return message.contains("lifecycle_busy") && message.at("lifecycle_busy").str == "true";
+  }));
+  FakeHardware::forbidWifiCalls = false;
+  Transport::setLifecycleBusy(false);
   assert(Transport::suspend() && !Transport::available());
   assert(Transport::suspend());
   FakeHardware::startResult = -1;
@@ -198,5 +208,23 @@ int main(int argc, char**) {
   assert(error.at("parse_error").str != "\"none\"");
   assert(error.at("line_bytes").str == "8");
   assert(error.contains("byte_offset") && !error.contains("input"));
+
+  // Exhaust every quarantine slot without callbacks. Reclaiming them requires a reboot,
+  // never silently reusing a callback that could still complete a different send.
+  FakeRadio::autoComplete = false;
+  std::vector<Transport::SentCallback> missing;
+  for (size_t i = 0; i < Transport::CALLBACK_SLOTS; ++i) {
+    missing.push_back(FakeRadio::sentCallback);
+    assert(Transport::send(&byte, 1));
+    fakeRadioTime += 1001000;
+    Transport::poll();
+    assert(Transport::needsRestart() && !Transport::busy());
+    assert(Transport::suspend());
+    assert(Transport::resume() == (i + 1 < Transport::CALLBACK_SLOTS));
+  }
+  assert(Transport::needsReboot() && !Transport::available());
+  for (auto callback : missing) callback(nullptr, ESP_NOW_SEND_SUCCESS);
+  Transport::poll();
+  assert(Transport::needsReboot() && !Transport::resume());
   std::cout << count << " actual bridge ACKs survived split USB input and transient disconnects\n";
 }
