@@ -10,6 +10,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
@@ -58,6 +59,8 @@ class ProtocolTests(unittest.TestCase):
         self.directory = tempfile.TemporaryDirectory()
         self.store = protocol.Store(str(Path(self.directory.name) / "bridge.sqlite"))
         self.bridge = protocol.Bridge(self.store, MAPPING)
+        # Most tests supply event times explicitly; blocking-time tests advance this clock.
+        self.bridge.monotonic_clock = lambda: 0
 
     def tearDown(self):
         self.store.db.close()
@@ -556,6 +559,71 @@ class ProtocolTests(unittest.TestCase):
 
         with self.assertRaises(transport.serial.SerialException):
             transport.write_message(Stuck(), {})
+
+    def test_database_wait_cannot_dispatch_expired_command_or_lease(self):
+        for expires, lease in ((500, 15), (105, 50)):
+            with self.subTest(expires=expires, lease=lease):
+                self.store.db.execute("DELETE FROM commands")
+                self.store.db.commit()
+                self.store.queue("chair-01", COMMAND_ID, CONFIG, expires, 100)
+                self.bridge.reset()
+                self.bridge.available["chair-01"] = lease
+                clocks = [10, 100]
+                self.bridge.monotonic_clock = lambda: clocks[0]
+                self.bridge.wall_clock = lambda: clocks[1]
+                pending = self.store.pending
+
+                def delayed_pending(now):
+                    rows = pending(now)
+                    clocks[:] = [16, 106]
+                    return rows
+
+                with mock.patch.object(
+                    self.store, "pending", side_effect=delayed_pending
+                ):
+                    self.assertIsNone(self.bridge.next())
+
+    def test_serial_guard_rechecks_after_encoding_and_during_partial_writes(self):
+        self.store.queue("chair-01", COMMAND_ID, CONFIG, 500, 100)
+        clocks = [10, 100]
+        self.bridge.monotonic_clock = lambda: clocks[0]
+        self.bridge.wall_clock = lambda: clocks[1]
+        self.bridge.available["chair-01"] = 15
+        outgoing = self.bridge.next()
+        self.assertEqual(outgoing["kind"], "command")
+
+        class Port:
+            def __init__(self):
+                self.data = bytearray()
+                self.calls = 0
+
+            def write(self, data):
+                self.calls += 1
+                self.data.extend(data[:3])
+                clocks[0] = 16
+                return min(3, len(data))
+
+        port = Port()
+        dumps = json.dumps
+
+        def delayed_encoding(*args, **kwargs):
+            result = dumps(*args, **kwargs)
+            clocks[0] = 16
+            return result
+
+        with mock.patch.object(transport.json, "dumps", side_effect=delayed_encoding):
+            self.assertFalse(self.bridge.send(port, outgoing))
+        self.assertEqual(port.calls, 0)
+        self.assertIsNone(self.bridge.radio_pending)
+
+        clocks[0] = 10
+        outgoing = self.bridge.next()
+        with self.assertRaisesRegex(transport.serial.SerialException, "expired"):
+            self.bridge.send(port, outgoing)
+        self.assertEqual(port.calls, 1)
+        self.assertNotIn(b"\n", port.data)
+        self.bridge.reset()  # The serial loop reconnects after a partial-line failure.
+        self.assertIsNone(self.bridge.command_dispatch)
 
     def test_configuration_and_listing_cli(self):
         path = Path(self.directory.name)

@@ -385,9 +385,12 @@ class Store:
 class Bridge:
     """Serial-independent protocol orchestration; availability and ACK queues stay in RAM."""
 
-    def __init__(self, store, mapping):
+    def __init__(self, store, mapping, *, monotonic_clock=None, wall_clock=None):
         """Bind durable storage to explicit node identities and allocate a bridge boot identity."""
         self.store, self.mapping = store, mapping
+        self.monotonic_clock = monotonic_clock or time.monotonic
+        self.wall_clock = wall_clock or time.time
+        self.command_dispatch = None
         self.boot = f"{secrets.randbits(64) or 1:016x}"
         self.seq = 0
         self.acks = {}
@@ -412,6 +415,7 @@ class Bridge:
         self.probes.clear()
         self.radio_pending = None
         self.last_command.clear()
+        self.command_dispatch = None
         self.request = self.request % UINT32_MAX + 1
         self.hello_request = self.request
         return {"kind": "hello", "request_id": self.hello_request}
@@ -558,11 +562,23 @@ class Bridge:
             kind="accepted", duplicate=not fresh, received_at=received_at, message=m
         )
 
-    def next(self, now, monotonic=None):
+    def next(self, now=None, monotonic=None):
         """Return one ACK or live command when the radio slot is free; expired commands never dispatch."""
-        clock = now if monotonic is None else monotonic
+        started = self.monotonic_clock()
+        supplied_now = now
+        now = self.wall_clock() if now is None else now
+        if monotonic is not None:
+            clock = monotonic
+        elif supplied_now is not None:
+            clock = now  # Explicit times also support deterministic simulation callers.
+        else:
+            clock = started
         # Mark expired commands even while serial/radio is unavailable.
         pending = self.store.pending(now)
+        # SQLite may wait for a writer or disk I/O. Never authorize from the pre-I/O time.
+        elapsed = max(0, self.monotonic_clock() - started)
+        now = self.wall_clock() if supplied_now is None else now + elapsed
+        clock += elapsed
         if self.radio_pending is not None and clock - self.radio_at < RADIO_TIMEOUT_S:
             return None
         message = None
@@ -571,6 +587,8 @@ class Bridge:
             message = dict(kind="event_ack", message=control)
         else:
             for command in pending:
+                if command["expires"] <= now:
+                    continue
                 node = command["node"]
                 probe = self.probes.get(node)
                 if (
@@ -599,6 +617,11 @@ class Bridge:
                         **json.loads(command["config"]),
                     )
                     message = dict(kind="command", message=control)
+                    self.command_dispatch = (
+                        command["id"],
+                        command["expires"],
+                        self.available[node],
+                    )
                     self.last_command[command["id"]] = clock
                     break
         if message:
@@ -607,6 +630,33 @@ class Bridge:
             self.radio_pending = self.request
             self.radio_at = clock
         return message
+
+    def send(self, port, outgoing):
+        """Recheck command deadlines after encoding and before every serial write."""
+        from transport import write_message
+
+        if outgoing["kind"] != "command":
+            return write_message(port, outgoing)
+        dispatch = self.command_dispatch
+        control = outgoing["message"]
+        if dispatch is None or control["command_id"] != dispatch[0]:
+            return False
+        command_id, expires, lease = dispatch
+
+        def allowed():
+            return (
+                self.radio_pending == outgoing["request_id"]
+                and self.wall_clock() < expires
+                and self.monotonic_clock()
+                < min(lease, self.available.get(control["node_id"], 0))
+            )
+
+        sent = write_message(port, outgoing, before_write=allowed)
+        if not sent:
+            self.radio_pending = None
+            self.last_command.pop(command_id, None)
+        self.command_dispatch = None
+        return sent
 
 
 def main(argv=None):
@@ -699,7 +749,7 @@ def main(argv=None):
                                     flush=True,
                                 )
                         try:
-                            outgoing = bridge.next(time.time(), time.monotonic())
+                            outgoing = bridge.next()
                         except sqlite3.Error as error:
                             print(
                                 json.dumps(
@@ -716,7 +766,7 @@ def main(argv=None):
                             write_message(port, hello)
                             hello_at = time.monotonic()
                         if outgoing:
-                            write_message(port, outgoing)
+                            bridge.send(port, outgoing)
             except (serial.SerialException, OSError) as error:
                 print(
                     json.dumps(dict(kind="disconnected", reason=str(error))), flush=True

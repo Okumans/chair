@@ -32,8 +32,10 @@ namespace SmartChair {
   void Engine::ready(Reason reason, uint64_t now) {
     for (const auto& pending : best_)
       if (pending.type == Type::READY && pending.reason < reason) reason = pending.reason;
-    clearReady();
-    auto f = frame(Type::READY, now);
+    // A routine refresh replaces announcements, but a pending probe still needs its proof.
+    std::erase_if(best_, [](const Frame& f) { return f.type == Type::READY; });
+    readyRefresh_ = 0;
+    auto f        = frame(Type::READY, now);
     if (!f.id.seq) return;
     if (best_.size() >= Limits::BEST_EFFORT_QUEUE) discardBest();
     f.reason = reason;
@@ -95,9 +97,12 @@ namespace SmartChair {
   }
 
   void Engine::discardBest() {
-    if (best_.front().type == Type::MOVEMENT_BATCH && droppedBatches_ != UINT32_MAX)
-      ++droppedBatches_;
-    best_.pop_front();
+    // Preserve the single pending proof while making room for routine telemetry.
+    auto discarded = std::find_if(best_.begin(), best_.end(),
+                                  [](const Frame& f) { return f.type != Type::READY_PROOF; });
+    if (discarded == best_.end()) discarded = best_.begin();
+    if (discarded->type == Type::MOVEMENT_BATCH && droppedBatches_ != UINT32_MAX) ++droppedBatches_;
+    best_.erase(discarded);
   }
 
   void Engine::receive(const Frame& f, uint64_t now) {

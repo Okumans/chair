@@ -309,7 +309,13 @@ missed windows, movement loss reporting, and power consumption on the actual boa
 Before sending a command, the bridge challenges the sensor and bounds the lease from the
 probe's send time. The full probe round trip therefore reduces the usable lease, including
 radio and USB delays. Sensor, gateway and bridge must all support READY_PROBE and
-READY_PROOF. A Wi-Fi SDK lifecycle call that never
+READY_PROOF. Command deadlines are rechecked after database work and before each USB
+write. If expiry interrupts a partial line, the bridge reconnects; it does not finish the
+expired command. Bytes already submitted to the serial driver cannot be recalled.
+Routine READY refreshes preserve pending proof responses; vacancy, policy changes and
+availability expiry invalidate them.
+
+A Wi-Fi SDK lifecycle call that never
 returns cannot be cancelled safely by the worker: sensing continues and the timeout is
 reported, but radio cleanup and retries wait for that call. Eight missing send callbacks
 can exhaust the quarantined callback slots and prevent further radio starts until reboot.

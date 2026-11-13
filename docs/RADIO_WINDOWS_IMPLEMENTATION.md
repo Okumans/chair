@@ -159,13 +159,19 @@ see [SETUP.md](SETUP.md#provision-the-boards).
 
 The review fixes add a probe and proof exchange to bound READY age across both radio and
 USB, preserve the motion tail through startup, and ignore old command-result retries when
-they precede a newer lease. The updated software checks pass 38 tests, and both normal
+they precede a newer lease. The initial review checks passed 38 tests, and both normal
 firmware targets build. Both boards were subsequently flashed without resetting their
 stored state. A bridge using a separate temporary database received a correlated
 READY_PROOF and a successful `already_applied` result for a configuration command using
 the existing default values; the temporary database passed its integrity check. The
-specific delayed-message and startup-failure cases were exercised by automated tests,
-not reproduced on the physical boards.
+subsequent physical delayed-READY, lost-ACK, and wake tests are recorded in
+[the physical test report](RADIO_WINDOWS_PHYSICAL_TESTS.md). The startup-tail hardware
+case remained inconclusive.
+
+A further review fixes deadline checks after SQLite work and before USB writes, and
+preserves pending proofs during routine READY refreshes and queue overflow. These
+follow-up changes are covered by automated tests and firmware builds; the recorded
+physical observations used the earlier `dadfcc1` firmware.
 
 ## Upgrade boundary
 
