@@ -298,14 +298,14 @@ class ProtocolTests(unittest.TestCase):
             "chair-01", "22222222-2222-4222-8222-222222222222", CONFIG, 500, 103
         )
         self.confirm_ready(103, 5)
-        self.assertEqual(self.bridge.available["chair-01"], 108)
+        self.assertEqual(self.bridge.available_until("chair-01"), 108)
         self.bridge.receive(
             envelope(
                 event("COMMAND_RESULT", seq=3, command_id=COMMAND_ID, status="applied")
             ),
             104,
         )
-        self.assertEqual(self.bridge.available["chair-01"], 108)
+        self.assertEqual(self.bridge.available_until("chair-01"), 108)
 
     def test_radio_configuration_boundaries(self):
         for field in ("radio_interval_s", "radio_open_s", "radio_motion_tail_s"):
@@ -356,7 +356,7 @@ class ProtocolTests(unittest.TestCase):
         self.assertNotIn("chair-01", self.bridge.available)
         self.store.queue("chair-01", COMMAND_ID, CONFIG, 500, 13)
         self.confirm_ready(13, 7)
-        self.assertEqual(self.bridge.available["chair-01"], 18)
+        self.assertEqual(self.bridge.available_until("chair-01"), 18)
 
     def test_loss_report_sent_before_ready_does_not_invalidate_lease(self):
         self.bridge.receive(
@@ -370,7 +370,7 @@ class ProtocolTests(unittest.TestCase):
         )
         self.store.queue("chair-01", COMMAND_ID, CONFIG, 500, 11)
         self.confirm_ready(11, 7)
-        self.assertEqual(self.bridge.available["chair-01"], 16)
+        self.assertEqual(self.bridge.available_until("chair-01"), 16)
 
     def test_delayed_ready_and_proof_cannot_grant_expired_lease(self):
         self.store.queue("chair-01", COMMAND_ID, CONFIG, 500, 100)
@@ -416,7 +416,7 @@ class ProtocolTests(unittest.TestCase):
             102,
         )
         self.assertNotIn("chair-01", self.bridge.available)
-        self.assertEqual(self.bridge.ready_hints["chair-01"][1], 4)
+        self.assertEqual(self.bridge.ready_hints["chair-01"].seq, 4)
         self.store.queue(
             "chair-01", "22222222-2222-4222-8222-222222222222", CONFIG, 500, 102
         )
@@ -424,7 +424,7 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(ack["kind"], "event_ack")
         self.bridge.receive({"kind": "tx_result", "request_id": ack["request_id"]}, 102)
         self.confirm_ready(102, 5)
-        self.assertEqual(self.bridge.available["chair-01"], 107)
+        self.assertEqual(self.bridge.available_until("chair-01"), 107)
 
     def test_probe_must_match_and_continuous_mode_has_bounded_proof(self):
         self.store.queue("chair-01", COMMAND_ID, CONFIG, 500, 100)
@@ -446,7 +446,7 @@ class ProtocolTests(unittest.TestCase):
         self.assertNotIn("chair-01", self.bridge.available)
         proof["ack_seq"] = control["seq"]
         self.bridge.receive(envelope(proof), 102)
-        self.assertEqual(self.bridge.available["chair-01"], 105)
+        self.assertEqual(self.bridge.available_until("chair-01"), 105)
         self.assertNotEqual(self.bridge.next(105)["kind"], "command")
 
     def test_usb_validation(self):
@@ -567,7 +567,9 @@ class ProtocolTests(unittest.TestCase):
                 self.store.db.commit()
                 self.store.queue("chair-01", COMMAND_ID, CONFIG, expires, 100)
                 self.bridge.reset()
-                self.bridge.available["chair-01"] = lease
+                self.bridge.available["chair-01"] = protocol.Availability(
+                    lease, protocol.TelemetryIdentity("0000000000000001", 1, 1)
+                )
                 clocks = [10, 100]
                 self.bridge.monotonic_clock = lambda: clocks[0]
                 self.bridge.wall_clock = lambda: clocks[1]
@@ -588,7 +590,9 @@ class ProtocolTests(unittest.TestCase):
         clocks = [10, 100]
         self.bridge.monotonic_clock = lambda: clocks[0]
         self.bridge.wall_clock = lambda: clocks[1]
-        self.bridge.available["chair-01"] = 15
+        self.bridge.available["chair-01"] = protocol.Availability(
+            15, protocol.TelemetryIdentity("0000000000000001", 1, 1)
+        )
         outgoing = self.bridge.next()
         self.assertEqual(outgoing["kind"], "command")
 

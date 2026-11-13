@@ -123,26 +123,31 @@ constexpr int WIFI_SECOND_CHAN_NONE = 0, WIFI_PS_NONE = 0, WIFI_IF_STA = 0;
 
 namespace FakeHardware {
   inline int startResult = ESP_OK, stopResult = ESP_OK, peerResult = ESP_OK;
-  inline bool beginResult = true;
+  inline bool beginResult     = true;
+  inline bool forbidWifiCalls = false;
 }  // namespace FakeHardware
 
 inline int esp_wifi_get_channel(uint8_t* primary, int* secondary) {
+  assert(!FakeHardware::forbidWifiCalls);
   *primary   = 1;
   *secondary = 0;
   return ESP_OK;
 }
 
 inline int esp_wifi_get_max_tx_power(int8_t* power) {
+  assert(!FakeHardware::forbidWifiCalls);
   *power = 34;
   return ESP_OK;
 }
 
 inline int esp_wifi_get_ps(int* mode) {
+  assert(!FakeHardware::forbidWifiCalls);
   *mode = WIFI_PS_NONE;
   return ESP_OK;
 }
 
 inline int esp_wifi_get_mac(int, uint8_t* mac) {
+  assert(!FakeHardware::forbidWifiCalls);
   const uint8_t address[]{2, 0, 0, 0, 0, 2};
   std::memcpy(mac, address, sizeof(address));
   return ESP_OK;
@@ -167,7 +172,10 @@ struct FakeWiFi {
 
   void disconnect() {}
 
-  std::string macAddress() const { return LinkConfig::GATEWAY_MAC; }
+  std::string macAddress() const {
+    assert(!FakeHardware::forbidWifiCalls);
+    return LinkConfig::GATEWAY_MAC;
+  }
 };
 
 inline FakeWiFi WiFi;

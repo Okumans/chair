@@ -210,6 +210,30 @@ class TransportTests(unittest.TestCase):
             transport.received(b'{"kind":"sleep","wake_pin":5}')["kind"], "sleep"
         )
 
+    def test_gateway_recovery(self):
+        with tempfile.TemporaryDirectory() as directory:
+            binary = Path(directory) / "gateway-recovery-test"
+            subprocess.run(
+                [
+                    "c++",
+                    "-std=c++23",
+                    "-Wall",
+                    "-Wextra",
+                    "-Werror",
+                    "-I",
+                    str(ROOT / "tests/fakes"),
+                    "-I",
+                    str(ROOT / "shared/include"),
+                    "-I",
+                    str(ROOT / "third_party/glaze/include"),
+                    str(ROOT / "tests/gateway_recovery_test.cpp"),
+                    "-o",
+                    str(binary),
+                ],
+                check=True,
+            )
+            subprocess.run([str(binary)], check=True)
+
     def test_console_over_simulated_usb(self):
         master, slave = pty.openpty()
         process = subprocess.Popen(

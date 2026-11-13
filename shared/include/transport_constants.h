@@ -67,6 +67,7 @@ namespace Transport {
     inline constexpr char RADIO_START_TIMEOUT[]             = "radio_start_timeout";
     inline constexpr char RADIO_STOP_TIMEOUT[]              = "radio_stop_timeout";
     inline constexpr char RADIO_TASK_FAILED[]               = "radio_task_failed";
+    inline constexpr char RADIO_RECOVERY_REBOOT[]           = "radio_recovery_reboot";
     inline constexpr char INVALID_RADIO_FRAME[]             = "invalid_radio_frame";
     inline constexpr char SLEEP_SETUP_FAILED[]              = "sleep_setup_failed";
     inline constexpr char RADIO_STOP_FAILED[]               = "radio_stop_failed";

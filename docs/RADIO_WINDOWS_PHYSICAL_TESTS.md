@@ -46,3 +46,52 @@ motion fixture are needed to complete the startup-tail physical test.
 
 These results do not establish exhaustive radio reliability, current savings,
 precise motion-tail closure, or recovery from indefinitely stuck Wi-Fi calls.
+
+## Recovery and diagnostics follow-up
+
+The follow-up source adds asynchronous gateway lifecycle work, guarded emergency
+reset, named bridge records and committed bench tools. `make check` passed
+formatting, lint and 48 tests, including stalled workers, callback-slot exhaustion,
+continued USB work, durable-state gating, contact bounce before reset and the
+bench-tool scenarios. Sensor, gateway and both diagnostic variants were built.
+These automated checks do not establish the low-level reset's behavior under an
+actual SDK deadlock on either board.
+
+The identified ESP32-C3 was flashed with `sensor-window-test`, containing the
+1800 ms artificial startup delay. The written hashes verified, and a watchdog
+reset left download mode. A live USB capture showed a ready encrypted peer on
+channel 1 and successful MAC send completions to the powered gateway. This is
+MAC delivery evidence; the gateway's USB bridge was not running for application
+ACK/command testing in this capture.
+
+While the user reported holding the seat contact, diagnostic samples recorded:
+
+| Sensor uptime (ms) | Observation |
+| --- | --- |
+| 69,373 | Radio confirmed closed while occupied and stationary. |
+| 83,773 | Raw contact changed to released; debounced state still occupied. |
+| 83,824 | Debounced vacancy, 51 ms after the observed raw release. |
+| 84,166 | Raw contact changed to occupied. |
+| 84,216 | Debounced occupancy, 50 ms later. |
+| 84,684 | Raw contact changed to released again. |
+| 84,735 | Debounced vacancy, 51 ms later. |
+| 85,634 | Radio startup completed while vacant; bounded settling applied. |
+| 87,235 | Radio shutdown requested; USB disconnected immediately afterward. |
+
+No complete confirmed motion-stop-during-startup sequence was captured, so that
+hardware acceptance case remains **inconclusive**. These raw transitions explain
+why debounce accepted the observed state changes; they do not distinguish a
+contact fault, wiring fault, insufficient pressure or electrical interference.
+The 50 ms debounce and sleep behavior were preserved.
+
+The temporary delay image was replaced with production `sensor` firmware without
+an NVS erase. Local capture and restoration evidence is in
+`/tmp/chair-improvements-tail.jsonl` and `/tmp/chair-improvements-restore.log`.
+The final software/build checks are in `/tmp/chair-improvements-check.log` and
+`/tmp/chair-improvements-build.log`. These paths are local working-session files,
+not repository artifacts. The new gateway firmware has not yet been flashed in
+this follow-up session.
+
+The user has a UNI-T UT33A+ and an intact USB cable, without a breakout or
+accessible supply connection. Current was not measured. The
+[bench guide](RADIO_WINDOWS_BENCH.md) explains the required setup and limitations.

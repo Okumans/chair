@@ -8,7 +8,8 @@ namespace Fake {
   uint64_t now = 0;
   int seat = HIGH, sleeps = 0, stops = 0, sleepResult = ESP_OK, stopResult = ESP_OK;
   bool sending = false, closeOnTimerSetup = false;
-  bool radioOn = true;
+  bool radioOn = true, rebootRequired = false;
+  int reboots  = 0;
   int suspends = 0, resumes = 0;
   uint64_t wakeMask = 0, timerUs = 0;
   esp_sleep_wakeup_cause_t cause = ESP_SLEEP_WAKEUP_UNDEFINED;
@@ -27,6 +28,8 @@ namespace Fake {
     sleeps = stops = 0;
     sending = closeOnTimerSetup = false;
     radioOn                     = true;
+    rebootRequired              = false;
+    reboots                     = 0;
     suspends = resumes = 0;
     sleepResult = stopResult = ESP_OK;
     cause                    = reason;
@@ -79,6 +82,8 @@ int esp_sleep_enable_timer_wakeup(uint64_t timer) {
 
 void esp_deep_sleep_start() { ++Fake::sleeps; }
 
+void esp_restart_noos() { ++Fake::reboots; }
+
 int esp_wifi_stop() {
   ++Fake::stops;
   return Fake::stopResult;
@@ -110,6 +115,8 @@ namespace Transport {
   bool stopped() { return !Fake::radioOn; }
 
   bool needsRestart() { return false; }
+
+  bool needsReboot() { return Fake::rebootRequired; }
 
   void setLifecycleBusy(bool) {}
 
@@ -276,4 +283,52 @@ int main() {
   FakeTask::defer = false;
   Fake::tick(10051, LOW);
   assert(!Fake::radioOn && engine->communication.state == Communication::CLOSED);
+
+  // A permanently stalled SDK task keeps sensing alive, then requests a safe full restart.
+  Fake::boot();
+  FakeTask::defer = true;
+  Fake::tick(0, LOW);
+  Fake::tick(50, LOW);
+  Fake::tick(15049, LOW);
+  assert(Fake::reboots == 0 && engine->occupied);
+  Fake::tick(15050, LOW);
+  assert(recoveryPending && Fake::reboots == 0);
+  Fake::tick(15070, HIGH);  // Do not reboot over a not-yet-persisted seat release.
+  assert(Fake::reboots == 0);
+  Preferences::available = false;
+  Fake::tick(15120, HIGH);
+  assert(engine->storageFailed && Fake::reboots == 0);
+  Fake::tick(15370, HIGH);
+  assert(Fake::reboots == 0 && Fake::sleeps == 0);
+  Preferences::available = true;
+  Fake::tick(15620, HIGH);
+  assert(Fake::reboots == 1 && engine->canRestart(Fake::now));
+  Durable persisted;
+  assert(decodeDurable(Preferences::bytes, persisted));
+  assert(persisted.outbox.back().type == Type::VACATED);
+  // Fake a subsequent worker return so no host test leaves a dangling task across boots.
+  FakeTask::run();
+  lifecycle.poll(Fake::now);
+  FakeTask::defer = false;
+
+  Fake::boot();
+  Fake::rebootRequired = true;
+  Fake::tick(0, LOW);
+  Fake::tick(20, LOW);
+  assert(Fake::reboots == 0);  // Initial debounced state must be committed first.
+  Fake::tick(50, LOW);
+  assert(Fake::reboots == 1);
+
+  Fake::boot();
+  Fake::tick(0, LOW);
+  Fake::tick(50, LOW);
+  Fake::rebootRequired = true;
+  Fake::tick(100, LOW);
+  Fake::tick(110, HIGH);
+  Fake::tick(119, LOW);
+  Fake::tick(120, LOW);
+  Fake::tick(168, LOW);
+  assert(Fake::reboots == 0);  // Returning to the prior state still needs a stable debounce.
+  Fake::tick(169, LOW);
+  assert(Fake::reboots == 1);
 }

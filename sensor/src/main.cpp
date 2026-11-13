@@ -2,11 +2,12 @@
 #include <Preferences.h>
 
 #include <algorithm>
-#include <atomic>
 #include <memory>
 
+#include "bench_diagnostics.h"
 #include "chair_engine.h"
 #include "config.h"
+#include "esp_private/system_internal.h"
 #include "esp_sleep.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
@@ -16,6 +17,7 @@
 #include "link_config.h"
 #include "mpu6050.h"
 #include "pins.h"
+#include "radio_lifecycle.h"
 #include "radio_transport.h"
 
 static_assert(static_cast<uint8_t>(Pins::SEAT_SENSOR) == 5,
@@ -33,11 +35,11 @@ namespace {
   bool storageResetRequired           = false;
   bool imuReady                       = false;
   uint64_t nextImuProbe               = 0;
-  std::atomic<int> lifecycleResult{0};
-  std::atomic<uint32_t> lifecycleElapsed{0};
-  RadioAction lifecycleOperation = RadioAction::NONE;
-  uint64_t lifecycleStarted      = 0;
-  bool lifecycleTimedOut         = false;
+  Transport::RadioLifecycle lifecycle;
+  bool lifecycleTimeoutReported = false;
+  bool recoveryPending          = false;
+  uint64_t recoveryAnnounced    = 0;
+  bool traceSeatSeen = false, traceRaw = false;
 
   uint64_t nowMs() { return uint64_t(esp_timer_get_time()) / Timing::MICROSECONDS_PER_MILLISECOND; }
 
@@ -131,80 +133,69 @@ namespace {
     esp_deep_sleep_start();
   }
 
-  void lifecycleWorker(void* argument) {
-    const auto action = static_cast<RadioAction>(reinterpret_cast<uintptr_t>(argument));
-    const bool ok =
-        action == RadioAction::START ? Transport::resume(false) : Transport::suspend(false);
-    lifecycleElapsed.store(
-        static_cast<uint32_t>(std::min<uint64_t>(UINT32_MAX, nowMs() - lifecycleStarted)));
-    lifecycleResult.store(ok ? 1 : -1);
-    vTaskDelete(nullptr);
-  }
-
   void collectLifecycle(uint64_t now) {
-    if (lifecycleOperation == RadioAction::NONE) return;
-    const int result = lifecycleResult.exchange(0);
-    if (!result) {
-      const auto timeout = lifecycleOperation == RadioAction::START ? Timing::RADIO_START_TIMEOUT_MS
-                                                                    : Timing::RADIO_STOP_TIMEOUT_MS;
-      if (!lifecycleTimedOut && now - lifecycleStarted >= timeout) {
-        lifecycleTimedOut = true;
-        if (lifecycleOperation == RadioAction::START) engine->radioStartFailed(now, false);
-        Transport::printJson(
-            Transport::ErrorMessage{.reason = lifecycleOperation == RadioAction::START
-                                                  ? Transport::ErrorCode::RADIO_START_TIMEOUT
-                                                  : Transport::ErrorCode::RADIO_STOP_TIMEOUT});
-      }
-      return;
-    }
-    const auto completed = lifecycleOperation;
-    lifecycleOperation   = RadioAction::NONE;
-    Transport::setLifecycleBusy(false);
-    if (completed == RadioAction::START && !lifecycleTimedOut &&
-        lifecycleElapsed.load() >= Timing::RADIO_START_TIMEOUT_MS) {
-      lifecycleTimedOut = true;
-      engine->radioStartFailed(now, result < 0 && Transport::stopped());
+    const auto update = lifecycle.poll(now);
+    if (!update) return;
+    const bool starting = update->action == RadioAction::START;
+    if (update->timedOut && !lifecycleTimeoutReported) {
+      lifecycleTimeoutReported = true;
+      if (starting) engine->radioStartFailed(now, false);
       Transport::printJson(
-          Transport::ErrorMessage{.reason = Transport::ErrorCode::RADIO_START_TIMEOUT});
+          Transport::ErrorMessage{.reason = starting ? Transport::ErrorCode::RADIO_START_TIMEOUT
+                                                     : Transport::ErrorCode::RADIO_STOP_TIMEOUT});
     }
-    if (completed == RadioAction::START) {
-      if (!lifecycleTimedOut) {
-        if (result > 0)
+    if (!update->completed) return;
+    if (starting) {
+      if (!update->timedOut) {
+        if (update->ok) {
           engine->radioReady(now);
-        else
+          Bench::trace("radio_ready", *engine, now, wakeReason);
+        } else {
           engine->radioStartFailed(now, Transport::stopped());
+        }
       }
-    } else if (result > 0) {
+    } else if (update->ok) {
       engine->radioStopped(now);
+      Bench::trace("radio_stopped", *engine, now, wakeReason);
     } else {
       engine->radioStopFailed(now, Transport::available());
     }
-    if (result < 0)
-      Transport::printJson(Transport::ErrorMessage{
-          .reason = completed == RadioAction::START ? Transport::ErrorCode::RADIO_RESUME_FAILED
-                                                    : Transport::ErrorCode::RADIO_SUSPEND_FAILED});
+    if (!update->ok)
+      Transport::printJson(
+          Transport::ErrorMessage{.reason = starting ? Transport::ErrorCode::RADIO_RESUME_FAILED
+                                                     : Transport::ErrorCode::RADIO_SUSPEND_FAILED});
+  }
+
+  void recoverRadio(uint64_t now) {
+    if (!recoveryPending && (lifecycle.stalled(now) || Transport::needsReboot())) {
+      recoveryPending   = true;
+      recoveryAnnounced = now;
+      Transport::printJson(
+          Transport::ErrorMessage{.reason = Transport::ErrorCode::RADIO_RECOVERY_REBOOT});
+    }
+    // The main loop is the only writer of chair state. Wait for every durable write and
+    // debounce to finish, and check the pin again immediately before an emergency reset.
+    if (recoveryPending && now - recoveryAnnounced >= Timing::RADIO_RECOVERY_NOTICE_MS &&
+        engine->canRestart(now) && (digitalRead(Pins::SEAT_SENSOR) == LOW) == engine->occupied) {
+      // A stuck Wi-Fi task may also block esp_restart() shutdown hooks. The pinned IDF's
+      // low-level reset bypasses those hooks and resets both CPUs and radio peripherals.
+      esp_restart_noos();
+    }
   }
 
   void reconcileRadio(uint64_t now) {
     collectLifecycle(now);
-    if (lifecycleOperation != RadioAction::NONE) return;
+    if (lifecycle.busy() || recoveryPending || Transport::needsReboot()) return;
     const auto action = engine->radioAction(now, Transport::busy());
     if (action == RadioAction::NONE) return;
     if (action == RadioAction::START && Transport::available()) {
       engine->radioReady(now);
       return;
     }
-    lifecycleOperation = action;
-    lifecycleStarted   = now;
-    lifecycleTimedOut  = false;
-    lifecycleResult.store(0);
-    lifecycleElapsed.store(0);
-    Transport::setLifecycleBusy(true);
-    if (xTaskCreate(lifecycleWorker, "chair-radio", 6144,
-                    reinterpret_cast<void*>(static_cast<uintptr_t>(action)), 1,
-                    nullptr) != pdPASS) {
-      lifecycleOperation = RadioAction::NONE;
-      Transport::setLifecycleBusy(false);
+    lifecycleTimeoutReported = false;
+    Bench::trace(action == RadioAction::START ? "radio_start" : "radio_stop", *engine, now,
+                 wakeReason);
+    if (!lifecycle.start(action, now, Bench::START_DELAY_MS)) {
       if (action == RadioAction::START)
         engine->radioStartFailed(now, Transport::stopped());
       else
@@ -219,9 +210,10 @@ namespace {
 
 /// Initialize storage, sensors and encrypted transport before starting cooperative updates.
 void setup() {
-  storageResetRequired = false;
-  lifecycleResult.store(0);
-  lifecycleOperation = RadioAction::NONE;
+  storageResetRequired     = false;
+  lifecycleTimeoutReported = false;
+  recoveryPending          = false;
+  traceSeatSeen            = false;
   pinMode(Pins::SEAT_SENSOR, INPUT_PULLUP);
 
   const auto cause    = esp_sleep_get_wakeup_cause();
@@ -261,21 +253,33 @@ void loop() {
     engine->rotateBoot(newBootId(engine->identity.boot), now);
   }
 
-  engine->seat(digitalRead(Pins::SEAT_SENSOR) == LOW, now, wakeReason);
+  const bool rawSeat     = digitalRead(Pins::SEAT_SENSOR) == LOW;
+  const bool wasOccupied = engine->occupied;
+  const bool wasMoving   = engine->motionActive();
+  engine->seat(rawSeat, now, wakeReason);
+  if (!traceSeatSeen || traceRaw != rawSeat || wasOccupied != engine->occupied) {
+    Bench::trace("seat", *engine, now, wakeReason, rawSeat);
+    traceSeatSeen = true;
+    traceRaw      = rawSeat;
+  }
   if (!imuReady && now >= nextImuProbe) probeImu(now);
   if (engine->sampleDue(now)) sampleImu(now);
+  if (wasMoving != engine->motionActive())
+    Bench::trace(engine->motionActive() ? "motion_start" : "motion_stop", *engine, nowMs(),
+                 wakeReason);
 
   engine->tick(nowMs(), Transport::busy());
   if (Transport::needsRestart()) engine->radioFault(nowMs());
   reconcileRadio(nowMs());
+  recoverRadio(nowMs());
 
   Frame outgoing;
-  if (lifecycleOperation == RadioAction::NONE && Transport::available() && !Transport::busy() &&
+  if (!lifecycle.busy() && !recoveryPending && Transport::available() && !Transport::busy() &&
       engine->next(outgoing, nowMs())) {
     sendFrame(outgoing);
   }
 
-  if (engine->operating == Operating::DEEP_SLEEP) sleepWhileVacant();
+  if (!recoveryPending && engine->operating == Operating::DEEP_SLEEP) sleepWhileVacant();
 
   delay(Transport::POLL_DELAY_MS);
 }

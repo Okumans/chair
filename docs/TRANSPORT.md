@@ -315,7 +315,11 @@ expired command. Bytes already submitted to the serial driver cannot be recalled
 Routine READY refreshes preserve pending proof responses; vacancy, policy changes and
 availability expiry invalidate them.
 
-A Wi-Fi SDK lifecycle call that never
-returns cannot be cancelled safely by the worker: sensing continues and the timeout is
-reported, but radio cleanup and retries wait for that call. Eight missing send callbacks
-can exhaust the quarantined callback slots and prevent further radio starts until reboot.
+A Wi-Fi SDK lifecycle call that never returns is not cancelled or overlapped with another
+worker. Both nodes request an emergency reboot after 15 seconds outstanding; sensor reboot
+waits for durable state, settled seat debounce and a final pin check. Eight permanently
+missing callbacks also request a reboot rather than reuse a quarantined slot. Failed
+storage postpones sensor reboot, and RAM movement can be lost across reset. HELLO uses a
+cached radio snapshot so USB handling does not take a stuck worker's Wi-Fi locks.
+See [the bench guide](RADIO_WINDOWS_BENCH.md) for reset dependencies, diagnostic firmware,
+repeatable fault tests and remaining hardware acceptance work.
