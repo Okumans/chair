@@ -83,17 +83,22 @@ def received(line):
     return message
 
 
-def write_message(port, message):
-    """Finish one bounded JSON line through partial writes; errors require reconnect."""
+def write_message(port, message, *, before_write=None):
+    """Finish a bounded line; guard each write, and reconnect if a partial line expires."""
     data = (json.dumps(message, separators=(",", ":")) + "\n").encode("utf-8")
     if len(data) - 1 > MAX_LINE:
         raise ValueError("USB message exceeds line limit")
     offset = 0
     while offset < len(data):
+        if before_write is not None and not before_write():
+            if offset:
+                raise serial.SerialException("USB message expired during partial write")
+            return False
         count = port.write(data[offset:])
         if not count:
             raise serial.SerialException("USB write made no progress")
         offset += count
+    return True
 
 
 def main():

@@ -92,6 +92,41 @@ int main() {
   assert(decodedProof.type == Type::READY_PROOF && decodedProof.ack_boot == 123 &&
          decodedProof.ack_seq == 456 && decodedProof.listen == proof.listen);
 
+  // Routine availability refreshes must not discard a pending probe response.
+  startupTail.receive(probe, 453);
+  startupTail.ready(Reason::scheduled, 454);
+  proof = nextOf(startupTail, 455, Type::READY_PROOF);
+  assert(proof.ack_boot == probe.id.boot && proof.ack_seq == probe.id.seq);
+  assert(proof.listen == 10380 - 455);
+  nextOf(startupTail, 455, Type::READY);
+
+  // Vacancy still invalidates both kinds of queued availability.
+  startupTail.receive(probe, 456);
+  startupTail.seat(false, 457);
+  startupTail.seat(false, 507);
+  Frame vacantOutput;
+  while (startupTail.next(vacantOutput, 507))
+    assert(vacantOutput.type != Type::READY_PROOF && vacantOutput.type != Type::READY);
+
+  Engine fullProof(id(), {}, save);
+  fullProof.seat(true, 0);
+  fullProof.seat(true, 50);
+  fullProof.radioReady(50);
+  auto fullSync = nextOf(fullProof, 50, Type::STATE_SYNC);
+  nextOf(fullProof, 50, Type::READY);
+  ack(fullProof, fullSync, 50);
+  fullProof.receive(probe, 60);
+  for (uint8_t uuid : {1, 2, 3}) {
+    Frame config;
+    config.id         = id();
+    config.type       = Type::CONFIG_SET;
+    config.command[0] = uuid;
+    fullProof.receive(config, 61);
+  }
+  fullProof.ready(Reason::scheduled, 62);
+  proof = nextOf(fullProof, 63, Type::READY_PROOF);
+  assert(proof.ack_seq == probe.id.seq);
+
   Engine retryTail(id(), {}, save);
   retryTail.imuAvailable = true;
   retryTail.seat(true, 0);
