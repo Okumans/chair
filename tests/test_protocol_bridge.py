@@ -63,6 +63,23 @@ class ProtocolTests(unittest.TestCase):
         self.store.db.close()
         self.directory.cleanup()
 
+    def confirm_ready(self, now, seq, remaining=5000, monotonic=None):
+        """Exercise the actual Pi-to-sensor challenge and correlated proof."""
+        probe = self.bridge.next(now, monotonic=monotonic)
+        self.assertEqual(probe["kind"], "ready_probe")
+        self.bridge.receive(
+            {"kind": "tx_result", "request_id": probe["request_id"]}, now
+        )
+        control = probe["message"]
+        proof = event(
+            "READY_PROOF",
+            seq=seq,
+            listen_remaining_ms=remaining,
+            ack_boot_id=control["boot_id"],
+            ack_seq=control["seq"],
+        )
+        self.bridge.receive(envelope(proof), now, monotonic=monotonic)
+
     def test_control_identity_rotates_before_sequence_wrap(self):
         previous = self.bridge.boot
         self.bridge.seq = protocol.UINT32_MAX
@@ -222,6 +239,7 @@ class ProtocolTests(unittest.TestCase):
             envelope(event("READY", reason="seat_occupied", listen_remaining_ms=None)),
             101,
         )
+        self.confirm_ready(101, 2, None)
         outgoing = self.bridge.next(101)
         self.assertEqual(outgoing["kind"], "command")
         self.assertEqual(outgoing["message"]["command_id"], COMMAND_ID)
@@ -248,10 +266,11 @@ class ProtocolTests(unittest.TestCase):
         self.bridge.receive(
             envelope(event("READY", reason="scheduled", listen_remaining_ms=10000)), 101
         )
+        self.confirm_ready(101, 2, 10000)
         self.assertEqual(self.bridge.next(101)["kind"], "command")
         self.bridge.receive(
             envelope(
-                event("COMMAND_RESULT", seq=2, command_id=COMMAND_ID, status="applied")
+                event("COMMAND_RESULT", seq=3, command_id=COMMAND_ID, status="applied")
             ),
             102,
         )
@@ -264,9 +283,24 @@ class ProtocolTests(unittest.TestCase):
         self.assertNotIn("chair-01", self.bridge.available)
         self.bridge.receive(
             envelope(
-                event("READY", seq=3, reason="scheduled", listen_remaining_ms=5000)
+                event("READY", seq=4, reason="scheduled", listen_remaining_ms=5000)
             ),
             103,
+        )
+        # An outstanding ACK takes precedence; simulate its completion, then prove freshness.
+        ack = self.bridge.next(103)
+        self.assertEqual(ack["kind"], "event_ack")
+        self.bridge.receive({"kind": "tx_result", "request_id": ack["request_id"]}, 103)
+        self.store.queue(
+            "chair-01", "22222222-2222-4222-8222-222222222222", CONFIG, 500, 103
+        )
+        self.confirm_ready(103, 5)
+        self.assertEqual(self.bridge.available["chair-01"], 108)
+        self.bridge.receive(
+            envelope(
+                event("COMMAND_RESULT", seq=3, command_id=COMMAND_ID, status="applied")
+            ),
+            104,
         )
         self.assertEqual(self.bridge.available["chair-01"], 108)
 
@@ -299,8 +333,9 @@ class ProtocolTests(unittest.TestCase):
             100,
             monotonic=10,
         )
+        self.confirm_ready(100, 2, monotonic=10)
         # A wall-clock rollback must not extend the five-second lease.
-        self.assertIsNone(self.bridge.next(90, monotonic=15))
+        self.assertNotEqual(self.bridge.next(90, monotonic=15)["kind"], "command")
 
     def test_reconnect_requires_matching_gateway_hello(self):
         hello = self.bridge.reset()
@@ -315,6 +350,9 @@ class ProtocolTests(unittest.TestCase):
         self.assertFalse(self.bridge.available)
         self.bridge.receive({"kind": "hello", "request_id": hello["request_id"]}, 12)
         self.bridge.receive(envelope(dict(ready, seq=6)), 13)
+        self.assertNotIn("chair-01", self.bridge.available)
+        self.store.queue("chair-01", COMMAND_ID, CONFIG, 500, 13)
+        self.confirm_ready(13, 7)
         self.assertEqual(self.bridge.available["chair-01"], 18)
 
     def test_loss_report_sent_before_ready_does_not_invalidate_lease(self):
@@ -327,7 +365,86 @@ class ProtocolTests(unittest.TestCase):
             ),
             11,
         )
+        self.store.queue("chair-01", COMMAND_ID, CONFIG, 500, 11)
+        self.confirm_ready(11, 7)
         self.assertEqual(self.bridge.available["chair-01"], 16)
+
+    def test_delayed_ready_and_proof_cannot_grant_expired_lease(self):
+        self.store.queue("chair-01", COMMAND_ID, CONFIG, 500, 100)
+        # An old READY is only a hint; it cannot directly enable commands.
+        self.bridge.receive(
+            envelope(event("READY", reason="scheduled", listen_remaining_ms=5000)), 106
+        )
+        self.assertNotIn("chair-01", self.bridge.available)
+        probe = self.bridge.next(106)
+        self.assertEqual(probe["kind"], "ready_probe")
+        control = probe["message"]
+        proof = event(
+            "READY_PROOF",
+            seq=2,
+            listen_remaining_ms=5000,
+            ack_boot_id=control["boot_id"],
+            ack_seq=control["seq"],
+        )
+        # Even a proof that was delayed in the radio or USB path expires from probe send.
+        self.bridge.receive(envelope(proof), 112)
+        self.assertNotIn("chair-01", self.bridge.available)
+        self.assertNotEqual(self.bridge.next(112)["kind"], "command")
+
+    def test_old_result_invalidates_old_lease_but_keeps_newer_ready(self):
+        self.store.queue("chair-01", COMMAND_ID, CONFIG, 500, 100)
+        self.bridge.receive(
+            envelope(
+                event("READY", seq=1, reason="scheduled", listen_remaining_ms=5000)
+            ),
+            100,
+        )
+        self.confirm_ready(100, 2)
+        self.bridge.receive(
+            envelope(
+                event("READY", seq=4, reason="scheduled", listen_remaining_ms=5000)
+            ),
+            101,
+        )
+        self.bridge.receive(
+            envelope(
+                event("COMMAND_RESULT", seq=3, command_id=COMMAND_ID, status="applied")
+            ),
+            102,
+        )
+        self.assertNotIn("chair-01", self.bridge.available)
+        self.assertEqual(self.bridge.ready_hints["chair-01"][1], 4)
+        self.store.queue(
+            "chair-01", "22222222-2222-4222-8222-222222222222", CONFIG, 500, 102
+        )
+        ack = self.bridge.next(102)
+        self.assertEqual(ack["kind"], "event_ack")
+        self.bridge.receive({"kind": "tx_result", "request_id": ack["request_id"]}, 102)
+        self.confirm_ready(102, 5)
+        self.assertEqual(self.bridge.available["chair-01"], 107)
+
+    def test_probe_must_match_and_continuous_mode_has_bounded_proof(self):
+        self.store.queue("chair-01", COMMAND_ID, CONFIG, 500, 100)
+        self.bridge.receive(
+            envelope(event("READY", reason="scheduled", listen_remaining_ms=None)), 100
+        )
+        probe = self.bridge.next(100)
+        control = probe["message"]
+        proof = event(
+            "READY_PROOF",
+            seq=2,
+            listen_remaining_ms=None,
+            ack_boot_id=control["boot_id"],
+            ack_seq=control["seq"] + 1,
+        )
+        self.assertEqual(
+            self.bridge.receive(envelope(proof), 101)["reason"], "unmatched_ready_proof"
+        )
+        self.assertNotIn("chair-01", self.bridge.available)
+        proof["ack_seq"] = control["seq"]
+        self.bridge.receive(envelope(proof), 102)
+        self.assertEqual(self.bridge.available["chair-01"], 105)
+        self.assertNotEqual(self.bridge.next(105)["kind"], "command")
 
     def test_usb_validation(self):
         loss = event("MOVEMENT_LOSS", dropped_batches=3)

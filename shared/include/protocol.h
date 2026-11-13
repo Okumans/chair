@@ -27,7 +27,9 @@ namespace SmartChair {
     EVENT_ACK,
     CONFIG_SET,
     COMMAND_RECEIPT,
-    MOVEMENT_LOSS
+    MOVEMENT_LOSS,
+    READY_PROBE,
+    READY_PROOF
   };
   /// Command outcomes; received confirms receipt only and busy permits a later retry.
   enum class Status : uint8_t {
@@ -120,7 +122,8 @@ namespace SmartChair {
 
   /// Return whether this type carries the 12-byte common physical-state snapshot.
   inline bool telemetry(Type t) {
-    return (t >= Type::OCCUPIED && t <= Type::READY) || t == Type::MOVEMENT_LOSS;
+    return (t >= Type::OCCUPIED && t <= Type::READY) || t == Type::MOVEMENT_LOSS ||
+           t == Type::READY_PROOF;
   }
 
   /// Reject the all-zero UUID reserved for an absent command identity.
@@ -150,7 +153,7 @@ namespace SmartChair {
   inline bool valid(const Frame& f) {
     // Every frame needs a provisioned node name, nonzero identity and a supported message type.
     if (!validNode(f.id.node) || !f.id.boot || !f.id.seq || f.type < Type::OCCUPIED ||
-        f.type > Type::MOVEMENT_LOSS)
+        f.type > Type::READY_PROOF)
       return false;
 
     // V2 snapshots must establish an explicit, durable boot ordering generation.
@@ -168,6 +171,8 @@ namespace SmartChair {
 
     // An ACK must identify the exact original event; neither target field may be zero.
     if (f.type == Type::EVENT_ACK) return f.ack_boot && f.ack_seq;
+
+    if (f.type == Type::READY_PROOF) return f.common.occupied && f.ack_boot && f.ack_seq;
 
     if (f.type == Type::MOVEMENT_LOSS) return f.dropped_batches != 0;
 
@@ -204,9 +209,10 @@ namespace SmartChair {
     return true;
   }
 
-  inline constexpr std::array<std::string_view, 12> TYPE_NAMES{
-      "OCCUPIED",       "VACATED", "HEARTBEAT", "STATE_SYNC", "BATTERY_LOW",     "COMMAND_RESULT",
-      "MOVEMENT_BATCH", "READY",   "EVENT_ACK", "CONFIG_SET", "COMMAND_RECEIPT", "MOVEMENT_LOSS"};
+  inline constexpr std::array<std::string_view, 14> TYPE_NAMES{
+      "OCCUPIED",        "VACATED",        "HEARTBEAT",   "STATE_SYNC", "BATTERY_LOW",
+      "COMMAND_RESULT",  "MOVEMENT_BATCH", "READY",       "EVENT_ACK",  "CONFIG_SET",
+      "COMMAND_RECEIPT", "MOVEMENT_LOSS",  "READY_PROBE", "READY_PROOF"};
 
   /// Return the stable JSON type name. Precondition: type has passed valid().
   constexpr std::string_view name(Type type) { return TYPE_NAMES[uint8_t(type) - 1]; }
@@ -279,6 +285,10 @@ namespace SmartChair {
     } else if (f.type == Type::READY) {
       w.put(uint8_t(f.reason), 1);
       w.put(f.listen, 4);
+    } else if (f.type == Type::READY_PROOF) {
+      w.put(f.listen, 4);
+      w.put(f.ack_boot, 8);
+      w.put(f.ack_seq, 4);
     } else if (f.type == Type::MOVEMENT_BATCH) {
       w.put(f.start, 4);
       w.put(f.duration, 4);
@@ -344,6 +354,10 @@ namespace SmartChair {
     } else if (f.type == Type::READY) {
       f.reason = Reason(r.get(1));
       f.listen = r.get(4);
+    } else if (f.type == Type::READY_PROOF) {
+      f.listen   = r.get(4);
+      f.ack_boot = r.get(8);
+      f.ack_seq  = r.get(4);
     } else if (f.type == Type::MOVEMENT_BATCH) {
       f.start          = r.get(4);
       f.duration       = r.get(4);

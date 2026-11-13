@@ -33,15 +33,16 @@ namespace Transport {
 
   /// Stable USB envelope names; they are separate from chair protocol message types.
   namespace UsbKind {
-    inline constexpr std::string_view HELLO     = "hello";
-    inline constexpr std::string_view TX        = "tx";
-    inline constexpr std::string_view RX        = "rx";
-    inline constexpr std::string_view TX_RESULT = "tx_result";
-    inline constexpr std::string_view ERROR     = "error";
-    inline constexpr std::string_view SLEEP     = "sleep";
-    inline constexpr std::string_view TELEMETRY = "telemetry";
-    inline constexpr std::string_view COMMAND   = "command";
-    inline constexpr std::string_view EVENT_ACK = "event_ack";
+    inline constexpr std::string_view HELLO       = "hello";
+    inline constexpr std::string_view TX          = "tx";
+    inline constexpr std::string_view RX          = "rx";
+    inline constexpr std::string_view TX_RESULT   = "tx_result";
+    inline constexpr std::string_view ERROR       = "error";
+    inline constexpr std::string_view SLEEP       = "sleep";
+    inline constexpr std::string_view TELEMETRY   = "telemetry";
+    inline constexpr std::string_view COMMAND     = "command";
+    inline constexpr std::string_view EVENT_ACK   = "event_ack";
+    inline constexpr std::string_view READY_PROBE = "ready_probe";
   }  // namespace UsbKind
 
   /// Stable structured diagnostic reasons, never free-form text on the USB stream.

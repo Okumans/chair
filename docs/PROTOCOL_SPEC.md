@@ -36,6 +36,16 @@ Types and payloads:
 |10|CONFIG_SET|UUID, revision, heartbeat, batch interval, movement enabled, windows enabled, interval, open time, motion tail; 42 bytes total|control|
 |11|COMMAND_RECEIPT|UUID 16 bytes, status u8|best effort control|
 |12|MOVEMENT_LOSS|common, dropped_batches u32|best effort|
+|13|READY_PROBE|empty; header identity identifies the challenge|best effort control|
+|14|READY_PROOF|common, listen_remaining_ms u32, probe boot u64, probe seq u32|best effort|
+
+Before dispatching a configuration command, the Pi sends a READY_PROBE in response to a
+READY hint. While occupied availability remains open, the sensor answers with READY_PROOF
+and the probe identity. The Pi calculates a conservative expiry from the probe's send
+time and the proof's remaining duration, capped at five seconds. It rejects unmatched,
+expired or delayed proofs and retries the probe when necessary. This avoids relying on
+synchronized clocks or assuming a bound on radio or USB buffering. These two message types
+extend wire v2; update the sensor, gateway, and bridge together.
 
 UUIDs are nonzero 16-byte values, represented as canonical UUID strings in JSON. Status: 0 applied, 1 already_applied, 2 revision_conflict, 3 stale_revision, 4 busy, 5 received, 6 command_conflict. READY reasons: 0 seat_occupied, 1 movement_started, 2 scheduled. Never persist, replay or application-ACK READY. Generate it afresh when occupied communication opens or movement starts. Null listen remaining means no scheduled close; timed windows compute remaining time when sent. There is no UTC clock or listen_until on the chair.
 

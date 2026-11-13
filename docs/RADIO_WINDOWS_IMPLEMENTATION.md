@@ -148,20 +148,24 @@ see [SETUP.md](SETUP.md#provision-the-boards).
 
 ## Known gaps and review items
 
-1. **Delayed READY:** the bridge measures a lease from USB receipt. A READY delayed in
-   gateway or operating-system buffers can appear valid after the sensor window has
-   expired. The reconnect hello barrier does not bound delays on an open connection.
-2. **Stuck Wi-Fi SDK call:** sensing continues and a timeout is reported, but a lifecycle
+1. **Stuck Wi-Fi SDK call:** sensing continues and a timeout is reported, but a lifecycle
    call that never returns cannot safely be cancelled by the worker. Cleanup and retries
    must wait for that call.
-3. **Callback-slot exhaustion:** eight permanently missing send callbacks can exhaust the
+2. **Callback-slot exhaustion:** eight permanently missing send callbacks can exhaust the
    quarantined slots and prevent further radio starts until reboot.
-4. **Physical acceptance:** test encrypted delivery after restarts, command round trips,
+3. **Physical acceptance:** test encrypted delivery after restarts, command round trips,
    sample timing, seat and timer wake, radio-off periods, and power consumption on the
    actual boards.
-5. **Commit organization:** the specification suggests separate contract/codec, engine,
-   hardware, and Pi integration commits. The changes remain uncommitted and their
-   interdependencies should be reviewed when dividing them.
+
+The review fixes add a probe and proof exchange to bound READY age across both radio and
+USB, preserve the motion tail through startup, and ignore old command-result retries when
+they precede a newer lease. The updated software checks pass 38 tests, and both normal
+firmware targets build. Both boards were subsequently flashed without resetting their
+stored state. A bridge using a separate temporary database received a correlated
+READY_PROOF and a successful `already_applied` result for a configuration command using
+the existing default values; the temporary database passed its integrity check. The
+specific delayed-message and startup-failure cases were exercised by automated tests,
+not reproduced on the physical boards.
 
 ## Upgrade boundary
 

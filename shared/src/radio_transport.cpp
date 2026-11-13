@@ -174,13 +174,15 @@ namespace Transport {
       }
       uint8_t payload[MAX_PAYLOAD];
       size_t size = 0;
-      if ((command.kind == UsbKind::COMMAND || command.kind == UsbKind::EVENT_ACK) &&
+      if ((command.kind == UsbKind::COMMAND || command.kind == UsbKind::EVENT_ACK ||
+           command.kind == UsbKind::READY_PROBE) &&
           command.message && command.request_id && *command.request_id) {
         SmartChair::Frame frame;
         if (!SmartChair::fromJson(*command.message, frame) ||
             std::string_view(frame.id.node.data()) != LinkConfig::NODE_ID ||
             (command.kind == UsbKind::COMMAND && frame.type != SmartChair::Type::CONFIG_SET) ||
-            (command.kind == UsbKind::EVENT_ACK && frame.type != SmartChair::Type::EVENT_ACK)) {
+            (command.kind == UsbKind::EVENT_ACK && frame.type != SmartChair::Type::EVENT_ACK) ||
+            (command.kind == UsbKind::READY_PROBE && frame.type != SmartChair::Type::READY_PROBE)) {
           error(ErrorCode::INVALID_PROTOCOL_COMMAND, *command.request_id);
           return;
         }

@@ -306,10 +306,10 @@ and power/radio measurements. MQTT, systemd, battery hardware, actual occupied l
 sleep are deferred. Validate the test schedule, radio restart, discovery after resets and
 missed windows, movement loss reporting, and power consumption on the actual boards.
 
-There are two known recovery limits. READY leases are measured by the bridge from USB
-receipt, so a READY delayed in gateway or operating-system buffers can appear valid after
-the sensor's window has expired. Reconnection has a fresh-hello barrier, but it does not
-bound delays on an otherwise open connection. Also, a Wi-Fi SDK lifecycle call that never
+Before sending a command, the bridge challenges the sensor and bounds the lease from the
+probe's send time. The full probe round trip therefore reduces the usable lease, including
+radio and USB delays. Sensor, gateway and bridge must all support READY_PROBE and
+READY_PROOF. A Wi-Fi SDK lifecycle call that never
 returns cannot be cancelled safely by the worker: sensing continues and the timeout is
 reported, but radio cleanup and retries wait for that call. Eight missing send callbacks
 can exhaust the quarantined callback slots and prevent further radio starts until reboot.
