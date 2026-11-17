@@ -9,9 +9,10 @@ import random
 import sqlite3
 import time
 from collections import deque
+from dataclasses import dataclass
 from pathlib import Path
 
-from contract import IDENTIFIER, ContractError, validate
+from contract import IDENTIFIER, MAX_PAYLOAD, ContractError, validate
 
 APPLICATION_ID = 0x4D515431
 
@@ -20,6 +21,22 @@ def compact(value):
     return json.dumps(
         value, sort_keys=True, separators=(",", ":"), allow_nan=False
     ).encode()
+
+
+def rejection_digest(topic, payload):
+    """Identify a rejected delivery without concatenating or retaining its payload."""
+    digest = hashlib.sha256()
+    digest.update(topic)
+    digest.update(b"\0")
+    digest.update(payload)
+    return digest.hexdigest()
+
+
+@dataclass(frozen=True)
+class Oversized:
+    """Bounded replacement for a payload that cannot be accepted."""
+
+    digest: str
 
 
 class Ledger:
@@ -149,7 +166,10 @@ class Ledger:
         return receipt_topic, receipt
 
     def reject(self, topic, payload, reason):
-        digest = hashlib.sha256(topic.encode() + b"\0" + payload).hexdigest()
+        self.reject_digest(topic, rejection_digest(topic.encode(), payload), reason)
+
+    def reject_digest(self, topic, digest, reason):
+        """Commit a rejection whose digest has already been calculated."""
         with self.db:
             exists = self.db.execute(
                 "SELECT 1 FROM rejected WHERE digest=?", (digest,)
@@ -247,16 +267,24 @@ class Backend:
         self.completed.append((flight[0], reason.is_failure))
 
     def on_message(self, client, userdata, message):
-        if len(self.work) >= 64 or len(message.payload) > 16384:
+        if len(self.work) >= 64:
             self.recovery = True
             return
+        topic = message.topic
+        if len(message.payload) > MAX_PAYLOAD:
+            topic_bytes = topic.encode("utf-8")
+            payload = Oversized(rejection_digest(topic_bytes, message.payload))
+            # Retain only a bounded topic prefix; the digest covers the full topic.
+            topic = topic_bytes[:256].decode("utf-8", errors="ignore")
+        else:
+            payload = bytes(message.payload)
         self.work.append(
             (
                 self.generation,
                 message.mid,
                 message.qos,
-                message.topic,
-                bytes(message.payload),
+                topic,
+                payload,
                 bool(message.retain),
             )
         )
@@ -279,11 +307,16 @@ class Backend:
             generation, mid, qos, topic, payload, retain = self.work.popleft()
             if generation != self.generation:
                 continue
-            try:
-                self.ledger.ingest(topic, payload, qos=qos, retain=retain)
-            except ContractError as error:
-                # Native ACK only after the safe rejection journal commits; never MQTT_ACK invalid data.
-                self.ledger.reject(topic, payload, str(error))
+            if isinstance(payload, Oversized):
+                self.ledger.reject_digest(
+                    topic, payload.digest, "payload exceeds maximum"
+                )
+            else:
+                try:
+                    self.ledger.ingest(topic, payload, qos=qos, retain=retain)
+                except ContractError as error:
+                    # Native ACK only after the safe rejection journal commits; never MQTT_ACK invalid data.
+                    self.ledger.reject(topic, payload, str(error))
             if self.client.ack(mid, qos) != self.mqtt.MQTT_ERR_SUCCESS:
                 self.recovery = True
                 return

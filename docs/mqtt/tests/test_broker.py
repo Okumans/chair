@@ -157,6 +157,22 @@ class PrivateBrokerTests(unittest.TestCase):
                             db.execute("SELECT COUNT(*) FROM deliveries").fetchone()[0],
                             1,
                         )
+                    # Exercise an oversized QoS-1 publication on the actual broker.
+                    oversized = client.publish(event["topic"], b"x" * 16385, qos=1)
+                    oversized.wait_for_publish(timeout=2)
+                    end = time.monotonic() + 5
+                    while True:
+                        with closing(sqlite3.connect(database)) as db:
+                            rejected = db.execute(
+                                "SELECT COUNT(*) FROM rejected"
+                            ).fetchone()[0]
+                        if rejected:
+                            break
+                        if worker.poll() is not None or time.monotonic() >= end:
+                            self.fail("oversized publication was not durably rejected")
+                        time.sleep(0.05)
+                    # A distinct valid report must still be delivered by the same process.
+                    publish_until_receipt(copy.deepcopy(report))
                     worker.send_signal(signal.SIGINT)
                     worker.wait(timeout=5)
                     worker = (
@@ -165,17 +181,22 @@ class PrivateBrokerTests(unittest.TestCase):
                     # A new report proves the new process subscribed and returned a fresh
                     # receipt before checking duplicate receipt regeneration. Drain any
                     # buffered old receipts so they cannot make the restart test pass.
-                    publish_until_receipt(copy.deepcopy(report))
+                    fresh_report = copy.deepcopy(report)
+                    fresh_report["payload"]["publication_id"] = (
+                        "6c19f0de-eeb6-4c3a-9d8b-d029000a4405"
+                    )
+                    fresh_report["payload"]["report_seq"] += 1
+                    publish_until_receipt(fresh_report)
                     while not received.empty():
                         received.get_nowait()
                     publish_until_receipt(event)
                     with closing(sqlite3.connect(database)) as db:
                         self.assertEqual(
                             db.execute("SELECT COUNT(*) FROM deliveries").fetchone()[0],
-                            2,
+                            3,
                         )
                         self.assertEqual(
-                            db.execute("SELECT COUNT(*) FROM facts").fetchone()[0], 2
+                            db.execute("SELECT COUNT(*) FROM facts").fetchone()[0], 3
                         )
                 finally:
                     if client:

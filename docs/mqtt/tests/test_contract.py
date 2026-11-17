@@ -1,4 +1,5 @@
 import copy
+import hashlib
 import json
 import sqlite3
 import sys
@@ -282,6 +283,83 @@ class WorkerTests(DatabaseCase):
         with self.assertRaises(sqlite3.Error):
             self.worker.step(100)
         self.assertEqual(self.client.acks, [])
+
+    def test_oversized_message_is_recorded_before_ack_and_valid_work_continues(self):
+        oversized = SimpleNamespace(
+            mid=8, qos=1, topic=self.topic, payload=b"x" * 16385, retain=False
+        )
+        self.worker.on_message(self.client, None, oversized)
+        self.assertFalse(self.worker.recovery)
+
+        def ack_after_commit(mid, qos):
+            with closing(sqlite3.connect(self.path)) as other:
+                self.assertEqual(
+                    other.execute("SELECT COUNT(*) FROM rejected").fetchone()[0], 1
+                )
+            self.client.acks.append((mid, qos))
+            return 0
+
+        with patch.object(self.client, "ack", side_effect=ack_after_commit):
+            self.worker.step(100)
+        self.assertEqual(self.client.acks, [(8, 1)])
+        self.assertEqual(
+            (self.count("rejected"), self.count("deliveries"), self.count("receipts")),
+            (1, 0, 0),
+        )
+        self.assertFalse(self.worker.recovery)
+        self.receive()
+        self.worker.step(101)
+        self.assertEqual(self.client.acks, [(8, 1), (7, 1)])
+        self.assertEqual(self.count("deliveries"), 1)
+
+    def test_oversized_rejection_storage_failure_never_native_acks(self):
+        self.ledger.db.executescript("""CREATE TRIGGER fail_rejection BEFORE INSERT ON rejected
+            BEGIN SELECT RAISE(ABORT,'disk failure'); END;""")
+        message = SimpleNamespace(
+            mid=8, qos=1, topic=self.topic, payload=b"x" * 16385, retain=False
+        )
+        self.worker.on_message(self.client, None, message)
+        with self.assertRaises(sqlite3.Error):
+            self.worker.step(100)
+        self.assertEqual(self.client.acks, [])
+        self.assertEqual(self.count("rejected"), 0)
+
+    def test_oversized_rejection_is_bounded_and_deduplicates_full_identity(self):
+        topic_prefix = "smartchair/v1/lab/nodes/" + "x" * 300
+        payload_bytes = b"x" * 60000
+        messages = [
+            SimpleNamespace(
+                mid=mid,
+                qos=1,
+                topic=topic_prefix + suffix,
+                payload=payload_bytes,
+                retain=False,
+            )
+            for mid, suffix in [(8, "/a"), (9, "/b")]
+        ]
+        for message in messages:
+            self.worker.on_message(self.client, None, message)
+        for item in self.worker.work:
+            self.assertLessEqual(len(item[3].encode("utf-8")), 256)
+            self.assertLess(sys.getsizeof(item[4]), 512)
+        self.worker.step(100)
+        rows = self.ledger.db.execute(
+            "SELECT digest,topic,reason FROM rejected"
+        ).fetchall()
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(
+            {row[0] for row in rows},
+            {
+                hashlib.sha256(m.topic.encode() + b"\0" + payload_bytes).hexdigest()
+                for m in messages
+            },
+        )
+        self.assertTrue(all(len(row[1].encode("utf-8")) <= 256 for row in rows))
+        self.assertTrue(all(row[2] == "payload exceeds maximum" for row in rows))
+        self.worker.on_message(self.client, None, messages[0])
+        self.worker.step(101)
+        self.assertEqual(self.count("rejected"), 2)
+        self.assertEqual(self.client.acks, [(8, 1), (9, 1), (8, 1)])
 
     def test_native_ack_timeout_is_independent_of_logical_receipt_rows(self):
         self.receive()

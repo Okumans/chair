@@ -27,6 +27,13 @@ receipt storage fails, publication/semantic identity conflicts, old/new node epo
 pending receipt recovery, stale incoming tokens, SUBACK/PUBACK deadlines, negative
 ACK preservation, and unknown status counters represented as null.
 
+The oversized-delivery follow-up passed all **25 tests** locally with the pinned
+dependencies and a temporary loopback Mosquitto broker. It checks durable rejection
+before native ACK, no ACK on rejection-storage failure, bounded queue/journal data,
+deduplication by the full topic and payload, and valid traffic after the oversized
+delivery. The Pi was offline during this follow-up; its earlier 22-test result above
+applies to the prior reference-kit revision.
+
 The production Pi outbox, controller submission outbox, reservation accounting,
 permanent-error quarantine and node-epoch maintenance barrier remain specified
 future implementation work. Their production fault-injection acceptance cases
