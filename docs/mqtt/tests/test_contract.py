@@ -361,6 +361,84 @@ class WorkerTests(DatabaseCase):
         self.assertEqual(self.count("rejected"), 2)
         self.assertEqual(self.client.acks, [(8, 1), (9, 1), (8, 1)])
 
+    def test_long_topics_with_small_payload_are_bounded_and_deduplicated(self):
+        prefix = "smartchair/v1/lab/nodes/" + "x" * 231 + "€" + "y" * 40
+        messages = [
+            SimpleNamespace(
+                mid=mid, qos=1, topic=prefix + suffix, payload=b"{}", retain=False
+            )
+            for mid, suffix in [(8, "/a/events"), (9, "/b/events")]
+        ]
+        for message in messages:
+            self.worker.on_message(self.client, None, message)
+
+        def ack_after_commit(mid, qos):
+            with closing(sqlite3.connect(self.path)) as db:
+                self.assertEqual(
+                    db.execute("SELECT COUNT(*) FROM rejected").fetchone()[0], mid - 7
+                )
+            self.client.acks.append((mid, qos))
+            return 0
+
+        with patch.object(self.client, "ack", side_effect=ack_after_commit):
+            self.worker.step(100)
+        rows = self.ledger.db.execute("SELECT digest,topic FROM rejected").fetchall()
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(
+            {row[0] for row in rows},
+            {
+                hashlib.sha256(m.topic.encode() + b"\0" + m.payload).hexdigest()
+                for m in messages
+            },
+        )
+        self.assertTrue(all(len(row[1].encode("utf-8")) <= 256 for row in rows))
+        self.assertTrue(all(row[1] == prefix[:255] for row in rows))
+        self.assertEqual((self.count("deliveries"), self.count("receipts")), (0, 0))
+        self.assertEqual(self.client.published, [])
+        self.worker.on_message(self.client, None, messages[0])
+        self.worker.step(101)
+        self.assertEqual(self.count("rejected"), 2)
+        self.assertEqual(self.client.acks, [(8, 1), (9, 1), (8, 1)])
+        self.receive()
+        self.worker.step(102)
+        self.assertEqual(self.count("deliveries"), 1)
+
+    def test_long_topic_rejection_storage_failure_never_native_acks(self):
+        self.ledger.db.executescript("""CREATE TRIGGER fail_rejection BEFORE INSERT ON rejected
+            BEGIN SELECT RAISE(ABORT,'disk failure'); END;""")
+        message = SimpleNamespace(
+            mid=8, qos=1, topic=self.topic + "x" * 300, payload=b"{}", retain=False
+        )
+        self.worker.on_message(self.client, None, message)
+        with self.assertRaises(sqlite3.Error):
+            self.worker.step(100)
+        self.assertEqual((self.client.acks, self.count("rejected")), ([], 0))
+
+    def test_subscriptions_require_qos_one_grants(self):
+        self.worker.ready = False
+        self.worker.subscriptions = {101, 102}
+        grant = SimpleNamespace(is_failure=False, value=1)
+        self.worker.on_subscribe(self.client, None, 101, [grant], None)
+        self.assertFalse(self.worker.ready)
+        self.worker.on_subscribe(self.client, None, 102, [grant], None)
+        self.assertTrue(self.worker.ready)
+        self.assertIsNone(self.worker.fatal)
+
+    def test_downgraded_subscription_fails_closed(self):
+        self.worker.ready = False
+        self.worker.subscriptions = {101, 102}
+        self.worker.on_subscribe(
+            self.client, None, 101, [SimpleNamespace(is_failure=False, value=0)], None
+        )
+        self.assertFalse(self.worker.ready)
+        self.assertTrue(self.worker.fatal)
+        self.worker.on_subscribe(
+            self.client, None, 102, [SimpleNamespace(is_failure=False, value=1)], None
+        )
+        self.assertFalse(self.worker.ready)
+        self.worker.step(100)
+        self.assertEqual(self.client.published, [])
+
     def test_native_ack_timeout_is_independent_of_logical_receipt_rows(self):
         self.receive()
         self.worker.step(100)

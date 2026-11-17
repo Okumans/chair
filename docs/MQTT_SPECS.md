@@ -584,7 +584,8 @@ native attempt has completed and the backend receipt is overdue. This follows
 [MQTT 5 section 4.4](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html).
 
 Monitor SUBACK with the same 30-second deadline. Until all required subscriptions
-are positively acknowledged, expose `subscriptions_ready: false`, keep incoming
+are positively acknowledged with the required granted QoS, expose
+`subscriptions_ready: false`, keep incoming
 commands fenced from execution, and recover the connection on timeout. This
 handshake gate applies to newly ingested MQTT requests; already admitted local
 jobs continue under their existing deadline/transport policy during MQTT outages.
@@ -685,7 +686,9 @@ Paho callbacks never wait for delivery or perform long database/retry loops.
 
 Use a stable client ID `smartchair-<site_id>-<bridge_id>`, MQTT 5, Session Expiry
 86,400 seconds, Keep Alive 30 seconds and Receive Maximum 16. Require successful
-CONNACK and every required SUBACK before operational readiness.
+CONNACK and every required SUBACK before operational readiness. A QoS 1
+subscription granted at QoS 0 does not satisfy the requirement: fail closed and
+surface the broker configuration problem instead of treating the service as ready.
 
 | Situation | Clean Start / recovery policy |
 | --- | --- |

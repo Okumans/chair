@@ -34,6 +34,13 @@ deduplication by the full topic and payload, and valid traffic after the oversiz
 delivery. The Pi was offline during this follow-up; its earlier 22-test result above
 applies to the prior reference-kit revision.
 
+The SUBACK and long-topic follow-up passed all **30 tests** locally with the pinned
+dependencies and temporary loopback Mosquitto brokers. A QoS-0-only broker causes
+the backend to fail closed; the tests also cover bounded UTF-8 topic prefixes,
+full-topic deduplication, durable rejection before native ACK, rejection storage
+failure, and valid traffic after rejecting a long topic with a small payload. The
+Pi was offline during this follow-up, so these changes have not been tested there.
+
 The production Pi outbox, controller submission outbox, reservation accounting,
 permanent-error quarantine and node-epoch maintenance barrier remain specified
 future implementation work. Their production fault-injection acceptance cases

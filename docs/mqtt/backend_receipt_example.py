@@ -15,6 +15,7 @@ from pathlib import Path
 from contract import IDENTIFIER, MAX_PAYLOAD, ContractError, validate
 
 APPLICATION_ID = 0x4D515431
+MAX_REJECTED_TOPIC_BYTES = 256
 
 
 def compact(value):
@@ -170,6 +171,10 @@ class Ledger:
 
     def reject_digest(self, topic, digest, reason):
         """Commit a rejection whose digest has already been calculated."""
+        # Bound every journal entry while retaining the digest of the full topic.
+        topic = topic.encode("utf-8")[:MAX_REJECTED_TOPIC_BYTES].decode(
+            "utf-8", errors="ignore"
+        )
         with self.db:
             exists = self.db.execute(
                 "SELECT 1 FROM rejected WHERE digest=?", (digest,)
@@ -250,12 +255,16 @@ class Backend:
         self.work.clear()  # No ACK for old delivery tokens; Pi/backend outboxes recover them.
 
     def on_subscribe(self, client, userdata, mid, reasons, properties):
+        if self.fatal:
+            return
         if (
             mid not in self.subscriptions
-            or not reasons
-            or any(x.is_failure for x in reasons)
+            or len(reasons) != 1
+            or reasons[0].is_failure
+            or reasons[0].value != 1
         ):
-            self.fatal = "backend subscription rejected or unmatched"
+            self.ready = False
+            self.fatal = "backend subscription rejected, downgraded or unmatched"
             return
         self.subscriptions.remove(mid)
         self.ready = not self.subscriptions
@@ -275,7 +284,9 @@ class Backend:
             topic_bytes = topic.encode("utf-8")
             payload = Oversized(rejection_digest(topic_bytes, message.payload))
             # Retain only a bounded topic prefix; the digest covers the full topic.
-            topic = topic_bytes[:256].decode("utf-8", errors="ignore")
+            topic = topic_bytes[:MAX_REJECTED_TOPIC_BYTES].decode(
+                "utf-8", errors="ignore"
+            )
         else:
             payload = bytes(message.payload)
         self.work.append(

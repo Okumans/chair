@@ -29,6 +29,77 @@ MOSQUITTO = shutil.which("mosquitto") or next(
 
 @unittest.skipUnless(MOSQUITTO, "mosquitto unavailable; no live broker is used")
 class PrivateBrokerTests(unittest.TestCase):
+    def test_broker_qos_downgrade_stops_backend(self):
+        with tempfile.TemporaryDirectory(prefix="mqtt-qos-test-") as directory:
+            path = Path(directory)
+            with socket.socket() as reservation:
+                reservation.bind(("127.0.0.1", 0))
+                port = reservation.getsockname()[1]
+            config = path / "mosquitto.conf"
+            config.write_text(
+                f"listener {port} 127.0.0.1\nallow_anonymous true\n"
+                "persistence false\nmax_qos 0\n"
+            )
+            with (path / "network.log").open("w+") as log:
+                broker = subprocess.Popen(
+                    [MOSQUITTO, "-c", str(config)], stdout=log, stderr=log
+                )
+                worker = None
+                try:
+                    end = time.monotonic() + 5
+                    while True:
+                        if broker.poll() is not None:
+                            self.fail("private QoS-0 broker exited")
+                        try:
+                            with socket.create_connection(
+                                ("127.0.0.1", port), timeout=0.1
+                            ):
+                                break
+                        except OSError:
+                            if time.monotonic() >= end:
+                                self.fail("private QoS-0 broker did not start")
+                            time.sleep(0.05)
+                    env = dict(os.environ)
+                    env.pop("MQTT_USERNAME", None)
+                    env.pop("MQTT_PASSWORD", None)
+                    worker = subprocess.Popen(
+                        [
+                            sys.executable,
+                            str(ROOT / "backend_receipt_example.py"),
+                            "--broker",
+                            "127.0.0.1",
+                            "--port",
+                            str(port),
+                            "--allow-local-plaintext",
+                            "--site",
+                            "lab",
+                            "--consumer",
+                            "backend-qos-test",
+                            "--bridge",
+                            "pi-01",
+                            "--db",
+                            str(path / "backend.sqlite"),
+                        ],
+                        env=env,
+                        stdout=log,
+                        stderr=log,
+                    )
+                    self.assertNotEqual(worker.wait(timeout=8), 0)
+                    log.flush()
+                    self.assertIn(
+                        "subscription rejected, downgraded or unmatched",
+                        (path / "network.log").read_text(),
+                    )
+                finally:
+                    for process in (worker, broker):
+                        if process is not None and process.poll() is None:
+                            process.terminate()
+                            try:
+                                process.wait(timeout=5)
+                            except subprocess.TimeoutExpired:
+                                process.kill()
+                                process.wait(timeout=5)
+
     def test_durable_receipt_and_fresh_backend_process(self):
         import paho.mqtt.client as mqtt
 
@@ -170,6 +241,22 @@ class PrivateBrokerTests(unittest.TestCase):
                             break
                         if worker.poll() is not None or time.monotonic() >= end:
                             self.fail("oversized publication was not durably rejected")
+                        time.sleep(0.05)
+                    # An oversized topic with a small payload must also be bounded.
+                    long_topic = "smartchair/v1/lab/nodes/" + "x" * 300 + "/events"
+                    invalid = client.publish(long_topic, b"{}", qos=1)
+                    invalid.wait_for_publish(timeout=2)
+                    end = time.monotonic() + 5
+                    while True:
+                        with closing(sqlite3.connect(database)) as db:
+                            rows = db.execute("SELECT topic FROM rejected").fetchall()
+                        if len(rows) == 2:
+                            self.assertTrue(
+                                all(len(row[0].encode("utf-8")) <= 256 for row in rows)
+                            )
+                            break
+                        if worker.poll() is not None or time.monotonic() >= end:
+                            self.fail("long-topic publication was not durably rejected")
                         time.sleep(0.05)
                     # A distinct valid report must still be delivered by the same process.
                     publish_until_receipt(copy.deepcopy(report))
