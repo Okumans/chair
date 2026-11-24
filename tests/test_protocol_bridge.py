@@ -338,7 +338,8 @@ class ProtocolTests(unittest.TestCase):
         )
         self.confirm_ready(100, 2, monotonic=10)
         # A wall-clock rollback must not extend the five-second lease.
-        self.assertNotEqual(self.bridge.next(90, monotonic=15)["kind"], "command")
+        outgoing = self.bridge.next(90, monotonic=15)
+        self.assertNotEqual((outgoing or {}).get("kind"), "command")
 
     def test_reconnect_requires_matching_gateway_hello(self):
         hello = self.bridge.reset()
@@ -392,7 +393,54 @@ class ProtocolTests(unittest.TestCase):
         # Even a proof that was delayed in the radio or USB path expires from probe send.
         self.bridge.receive(envelope(proof), 112)
         self.assertNotIn("chair-01", self.bridge.available)
-        self.assertNotEqual(self.bridge.next(112)["kind"], "command")
+        # The READY's announced window has also passed, so the bridge stops probing.
+        self.assertIsNone(self.bridge.next(112))
+
+    def test_proof_trailing_newer_reliable_event_grants_lease(self):
+        self.store.queue("chair-01", COMMAND_ID, CONFIG, 500, 100)
+        self.bridge.receive(
+            envelope(event("READY", reason="scheduled", listen_remaining_ms=5000)), 100
+        )
+        probe = self.bridge.next(100)
+        self.assertEqual(probe["kind"], "ready_probe")
+        self.bridge.receive(
+            {"kind": "tx_result", "request_id": probe["request_id"]}, 100
+        )
+        control = probe["message"]
+        # The sensor drains its outbox first, so a newer heartbeat overtakes the proof.
+        self.bridge.receive(envelope(event("HEARTBEAT", seq=3)), 101)
+        proof = event(
+            "READY_PROOF",
+            seq=2,
+            listen_remaining_ms=5000,
+            ack_boot_id=control["boot_id"],
+            ack_seq=control["seq"],
+        )
+        self.bridge.receive(envelope(proof), 101)
+        self.assertEqual(self.bridge.available_until("chair-01"), 105)
+        self.assertNotIn("chair-01", self.bridge.probes)
+
+    def test_unmatched_proof_is_not_persisted(self):
+        proof = event(
+            "READY_PROOF",
+            seq=2,
+            listen_remaining_ms=5000,
+            ack_boot_id="00000000000000aa",
+            ack_seq=1,
+        )
+        self.assertEqual(
+            self.bridge.receive(envelope(proof), 100)["reason"], "unmatched_ready_proof"
+        )
+        self.assertEqual(
+            self.store.db.execute("SELECT COUNT(*) FROM events").fetchone()[0], 0
+        )
+
+    def test_expired_ready_hint_stops_probing(self):
+        self.store.queue("chair-01", COMMAND_ID, CONFIG, 500, 100)
+        self.bridge.receive(
+            envelope(event("READY", reason="scheduled", listen_remaining_ms=2000)), 100
+        )
+        self.assertIsNone(self.bridge.next(102))
 
     def test_old_result_invalidates_old_lease_but_keeps_newer_ready(self):
         self.store.queue("chair-01", COMMAND_ID, CONFIG, 500, 100)

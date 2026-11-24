@@ -65,7 +65,12 @@ class FaultTest:
     def receive(self, envelope, now, mono):
         m = None
         if envelope.get("kind") == "telemetry":
-            m = validate(envelope, self.bridge.mapping)
+            try:
+                m = validate(envelope, self.bridge.mapping)
+            except ValueError as error:
+                # Match the production bridge: one invalid line never ends the session.
+                self.emit(dict(kind="invalid", reason=str(error), envelope=envelope))
+                return
         if (
             m
             and m["node_id"] == self.node

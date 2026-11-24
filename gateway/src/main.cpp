@@ -46,13 +46,14 @@ void loop() {
     Transport::printJson(
         Transport::ErrorMessage{.reason = Transport::ErrorCode::RADIO_RECOVERY_REBOOT});
   }
-  if (recoveryPending && now - recoveryAnnounced >= SmartChair::Timing::RADIO_RECOVERY_NOTICE_MS) {
+  if (recoveryPending && Transport::recoveryNoticeSent(recoveryAnnounced, now)) {
     // No durable gateway state: the sensor retries reliable frames after reconnection.
     // Bypass shutdown hooks that may wait on the stuck Wi-Fi task's locks.
     esp_restart_noos();
   }
-  if (!lifecycle.busy() && !recoveryPending && !Transport::busy() && now >= nextRetry &&
-      (!Transport::available() || Transport::needsRestart())) {
+  // An unconfigured transport already reported why; retrying it would only repeat errors.
+  if (Transport::configured() && !lifecycle.busy() && !recoveryPending && !Transport::busy() &&
+      now >= nextRetry && (!Transport::available() || Transport::needsRestart())) {
     const auto action = !Transport::stopped() ? RadioAction::STOP : RadioAction::START;
     timeoutReported   = false;
     if (!lifecycle.start(action, now)) {

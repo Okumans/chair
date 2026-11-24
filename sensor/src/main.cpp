@@ -139,7 +139,9 @@ namespace {
     const bool starting = update->action == RadioAction::START;
     if (update->timedOut && !lifecycleTimeoutReported) {
       lifecycleTimeoutReported = true;
-      if (starting) engine->radioStartFailed(now, false);
+      // A worker that already finished reports whether it left Wi-Fi fully stopped.
+      if (starting)
+        engine->radioStartFailed(now, update->completed && !update->ok && Transport::stopped());
       Transport::printJson(
           Transport::ErrorMessage{.reason = starting ? Transport::ErrorCode::RADIO_START_TIMEOUT
                                                      : Transport::ErrorCode::RADIO_STOP_TIMEOUT});
@@ -173,10 +175,14 @@ namespace {
       Transport::printJson(
           Transport::ErrorMessage{.reason = Transport::ErrorCode::RADIO_RECOVERY_REBOOT});
     }
+    if (!recoveryPending || !Transport::recoveryNoticeSent(recoveryAnnounced, now)) return;
     // The main loop is the only writer of chair state. Wait for every durable write and
     // debounce to finish, and check the pin again immediately before an emergency reset.
-    if (recoveryPending && now - recoveryAnnounced >= Timing::RADIO_RECOVERY_NOTICE_MS &&
-        engine->canRestart(now) && (digitalRead(Pins::SEAT_SENSOR) == LOW) == engine->occupied) {
+    // Storage that never recovers cannot preserve the transition anyway, so a bounded wait
+    // ends in a restart rather than leaving the chair awake without a radio indefinitely.
+    const bool safe =
+        engine->canRestart(now) && (digitalRead(Pins::SEAT_SENSOR) == LOW) == engine->occupied;
+    if (safe || now - recoveryAnnounced >= Timing::RADIO_RECOVERY_FORCE_MS) {
       // A stuck Wi-Fi task may also block esp_restart() shutdown hooks. The pinned IDF's
       // low-level reset bypasses those hooks and resets both CPUs and radio peripherals.
       esp_restart_noos();

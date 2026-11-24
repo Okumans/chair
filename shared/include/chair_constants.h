@@ -22,6 +22,8 @@ namespace SmartChair {
     inline constexpr uint64_t RADIO_STOP_TIMEOUT_MS        = 2500;
     inline constexpr uint64_t RADIO_RECOVERY_TIMEOUT_MS    = 15000;
     inline constexpr uint64_t RADIO_RECOVERY_NOTICE_MS     = 20;
+    inline constexpr uint64_t RADIO_RECOVERY_FLUSH_MS      = 250;
+    inline constexpr uint64_t RADIO_RECOVERY_FORCE_MS      = 60000;
     inline constexpr uint64_t RADIO_RETRY_MS               = 1000;
     inline constexpr uint64_t STORAGE_RETRY_MS             = 250;
     inline constexpr std::array<uint64_t, 4> RETRY_OFFSETS_MS{0, 250, 750, 1750};
