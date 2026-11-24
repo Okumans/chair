@@ -216,6 +216,7 @@ namespace Transport {
     uint8_t actualMac[MAC_BYTES]{};
     if (esp_read_mac(actualMac, ESP_MAC_WIFI_STA) != ESP_OK) {
       error(ErrorCode::STATION_MAC_FAILED);
+      hello();
       return;
     }
     snprintf(stationMac, sizeof(stationMac), "%02x:%02x:%02x:%02x:%02x:%02x", actualMac[0],

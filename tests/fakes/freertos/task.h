@@ -1,6 +1,8 @@
 #pragma once
 #include <cstdint>
 
+#include "FreeRTOS.h"
+
 namespace FakeTask {
   inline bool defer             = false;
   inline bool fail              = false;

@@ -331,6 +331,26 @@ int main() {
   lifecycle.poll(Fake::now);
   FakeTask::defer = false;
 
+  // Forced restarts are capped so permanently failing storage cannot cause a reboot loop.
+  forcedRestarts = Limits::MAX_FORCED_RESTARTS;
+  Fake::boot();
+  FakeTask::defer = true;
+  Fake::tick(0, LOW);
+  Fake::tick(50, LOW);
+  Fake::tick(15050, LOW);
+  Preferences::available = false;
+  Fake::tick(15070, HIGH);
+  Fake::tick(15120, HIGH);
+  Fake::tick(75050, HIGH);
+  assert(Fake::reboots == 0 && recoveryPending);
+  Preferences::available = true;
+  Fake::tick(75300, HIGH);
+  assert(Fake::reboots == 1);  // A safe restart is still allowed.
+  forcedRestarts = 0;
+  FakeTask::run();
+  lifecycle.poll(Fake::now);
+  FakeTask::defer = false;
+
   Fake::boot();
   Fake::rebootRequired = true;
   Fake::tick(0, LOW);
