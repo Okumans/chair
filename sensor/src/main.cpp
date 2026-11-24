@@ -1,7 +1,6 @@
 #include <Arduino.h>
 #include <Preferences.h>
 
-#include <algorithm>
 #include <memory>
 
 #include "bench_diagnostics.h"
@@ -10,8 +9,6 @@
 #include "esp_private/system_internal.h"
 #include "esp_sleep.h"
 #include "esp_timer.h"
-#include "esp_wifi.h"
-#include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "json_messages.h"
 #include "link_config.h"
@@ -30,11 +27,14 @@ namespace {
   std::unique_ptr<Engine> engine;
   RTC_DATA_ATTR uint64_t retainedBoot = 0;
   RTC_DATA_ATTR uint32_t retainedSeq  = 1;
-  Wake wakeReason                     = Wake::cold_boot;
-  bool storageReady                   = false;
-  bool storageResetRequired           = false;
-  bool imuReady                       = false;
-  uint64_t nextImuProbe               = 0;
+  // Survives software resets only; the magic rejects the random contents after power-on.
+  RTC_NOINIT_ATTR uint32_t forcedRestartMagic;
+  RTC_NOINIT_ATTR uint32_t forcedRestarts;
+  Wake wakeReason           = Wake::cold_boot;
+  bool storageReady         = false;
+  bool storageResetRequired = false;
+  bool imuReady             = false;
+  uint64_t nextImuProbe     = 0;
   Transport::RadioLifecycle lifecycle;
   bool lifecycleTimeoutReported = false;
   bool recoveryPending          = false;
@@ -151,6 +151,7 @@ namespace {
       if (!update->timedOut) {
         if (update->ok) {
           engine->radioReady(now);
+          forcedRestarts = 0;  // The radio works again; the next stall starts a fresh count.
           Bench::trace("radio_ready", *engine, now, wakeReason);
         } else {
           engine->radioStartFailed(now, Transport::stopped());
@@ -168,6 +169,18 @@ namespace {
                                                      : Transport::ErrorCode::RADIO_SUSPEND_FAILED});
   }
 
+  // Count consecutive forced restarts. Beyond the cap, keep waiting for a safe restart instead
+  // of looping reboots that would repeatedly discard an unsaved transition.
+  bool noteForcedRestart() {
+    if (forcedRestartMagic != Limits::FORCED_RESTART_MAGIC) {
+      forcedRestartMagic = Limits::FORCED_RESTART_MAGIC;
+      forcedRestarts     = 0;
+    }
+    if (forcedRestarts >= Limits::MAX_FORCED_RESTARTS) return false;
+    ++forcedRestarts;
+    return true;
+  }
+
   void recoverRadio(uint64_t now) {
     if (!recoveryPending && (lifecycle.stalled(now) || Transport::needsReboot())) {
       recoveryPending   = true;
@@ -182,7 +195,8 @@ namespace {
     // ends in a restart rather than leaving the chair awake without a radio indefinitely.
     const bool safe =
         engine->canRestart(now) && (digitalRead(Pins::SEAT_SENSOR) == LOW) == engine->occupied;
-    if (safe || now - recoveryAnnounced >= Timing::RADIO_RECOVERY_FORCE_MS) {
+    if (safe ||
+        (now - recoveryAnnounced >= Timing::RADIO_RECOVERY_FORCE_MS && noteForcedRestart())) {
       // A stuck Wi-Fi task may also block esp_restart() shutdown hooks. The pinned IDF's
       // low-level reset bypasses those hooks and resets both CPUs and radio peripherals.
       esp_restart_noos();

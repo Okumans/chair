@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <new>
 #include <optional>
 
 #include "chair_engine.h"
@@ -39,14 +40,16 @@ namespace Transport {
 
     bool start(SmartChair::RadioAction action, uint64_t now, uint32_t startDelayMs = 0) {
       if (busy() || action == SmartChair::RadioAction::NONE) return false;
-      action_       = action;
-      started_      = now;
-      startDelayMs_ = startDelayMs;
-      timedOut_     = false;
+      action_   = action;
+      started_  = now;
+      timedOut_ = false;
       result_.store(0);
       elapsed_.store(0);
       setLifecycleBusy(true);
-      if (xTaskCreate(worker, "chair-radio", 6144, this, 1, nullptr) == pdPASS) return true;
+      // The worker owns a private copy, so it never reads loop-written members.
+      auto* job = new (std::nothrow) Job{this, action, now, startDelayMs};
+      if (job && xTaskCreate(worker, "chair-radio", 6144, job, 1, nullptr) == pdPASS) return true;
+      delete job;
       action_ = SmartChair::RadioAction::NONE;
       setLifecycleBusy(false);
       return false;
@@ -74,20 +77,30 @@ namespace Transport {
    private:
     SmartChair::RadioAction action_ = SmartChair::RadioAction::NONE;
     uint64_t started_               = 0;
-    uint32_t startDelayMs_          = 0;
     bool timedOut_                  = false;
     std::atomic<int> result_{0};
     std::atomic<uint32_t> elapsed_{0};
 
+    struct Job {
+      RadioLifecycle* lifecycle;
+      SmartChair::RadioAction action;
+      uint64_t started;
+      uint32_t startDelayMs;
+    };
+
     static void worker(void* argument) {
-      auto& lifecycle     = *static_cast<RadioLifecycle*>(argument);
-      const bool starting = lifecycle.action_ == SmartChair::RadioAction::START;
-      if (starting && lifecycle.startDelayMs_) delay(lifecycle.startDelayMs_);
+      // vTaskDelete never returns, so free the job before any SDK call.
+      auto* raw     = static_cast<Job*>(argument);
+      const Job job = *raw;
+      delete raw;
+      auto& lifecycle     = *job.lifecycle;
+      const bool starting = job.action == SmartChair::RadioAction::START;
+      if (starting && job.startDelayMs) delay(job.startDelayMs);
       const bool ok = starting ? resume(false) : suspend(false);
       const uint64_t now =
           uint64_t(esp_timer_get_time()) / SmartChair::Timing::MICROSECONDS_PER_MILLISECOND;
       lifecycle.elapsed_.store(
-          static_cast<uint32_t>(std::min<uint64_t>(UINT32_MAX, now - lifecycle.started_)));
+          static_cast<uint32_t>(std::min<uint64_t>(UINT32_MAX, now - job.started)));
       // No access to this object after publishing completion; the loop may start another worker.
       lifecycle.result_.store(ok ? 1 : -1);
       vTaskDelete(nullptr);

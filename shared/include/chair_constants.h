@@ -31,13 +31,15 @@ namespace SmartChair {
 
   /// Fixed RAM and durable bounds; one outbox slot always remains available for state recovery.
   namespace Limits {
-    inline constexpr size_t OUTBOX_CAPACITY     = 32;
-    inline constexpr size_t COMMAND_RECORDS     = 32;
-    inline constexpr size_t STATE_SYNC_RESERVED = 1;
-    inline constexpr size_t MAX_COMMAND_RESULTS = OUTBOX_CAPACITY - STATE_SYNC_RESERVED;
-    inline constexpr size_t BEST_EFFORT_QUEUE   = 4;
-    inline constexpr size_t STORED_STATE_BYTES  = 8192;
-    inline constexpr uint32_t SEQUENCE_RESERVE  = 128;
+    inline constexpr size_t OUTBOX_CAPACITY        = 32;
+    inline constexpr size_t COMMAND_RECORDS        = 32;
+    inline constexpr size_t STATE_SYNC_RESERVED    = 1;
+    inline constexpr size_t MAX_COMMAND_RESULTS    = OUTBOX_CAPACITY - STATE_SYNC_RESERVED;
+    inline constexpr size_t BEST_EFFORT_QUEUE      = 4;
+    inline constexpr size_t STORED_STATE_BYTES     = 8192;
+    inline constexpr uint32_t SEQUENCE_RESERVE     = 128;
+    inline constexpr uint32_t MAX_FORCED_RESTARTS  = 3;
+    inline constexpr uint32_t FORCED_RESTART_MAGIC = 0xC4A1B0E5;
   }  // namespace Limits
 
   /// Complete factory settings; accepted timing values still span every nonzero uint32 value.
