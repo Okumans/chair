@@ -17,6 +17,8 @@ namespace Transport {
   bool resume(bool report = true);
   /// Gate USB-originated sends while a lifecycle worker owns the radio.
   void setLifecycleBusy(bool busy);
+  /// Return whether begin() accepted the station MACs, keys and queues.
+  bool configured();
   /// Return whether radio initialization and encrypted peer setup succeeded.
   bool available();
   /// True only when the Wi-Fi hardware has been stopped.

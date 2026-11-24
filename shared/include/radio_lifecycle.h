@@ -10,9 +10,17 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "json_messages.h"
 #include "radio_transport.h"
 
 namespace Transport {
+  /// Give the recovery notice time to leave the USB queue, without ever waiting unbounded.
+  inline bool recoveryNoticeSent(uint64_t announced, uint64_t now) {
+    const uint64_t elapsed = now - announced;
+    return elapsed >= SmartChair::Timing::RADIO_RECOVERY_FLUSH_MS ||
+           (elapsed >= SmartChair::Timing::RADIO_RECOVERY_NOTICE_MS && usbOutput.empty());
+  }
+
   /// One SDK worker at a time. A timeout never deletes a task that may own SDK locks.
   class RadioLifecycle {
    public:

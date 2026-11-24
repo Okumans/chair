@@ -120,7 +120,7 @@ namespace Transport {
 
   void setLifecycleBusy(bool) {}
 
-  void poll() {}
+  void poll() { usbOutput.reset(); }
 
   bool busy() { return Fake::sending; }
 
@@ -307,6 +307,26 @@ int main() {
   assert(decodeDurable(Preferences::bytes, persisted));
   assert(persisted.outbox.back().type == Type::VACATED);
   // Fake a subsequent worker return so no host test leaves a dangling task across boots.
+  FakeTask::run();
+  lifecycle.poll(Fake::now);
+  FakeTask::defer = false;
+
+  // Storage that never recovers must not keep a radio-less chair awake forever.
+  Fake::boot();
+  FakeTask::defer = true;
+  Fake::tick(0, LOW);
+  Fake::tick(50, LOW);
+  Fake::tick(15050, LOW);
+  assert(recoveryPending && Fake::reboots == 0);
+  Preferences::available = false;
+  Fake::tick(15070, HIGH);
+  Fake::tick(15120, HIGH);
+  assert(engine->storageFailed && !engine->canRestart(Fake::now));
+  Fake::tick(75049, HIGH);
+  assert(Fake::reboots == 0 && Fake::sleeps == 0);
+  Fake::tick(75050, HIGH);
+  assert(Fake::reboots == 1);
+  Preferences::available = true;
   FakeTask::run();
   lifecycle.poll(Fake::now);
   FakeTask::defer = false;

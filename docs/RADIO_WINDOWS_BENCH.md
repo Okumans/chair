@@ -25,9 +25,12 @@ Emergency recovery uses the pinned ESP-IDF's `esp_restart_noos()` to reset CPUs
 and peripherals without Wi-Fi shutdown hooks, which could wait on the stalled
 worker's locks. This is deliberately limited to unrecoverable radio faults.
 It depends on the pinned IDF internal API; rebuild both targets when upgrading
-that dependency. A diagnostic is queued 20 ms before reset, but USB output is
-best effort and delivery is not guaranteed. Hardware recovery must still be
-validated on both ESP models; host tests verify the policy and persistence gate.
+that dependency. A diagnostic is queued before reset, which waits at least 20 ms
+and until the USB queue drains, but never more than 250 ms; USB output is best
+effort and delivery is not guaranteed. The sensor also waits for its persistence
+gate, but a restart is forced 60 s after the notice so failing storage cannot
+keep a radio-less chair awake. Hardware recovery must still be validated on both
+ESP models; host tests verify the policy and persistence gate.
 
 HELLO reads a cached snapshot of worker-confirmed settings and the hardware MAC,
 so it cannot block on Wi-Fi getters during a lifecycle stall. `lifecycle_busy`

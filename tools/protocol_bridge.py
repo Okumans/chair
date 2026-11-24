@@ -432,6 +432,8 @@ class Bridge:
         self.acks = {}
         self.available = {}
         self.ready_hints = {}
+        # A hint only justifies probing while its READY's announced window may still be open.
+        self.hint_expires = {}
         self.probes = {}
         self.last_command = {}
         # Keep per-boot watermarks across serial reconnects within this bridge process.
@@ -446,6 +448,7 @@ class Bridge:
         self.acks.clear()
         self.available.clear()
         self.ready_hints.clear()
+        self.hint_expires.clear()
         self.probes.clear()
         self.radio_pending = None
         self.last_command.clear()
@@ -485,6 +488,7 @@ class Bridge:
             self.clear_available(node)
         if not self.precedes(message, self.ready_hints.get(node)):
             self.ready_hints.pop(node, None)
+            self.hint_expires.pop(node, None)
             self.probes.pop(node, None)
 
     def control(self, node, kind, **fields):
@@ -521,12 +525,13 @@ class Bridge:
         m = validate(envelope, self.mapping)
         if m["type"] in {"READY", "READY_PROOF"} and self.hello_request is not None:
             return dict(kind="ignored", reason="awaiting_fresh_connection", message=m)
-        fresh, received_at = self.store.accept(m, now)
-        identity = (m["node_id"], m["boot_id"])
         if m["type"] == "READY_PROOF":
+            # Never persist a proof this bridge cannot correlate with its own probe.
             probe = self.probes.get(m["node_id"])
             if not probe or not probe.matches(m):
                 return dict(kind="ignored", reason="unmatched_ready_proof", message=m)
+        fresh, received_at = self.store.accept(m, now)
+        identity = (m["node_id"], m["boot_id"])
         newer = m["seq"] > self.last_telemetry.get(identity, 0)
         # Best-effort batches and loss reports can be sent ahead of an older queued READY;
         # only state-changing reliable events and READY itself invalidate an older lease.
@@ -549,7 +554,9 @@ class Bridge:
         if m["type"] != "COMMAND_RECEIPT":
             if not m["occupied"]:
                 self.invalidate_before(m)
-            elif m["type"] in {"READY", "READY_PROOF"} and newer:
+            # The sensor drains reliable events before best-effort frames, so a matched proof can
+            # trail newer reliable facts. Any fact that ends availability also drops the probe.
+            elif (m["type"] == "READY" and newer) or m["type"] == "READY_PROOF":
                 current = self.store.db.execute(
                     "SELECT generation FROM current_state WHERE node=?", (m["node_id"],)
                 ).fetchone()
@@ -561,6 +568,12 @@ class Bridge:
                     if m["type"] == "READY":
                         self.ready_hints[node] = TelemetryIdentity(
                             m["boot_id"], m["seq"], known[0] if known else None
+                        )
+                        remaining = m["listen_remaining_ms"]
+                        self.hint_expires[node] = (
+                            float("inf")
+                            if remaining is None
+                            else lease_now + remaining / 1000
                         )
                     else:
                         probe = self.probes[node]  # Correlation was validated above.
@@ -618,6 +631,7 @@ class Bridge:
                 if (
                     self.available_until(node) <= clock
                     and node in self.ready_hints
+                    and self.hint_expires.get(node, 0) > clock
                     and (not probe or clock - probe.sent_at >= PROBE_RETRY_S)
                 ):
                     control = self.control(node, "READY_PROBE")

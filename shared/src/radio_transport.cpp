@@ -40,7 +40,7 @@ namespace Transport {
     std::atomic<int> snapshotPower{UNKNOWN_TX_POWER_QUARTERS}, snapshotSleep{-1};
     const char* nodeRole = nullptr;
     std::atomic<bool> ready{false};
-    bool configured      = false;
+    bool setupComplete   = false;
     bool wifiInitialized = false;
     std::atomic<bool> wifiRunning{false};
     std::atomic<bool> sending{false};
@@ -254,7 +254,7 @@ namespace Transport {
       hello();
       return;
     }
-    configured = true;
+    setupComplete = true;
     hello();
   }
 
@@ -283,6 +283,8 @@ namespace Transport {
 
   bool busy() { return sending; }
 
+  bool configured() { return setupComplete; }
+
   bool available() { return ready; }
 
   bool stopped() { return !wifiRunning; }
@@ -296,7 +298,7 @@ namespace Transport {
   void setReceiver(Receiver callback) { receiver = callback; }
 
   bool suspend(bool report) {
-    if (!configured || sending) return false;
+    if (!setupComplete || sending) return false;
     if (!wifiRunning) return true;
     if (ready && esp_now_deinit() != ESP_OK) {
       if (report) error(ErrorCode::RADIO_SUSPEND_FAILED);
@@ -315,7 +317,7 @@ namespace Transport {
   bool resume(bool report) {
     if (rebootRequired) return false;
     if (ready) return true;
-    if (!configured) return false;
+    if (!setupComplete) return false;
     if (!wifiInitialized) {
       WiFi.setSleep(false);
       // begin() may enable Wi-Fi even if its wait for the start event fails.
