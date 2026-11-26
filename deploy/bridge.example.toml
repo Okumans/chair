@@ -1,0 +1,15 @@
+[bridge]
+node_id = "chair-01"
+sensor_mac = "02:00:00:00:00:01"
+bridge_id = "pi-01"
+consumer_id = "backend-01"
+database_path = "/var/lib/chair-mqtt/bridge.sqlite"
+
+[mqtt]
+client_id = "smartchair-pi-01"
+host = "broker.example"
+port = 8883
+ca_file = "/etc/chair-mqtt/broker-ca.pem"
+
+[gateway]
+port = "/dev/serial/by-id/REPLACE_WITH_GATEWAY"
