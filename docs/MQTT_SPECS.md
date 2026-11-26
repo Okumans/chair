@@ -9,7 +9,8 @@ The Sensor Node measures occupancy and movement and communicates with the Gatewa
 ESP over the existing ESP-NOW protocol. The gateway forwards ESP messages to the
 Pi. The Pi MQTT service exchanges JSON messages with the MQTT broker; backend
 applications and controllers use the topics below. ESP nodes do not directly
-publish or subscribe to MQTT.
+publish or subscribe to MQTT. This contract targets one Pi, one Gateway ESP, and
+one Sensor Node.
 
 The contract preserves ESP message fields, supports complete configuration
 commands, and defines reliable event and command-report delivery. Movement is
@@ -28,7 +29,7 @@ are outside this contract.
 | JSON numbers | Integers where specified; booleans are not integers; reject NaN/Infinity and duplicate object keys |
 | Payload limit | 16,384 UTF-8 bytes; configuration submissions limited to 4,096 bytes |
 | Topic limit | 256 UTF-8 bytes; identifiers contain no `/`, `+`, `#` or NUL |
-| `site_id`, `bridge_id`, `consumer_id` | `[A-Za-z0-9_-]{1,32}`; explicitly configured |
+| `bridge_id`, `consumer_id` | `[A-Za-z0-9_-]{1,32}`; explicitly configured |
 | `node_id` | Existing ESP rule: `[A-Za-z0-9_-]{1,15}` |
 | Boot IDs and generations | Existing 16-character lowercase hexadecimal strings; never JSON floating-point numbers |
 | UUIDs | Canonical lowercase, nonzero UUID strings |
@@ -37,29 +38,16 @@ are outside this contract.
 `bridge_id` is stable across restarts and independent of hostname/PID changes.
 An `instance_id` is a new UUID for each service process, used only for diagnostics.
 
-Provision one persistent `node_epoch` UUID per node installation. It is Pi/MQTT
-metadata, not a firmware field. It stays unchanged across normal boots, firmware
-uploads and service restarts. An explicit sensor-state reset or replacement that
-restarts its durable boot generation requires a deliberate new epoch, clearing
-old retained projections and fencing old queued commands. Never automatically
-change the epoch because a packet looks old or a database failed to load.
-
-When changing an epoch, fence old commands and clear retained state and command
-status for the previous epoch before publishing replacement retained values or
-admitting commands. Keep old facts and non-retained publications associated
-with their original epoch. An interrupted handover must remain fenced until it
-has completed; never infer a new epoch from an old-looking packet.
-Quiesce and flush old gateway traffic before assigning the new epoch. Prevent
-old retained publications from being replayed, and wait for broker acknowledgements
-of the old epoch's retained-state and command-status tombstones before publishing
-new retained values or admitting commands.
-
-Controllers obtain the current epoch from provisioning or the retained state;
-never guess it from a sensor boot ID.
-
-Sensor fact identity is `(site_id, node_id, node_epoch, boot_id, seq)`. Backend
+Sensor fact identity is `(node_id, boot_id, seq)`. Backend
 deduplication uses this identity, including when the same fact is republished
 with another publication ID after an operator-controlled replay.
+
+If the sensor is replaced or its persistent boot generation is reset, configure
+the replacement with a new, previously unused `node_id`. Stop dispatching old
+commands and clear old retained state and command statuses before using the new
+node. This prevents old generation ordering and queued commands from being
+mistaken for the replacement's data. A normal reboot or firmware update that
+preserves sensor state does not require a new `node_id`.
 
 `publication_id` is a UUID allocated once per durable MQTT publication and stored
 with its exact topic/payload. Retries preserve it. Backend ingestion receipts
@@ -67,8 +55,10 @@ refer to this ID. MQTT packet identifiers and DUP flags are never database keys.
 
 ## Topics
 
-Let `N = smartchair/v1/<site_id>/nodes/<node_id>` and
-`B = smartchair/v1/<site_id>/bridges/<bridge_id>`. Names are case-sensitive.
+Let `N = smartchair/v1/nodes/<node_id>` and
+`B = smartchair/v1/bridges/<bridge_id>`. Names are case-sensitive.
+This namespace has no site identifier; if a broker is shared with another
+installation, node and bridge IDs must be unique across that broker.
 The **Sensor Node** is the ESP that reads the chair sensors; the **Gateway ESP**
 forwards its packets to the Raspberry Pi. The **Pi MQTT service** is the planned
 service that connects the existing gateway/bridge adapter to the MQTT broker.
@@ -94,11 +84,7 @@ admission errors do not originate on the Sensor Node.
 
 Do not retain commands, raw events, movement, receipts or report-update streams.
 Do not subscribe the bridge to its own upstream event topics. It subscribes only
-to the configured nodes' exact command topics and its own receipt topic.
-
-Each node has one configured bridge owner. Multiple gateways may later be served
-by one Pi with separate serial adapters, but two bridges must not execute the same
-node's command subscription. Shared-subscription load balancing is outside v1.
+to its configured node's exact command topic and its own receipt topic.
 
 All JSON publications set MQTT Payload Format Indicator to UTF-8 and Content Type
 to `application/json`. Reliable events/reports have no MQTT Message Expiry.
@@ -115,13 +101,12 @@ retained value as a new instruction; see
 ## ESP → MQTT mapping
 
 After validating the source and committing reliable data, publish this
-on `smartchair/v1/lab/nodes/chair-01/events`:
+on `smartchair/v1/nodes/chair-01/events`:
 
 ```json
 {
   "schema_version": 1,
   "bridge_id": "pi-01",
-  "node_epoch": "f1db6f13-b820-4e1f-ae13-8924dd8fa734",
   "publication_id": "d5307c2e-1bbc-4cea-bd6d-87065ab17a0f",
   "source_mac": "02:00:00:00:00:01",
   "received_at_ms": 1800000000123,
@@ -179,13 +164,12 @@ count them separately as `mqtt_best_effort_dropped` in bridge diagnostics.
 ### Movement batch example
 
 A complete `MOVEMENT_BATCH` published to
-`smartchair/v1/lab/nodes/chair-01/movement`:
+`smartchair/v1/nodes/chair-01/movement`:
 
 ```json
 {
   "schema_version": 1,
   "bridge_id": "pi-01",
-  "node_epoch": "f1db6f13-b820-4e1f-ae13-8924dd8fa734",
   "publication_id": null,
   "source_mac": "02:00:00:00:00:01",
   "received_at_ms": 1800000000123,
@@ -251,8 +235,8 @@ STATE_SYNC packets. READY, movement and receipts must not trigger retained-state
 updates. Establish a boot's generation through a genuine STATE_SYNC, then choose
 the greatest `(generation, seq)` among eligible persisted reliable facts. When a
 previously unknown boot is established, reconsider its already stored facts.
-Old generations/sequences never replace newer state. A new epoch requires an
-explicit retained-state tombstone before publishing the replacement installation.
+Old generations/sequences never replace newer state. A sensor replacement or
+state reset uses a new node ID and clears the old retained state as described above.
 
 Only one publication per retained topic may be in flight. Coalesce unsent
 projections, never an in-flight payload, and publish their latest value after
@@ -262,12 +246,11 @@ fresh retained state with an older snapshot.
 
 ## MQTT → ESP configuration command
 
-Publish to `smartchair/v1/lab/nodes/chair-01/commands/config`:
+Publish to `smartchair/v1/nodes/chair-01/commands/config`:
 
 ```json
 {
   "schema_version": 1,
-  "node_epoch": "f1db6f13-b820-4e1f-ae13-8924dd8fa734",
   "expires_at_ms": 1800000300000,
   "message": {
     "version": 2,
@@ -296,22 +279,21 @@ partial patches, arbitrary ACK targets and `source_mac`, are rejected.
 The bridge converts the template into the existing gateway command format. MQTT
 metadata does not enter the ESP frame.
 
-Dispatch accepted jobs FIFO per node, with at most one active command for that
-node. A later request does not silently replace an older one. Busy/no response
-keeps the head eligible until its result or expiry; terminal/expired work releases
-the next job. Different nodes may progress independently through their adapters.
+Dispatch accepted jobs FIFO, with at most one active command for the node. A later
+request does not silently replace an older one. Busy/no response keeps the head
+eligible until its result or expiry; terminal/expired work releases the next job.
 
 ### Admission and idempotency
 
 1. Require the exact allowed topic, QoS 1 delivery, no RETAIN, valid bounded JSON,
-   supported versions, matching topic/body node and matching provisioned epoch.
+   supported versions and a matching topic/body node.
 2. Validate the complete configuration against the ESP protocol.
    Revision is uint32 including zero; intervals/tail are nonzero uint32; booleans
    are exact; open time must not exceed interval. Do not silently increase revision.
 3. Look up the command UUID **before** rejecting an already known request because
    its deadline has passed. A semantic duplicate returns its current status and
    never reinserts it or creates another radio job.
-4. Canonical identity content is `(site, node, epoch, expires_at_ms, command
+4. Canonical identity content is `(node, expires_at_ms, command
    template)`. Normalize JSON key order/whitespace only. Same UUID with different
    content or deadline is `command_id_conflict`; preserve the original command
    and its retained status. MQTT properties and delivery IDs are not hash inputs.
@@ -328,10 +310,10 @@ not execute a new command. Preserve UUID history/fingerprints through ordinary
 restarts and do not silently drop a command tombstone to permit UUID reuse.
 
 Admission errors use `N/command_errors`, with `schema_version`, `bridge_id`,
-`node_epoch`, `error_id` UUID, safely parsed `command_id` or null, `reason`,
+`error_id` UUID, safely parsed `command_id` or null, `reason`,
 `retryable` boolean and `received_at_ms`. Reasons include `invalid_json`,
 `invalid_schema`, `unsupported_version`, `unknown_node`, `node_mismatch`,
-`epoch_mismatch`, `retained_command`, `invalid_config`, `clock_untrusted`,
+`retained_command`, `invalid_config`, `clock_untrusted`,
 `deadline_too_far`, `command_id_conflict` and `queue_full`. Do not echo untrusted
 request bodies or broker credentials. A durable rejection is followed by MQTT ACK
 so a poison message does not loop. If its bounded error journal cannot commit,
@@ -345,7 +327,6 @@ An admission error on `N/command_errors` has this form:
 {
   "schema_version": 1,
   "bridge_id": "pi-01",
-  "node_epoch": "f1db6f13-b820-4e1f-ae13-8924dd8fa734",
   "error_id": "a270cc9d-b7a6-46d8-983d-14daf1447a56",
   "command_id": null,
   "reason": "invalid_json",
@@ -359,7 +340,7 @@ An admission error on `N/command_errors` has this form:
 The controller must keep a durable submission outbox containing the exact topic,
 request bytes/semantic content, command UUID and original expiry before publishing.
 Subscribe to that UUID's retained status topic before the first submission. Until
-a matching-epoch report confirms Pi admission (`queued`, `delivered` or a terminal
+a matching command report confirms Pi admission (`queued`, `delivered` or a terminal
 status), retry the same request every 15 seconds, including after controller restart
 or broker reconnect. Recompute only MQTT Message Expiry; never extend the payload
 deadline or allocate a new UUID to retry the same operation. A broker PUBACK alone
@@ -418,7 +399,7 @@ Every meaningful report change increments persisted `report_seq` in
 `1..9007199254740991`. Exhaustion fails closed. Publish each change on `/updates`
 with a stable publication ID; publish the latest report on `/status` with
 `publication_id: null`. The retained projection follows the per-topic ordering
-rule in the retained-state section. Clients order reports by epoch, command UUID
+rule in the retained-state section. Clients order reports by node ID, command UUID
 and report_seq, not MQTT arrival order. Republishing the same status after
 duplicate admission does not increment report_seq.
 
@@ -429,7 +410,6 @@ An applied report looks like:
   "schema_version": 1,
   "type": "COMMAND_STATUS",
   "bridge_id": "pi-01",
-  "node_epoch": "f1db6f13-b820-4e1f-ae13-8924dd8fa734",
   "publication_id": "cae4ebbd-b782-42b2-bff6-c571360d253c",
   "command_id": "37c7984c-33eb-4dcc-93be-e2b11bb2436d",
   "report_seq": 2,
@@ -580,7 +560,7 @@ existing bounded outbox overflow. Additional dashboards need not send receipts.
 
 ## MQTT session and restart behavior
 
-Use a stable client ID `smartchair-<site_id>-<bridge_id>`, MQTT 5, Session Expiry
+Use a stable client ID `smartchair-<bridge_id>`, MQTT 5, Session Expiry
 86,400 seconds, Keep Alive 30 seconds and Receive Maximum 16. Readiness requires
 successful CONNACK and all required SUBACKs at the requested QoS. A QoS 1
 subscription granted at QoS 0 must fail closed.
@@ -656,7 +636,7 @@ The following bounds apply to the bridge by default:
 
 | Resource | Limit / behavior |
 | --- | --- |
-| Accepted nonterminal commands | 64 per node, 1,024 total; reject new admission with `queue_full` |
+| Accepted nonterminal commands | 64; reject new admission with `queue_full` |
 | Receipt-required pending outbox | 10,000 rows or 64 MiB of payload, whichever comes first |
 | In-flight MQTT publications | 16 total, subject to broker limits |
 | Best-effort MQTT queue | 128 messages; drop oldest and increment the bridge-specific counter |
@@ -684,5 +664,5 @@ and bridge storage mean prolonged outages can still lose detailed event history.
   Controllers have access to authorized nodes; only the designated backend may
   publish receipts. Dashboard accounts are read-only.
 - Reject invalid topics, mismatched identities, unsupported versions, retained
-  commands, wrong epochs and oversized or malformed payloads before dispatch.
+  commands and oversized or malformed payloads before dispatch.
 - Never place broker credentials or ESP pairing keys in MQTT payloads or logs.
