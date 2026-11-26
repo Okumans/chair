@@ -135,6 +135,7 @@ Add the driver to your application with `uv add asyncpg`.
 ```python
 """PostgreSQL storage connector for chair_mqtt.ChairClient."""
 
+import asyncio
 import hashlib
 import json
 
@@ -211,6 +212,13 @@ class PostgresStorage:
     def __init__(self, dsn, *, min_size=1, max_size=4):
         self._dsn, self._sizes = dsn, (min_size, max_size)
         self._pool = None
+        self._callbacks = set()  # Tasks currently running an on_fact callback.
+
+    def _not_in_callback(self):
+        # A call awaited from on_fact would wait on the fact's own locks.
+        if asyncio.current_task() in self._callbacks:
+            raise RuntimeError(
+                "storage cannot be used from inside its own transaction callback")
 
     async def initialize(self, node_id, bridge_id, consumer_id):
         if self._pool is not None:
@@ -239,6 +247,7 @@ class PostgresStorage:
     # Backend ledger
 
     async def ingest(self, topic, payload, *, qos, retain, on_fact):
+        self._not_in_callback()
         route, value = validate(topic, payload, qos=qos, retain=retain,
                                 expected_node=self.node_id,
                                 expected_bridge=self.bridge_id)
@@ -276,9 +285,12 @@ class PostgresStorage:
                     raise ContractError("semantic identity reused with different content")
             else:
                 transaction = PostgresTransaction(db)
+                task = asyncio.current_task()
+                self._callbacks.add(task)
                 try:
                     await on_fact(route, value, transaction)
                 finally:
+                    self._callbacks.discard(task)
                     transaction._active = False
             await db.execute(
                 "INSERT INTO chair_deliveries VALUES ($1, $2, $3, $4) "
@@ -292,6 +304,7 @@ class PostgresStorage:
         return bool(fresh)
 
     async def reject(self, topic, payload, reason):
+        self._not_in_callback()
         if not isinstance(topic, str) or not isinstance(payload, bytes):
             raise ValueError("topic and payload have invalid types")
         if not isinstance(reason, str) or not reason:
@@ -310,17 +323,20 @@ class PostgresStorage:
                 digest, prefix, reason[:128])
 
     async def pending_receipts(self):
+        self._not_in_callback()
         rows = await self._pool.fetch(
             "SELECT id, topic, payload FROM chair_receipts ORDER BY position LIMIT 16")
         return [tuple(row) for row in rows]
 
     async def confirm_receipt(self, publication_id):
+        self._not_in_callback()
         await self._pool.execute("DELETE FROM chair_receipts WHERE id = $1",
                                  publication_id)
 
     # Controller ledger
 
     async def enqueue_command(self, request, now_ms):
+        self._not_in_callback()
         now_ms = _check_time(now_ms)
         if not isinstance(request, ConfigRequest):
             raise TypeError("request must be a ConfigRequest")
@@ -347,6 +363,7 @@ class PostgresStorage:
             return False
 
     async def due_commands(self, now_ms):
+        self._not_in_callback()
         now_ms = _check_time(now_ms)
         async with self._pool.acquire() as db, db.transaction():
             await db.execute(
@@ -359,6 +376,7 @@ class PostgresStorage:
         return [tuple(row) for row in rows]
 
     async def command_submitted(self, command_id, now_ms):
+        self._not_in_callback()
         now_ms = _check_time(now_ms)
         status = await self._pool.execute(
             "UPDATE chair_commands SET next_attempt_ms = $1 "
@@ -367,6 +385,7 @@ class PostgresStorage:
         return status == "UPDATE 1"
 
     async def observe_report(self, topic, payload, *, qos, retain):
+        self._not_in_callback()
         if payload == b"":
             target = parse_route(topic)
             if (target.kind != "report_status" or target.node != self.node_id
@@ -403,6 +422,7 @@ class PostgresStorage:
             return True
 
     async def get_command(self, command_id):
+        self._not_in_callback()
         row = await self._pool.fetchrow(
             "SELECT admitted, outcome, latest_seq, latest_report "
             "FROM chair_commands WHERE id = $1", command_id)
@@ -448,10 +468,10 @@ async def event_received(event, transaction):
 - **The callback runs inside the transaction.** Keep it short; it holds a pooled
   connection and row locks until it returns. A connector method awaited from
   inside the callback would wait for those locks or for a free pool connection,
-  so detect that case and raise, as `SQLiteStorage` does by remembering the
-  callback's task: store `asyncio.current_task()` before awaiting `on_fact` and
-  raise `RuntimeError` in your methods when the current task is that one.
-  Tasks started by the callback are separate and can run after it returns.
+  so detect that case and raise, as `SQLiteStorage` and the example do: record
+  `asyncio.current_task()` while awaiting `on_fact` and raise `RuntimeError` in
+  your methods when the current task is a recorded one. Tasks started by the
+  callback are separate and can run after it returns.
 - **Commit before the receipt can leave.** The receipt row is written in the
   same transaction as the fact and the application writes, and the client reads
   it only through `pending_receipts()`. A crash at any point either keeps all

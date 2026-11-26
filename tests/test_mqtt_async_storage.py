@@ -296,8 +296,10 @@ class StorageTests(unittest.IsolatedAsyncioTestCase):
             self.addAsyncCleanup(storage.close)
 
             async def reenter(route, value, tx):
-                # The timeout only keeps a regression from hanging the suite.
-                await asyncio.wait_for(storage.pending_receipts(), 1)
+                # The timeout only keeps a regression from hanging the suite. Unlike
+                # wait_for on Python 3.11, asyncio.timeout stays in the caller's task.
+                async with asyncio.timeout(1):
+                    await storage.pending_receipts()
 
             with self.assertRaisesRegex(RuntimeError, "transaction callback"):
                 await storage.ingest(
