@@ -1,5 +1,6 @@
 """Optional serial adapter; MQTT client lifecycle remains application-owned."""
 
+import json
 import logging
 import sqlite3
 import threading
@@ -8,9 +9,22 @@ import time
 import serial
 from transport import BAUD_RATE, Lines, write_message
 
-from .contract import decode
+from .contract import _unique_object
 
 LOG = logging.getLogger(__name__)
+
+
+def decode_gateway_line(line):
+    """Parse one USB line from the gateway firmware into an envelope dictionary.
+
+    MQTT payloads forbid floats, but gateway diagnostics such as the hello's
+    ``tx_power_dbm`` are fractional. Telemetry fields are still type-checked
+    by the protocol validator, and duplicate keys remain ambiguous.
+    """
+    value = json.loads(line, object_pairs_hook=_unique_object)
+    if not isinstance(value, dict):
+        raise ValueError("gateway line is not a JSON object")
+    return value
 
 
 class SerialGateway:
@@ -50,7 +64,7 @@ class SerialGateway:
                         chunk = port.read(min(8192, max(1, port.in_waiting)))
                         for line in lines.feed(chunk):
                             try:
-                                envelope = decode(line)
+                                envelope = decode_gateway_line(line)
                                 self.bridge.gateway_received(envelope)
                                 if (
                                     hello is not None
