@@ -1,11 +1,10 @@
-"""High-level Smart Chair facade for a caller-owned Paho MQTT client."""
+"""Pi-side Smart Chair bridge that owns its MQTT connection."""
 
 import copy
 import hashlib
 import logging
 import queue
 import sqlite3
-import ssl
 import threading
 import time
 import uuid
@@ -14,11 +13,13 @@ from concurrent.futures import Future
 import paho.mqtt.client as mqtt
 from pydantic import BaseModel
 
+from . import connection
 from .contract import MAX_PAYLOAD
 from .coordinator import Coordinator, Oversized
 from .models import (
     BridgeConfig,
     BridgeHealth,
+    BrokerConfig,
     CommandNotice,
     ConfigRequest,
     PublishResult,
@@ -30,23 +31,21 @@ LOG = logging.getLogger(__name__)
 
 
 class ChairMqttBridge:
-    """Attach chair protocol handling to an externally owned MQTTv5 client.
+    """Run the Pi bridge between the gateway and an MQTT 5 broker it connects to.
 
-    Attach before connecting the client. The application owns creation, network
-    loop, broker connection, reconnection, and final disconnection. The facade
-    serializes its SQLite and MQTT protocol work on one worker thread and never
-    calls the client's connect, disconnect, loop_start, or loop_stop methods.
-
-    The facade enables manual acknowledgement on the shared client. The owner
-    must acknowledge any unrelated incoming subscriptions itself and reserve the
-    configured chair command and receipt topic callbacks for this facade.
+    ``start`` (or ``with``) opens the durable database and connects in the
+    background; the bridge reconnects with backoff and recovers unacknowledged
+    deliveries itself, so a broker outage never stops sensor acknowledgements.
+    SQLite and MQTT protocol work is serialized on one worker thread.
     """
 
-    def __init__(self, client, config: BridgeConfig):
+    def __init__(self, config: BridgeConfig, broker: BrokerConfig):
         if not isinstance(config, BridgeConfig):
             raise TypeError("config must be a BridgeConfig")
+        if not isinstance(broker, BrokerConfig):
+            raise TypeError("broker must be a BrokerConfig")
         # The application explicitly assumes the Pi's UTC clock is trustworthy.
-        self.client, self.config, self.clock_trusted = client, config, lambda: True
+        self.config, self.broker, self.clock_trusted = config, broker, lambda: True
         self.instance_id = str(uuid.uuid4())
         self._events = queue.Queue(maxsize=128)
         self._notifications = queue.Queue(maxsize=128)
@@ -54,17 +53,11 @@ class ChairMqttBridge:
         self._network_lock = threading.Lock()
         self._network_generation = 0
         self._network_connected = False
-        self._ever_network_connected = False
         self._overflow = threading.Event()
         self._startup = threading.Event()
         self._startup_error = None
         self._stopping = False
         self._thread = None
-        self._old_handlers = {}
-        self._installed_handlers = {}
-        self._registered_filters = []
-        self._previous_manual_ack = None
-        self._configured_will = False
         self._gateway_connected = False
         self._gateway_outgoing = None
         self._serial_adapter = None
@@ -72,18 +65,12 @@ class ChairMqttBridge:
         self._store = self._coordinator = self._gateway = None
         self._attached = False
         self._ever_started = False
-
-    def connect_options(self):
-        """Return MQTTv5 connect options for the application's client.connect()."""
-        properties = mqtt.Properties(mqtt.PacketTypes.CONNECT)
-        properties.SessionExpiryInterval = 86400
-        properties.ReceiveMaximum = 16
-        properties.MaximumPacketSize = 65536
-        return {
-            "keepalive": 30,
-            "clean_start": mqtt.MQTT_CLEAN_START_FIRST_ONLY,
-            "properties": properties,
-        }
+        self._client = connection.create_client(broker)
+        self._client.on_connect = self._on_connect
+        self._client.on_disconnect = self._on_disconnect
+        self._client.on_subscribe = self._on_subscribe
+        self._client.on_publish = self._on_publish
+        self._client.on_message = self._on_message
 
     def _configure_will(self):
         value = {
@@ -99,7 +86,7 @@ class ChairMqttBridge:
         properties.WillDelayInterval = 0
         properties.PayloadFormatIndicator = 1
         properties.ContentType = "application/json"
-        self.client.will_set(
+        self._client.will_set(
             f"smartchair/v1/bridges/{self.config.bridge_id}/status",
             payload=compact(value),
             qos=1,
@@ -117,48 +104,12 @@ class ChairMqttBridge:
         with self._network_lock:
             return self._network_connected and self._network_generation == token
 
-    def _chain(self, name, handler):
-        old = getattr(self.client, name)
-        self._old_handlers[name] = old
-
-        def wrapper(*args):
-            handler(*args)
-            if old is not None:
-                try:
-                    old(*args)
-                except Exception:
-                    LOG.exception("Application MQTT callback %s failed", name)
-
-        setattr(self.client, name, wrapper)
-        self._installed_handlers[name] = wrapper
-
     def _on_connect(self, client, userdata, flags, reason, properties):
         with self._network_lock:
             self._network_generation += 1
             token = self._network_generation
             self._network_connected = not reason.is_failure
-            self._ever_network_connected |= not reason.is_failure
-        security_error = None
-        if not reason.is_failure:
-            context = getattr(client, "_ssl_context", None)
-            if getattr(client, "_ssl", False):
-                if (
-                    context is None
-                    or context.verify_mode != ssl.CERT_REQUIRED
-                    or not context.check_hostname
-                    or getattr(client, "_tls_insecure", False)
-                ):
-                    security_error = (
-                        "MQTT TLS must verify the broker certificate and hostname"
-                    )
-            elif not (
-                self.config.allow_local_plaintext
-                and getattr(client, "_host", None) in {"localhost", "127.0.0.1", "::1"}
-            ):
-                security_error = (
-                    "MQTT plaintext is permitted only for explicit loopback development"
-                )
-        self._enqueue(("connect", token, flags, reason, security_error))
+        self._enqueue(("connect", token, flags, reason))
 
     def _on_disconnect(self, client, userdata, flags, reason, properties):
         with self._network_lock:
@@ -168,9 +119,6 @@ class ChairMqttBridge:
 
     def _on_subscribe(self, client, userdata, mid, reasons, properties):
         self._enqueue(("subscribe", mid, tuple(reasons)))
-
-    def _on_unsubscribe(self, client, userdata, mid, reasons, properties):
-        self._enqueue(("unsubscribe", mid, tuple(reasons)))
 
     def _on_publish(self, client, userdata, mid, reason, properties):
         self._enqueue(("puback", mid, reason))
@@ -214,20 +162,14 @@ class ChairMqttBridge:
             self._notification_drops += 1
             self._notifications.put_nowait(notice)
 
-    def attach(self):
-        """Start the protocol worker and attach handlers; do not connect the client."""
+    def start(self):
+        """Open the database, start the worker and connect in the background.
+
+        Returns this bridge without waiting for the broker; check ``health()``.
+        A bridge can be started only once.
+        """
         if self._ever_started:
-            raise RuntimeError(
-                "a facade and MQTT client must not be reused after detach"
-            )
-        if self.client.is_connected():
-            raise ValueError("attach before connecting the supplied MQTT client")
-        if self.client.callback_api_version != mqtt.CallbackAPIVersion.VERSION2:
-            raise ValueError("Paho callback API version 2 is required")
-        if getattr(self.client, "_protocol", None) != mqtt.MQTTv5:
-            raise ValueError("the supplied client must use MQTT 5")
-        if getattr(self.client, "_will", False):
-            raise ValueError("the supplied client already has a Last Will")
+            raise RuntimeError("a bridge can be started only once")
         self._ever_started = True
         self._thread = threading.Thread(
             target=self._run, name="chair-mqtt-worker", daemon=True
@@ -238,48 +180,24 @@ class ChairMqttBridge:
             raise RuntimeError(
                 "could not start chair MQTT worker"
             ) from self._startup_error
+        self._attached = True
         try:
-            self._previous_manual_ack = getattr(self.client, "_manual_ack", None)
-            self.client.manual_ack_set(True)
-            self._configure_will()
-            self._configured_will = True
-            self._chain("on_connect", self._on_connect)
-            self._chain("on_disconnect", self._on_disconnect)
-            self._chain("on_subscribe", self._on_subscribe)
-            self._chain("on_unsubscribe", self._on_unsubscribe)
-            self._chain("on_publish", self._on_publish)
-            for topic in (
-                f"smartchair/v1/nodes/{self.config.node_id}/commands/config",
-                f"smartchair/v1/bridges/{self.config.bridge_id}/receipts",
-            ):
-                self.client.message_callback_add(topic, self._on_message)
-                self._registered_filters.append(topic)
-            self._attached = True
-        except Exception:
-            self._detach_handlers()
-            self._stopping = True
-            self._thread.join(timeout=5)
+            self._configure_will()  # Before CONNECT, as the spec requires.
+            connection.connect(self._client, self.broker)
+        except BaseException:
+            self.stop()
             raise
         return self
 
-    def _detach_handlers(self, *, release_subscriptions=True):
-        for name, installed in self._installed_handlers.items():
-            if getattr(self.client, name) is installed:
-                setattr(self.client, name, self._old_handlers[name])
-        if release_subscriptions:
-            for topic in self._registered_filters:
-                self.client.message_callback_remove(topic)
-            self._registered_filters.clear()
-            if self._previous_manual_ack is not None:
-                self.client.manual_ack_set(self._previous_manual_ack)
-                self._previous_manual_ack = None
-            if self._configured_will:
-                self.client.will_clear()
-                self._configured_will = False
+    def __enter__(self):
+        return self.start()
+
+    def __exit__(self, *exc_info):
+        self.stop()
 
     def _call(self, name, *args, timeout=10):
         if not self._attached or self._stopping:
-            raise RuntimeError("facade is not attached")
+            raise RuntimeError("bridge is not started")
         future = Future()
         self._events.put(("call", future, name, args), timeout=timeout)
         return future.result(timeout=timeout)
@@ -337,9 +255,7 @@ class ChairMqttBridge:
     def start_gateway(self, port):
         """Start the optional serial adapter without managing the MQTT client."""
         if not self._attached or self._serial_adapter is not None:
-            raise RuntimeError(
-                "facade must be attached and gateway not already started"
-            )
+            raise RuntimeError("bridge must be started and gateway not already started")
         from .serial_gateway import SerialGateway
 
         self._serial_adapter = SerialGateway(self, port)
@@ -359,57 +275,44 @@ class ChairMqttBridge:
         """Explicitly retry the original bytes after correcting broker policy."""
         return self._call("retry_quarantined")
 
-    def detach(self):
-        """Detach callbacks and stop this worker without disconnecting the MQTT client.
+    def stop(self):
+        """Stop the gateway and disconnect; return whether offline was confirmed.
 
-        Returns whether an offline status was acknowledged. If false, the owner
-        should abort rather than gracefully disconnect so the broker can send the
-        Last Will; the facade never takes ownership of connection lifecycle.
+        Publishes an offline status and waits up to two seconds for its PUBACK
+        before a normal DISCONNECT. Without that confirmation the connection is
+        aborted instead, so the broker publishes the bridge's Will.
         """
         if not self._attached:
             return False
-        self.stop_gateway()
-        confirmed = False
-        release_subscriptions = not self._ever_network_connected
-        if self.client.is_connected():
-            self._call("shutdown")
-            deadline = time.monotonic() + 2
-            while time.monotonic() < deadline:
-                if self._call("shutdown_confirmed"):
-                    confirmed = True
-                    break
-                time.sleep(0.05)
-            self._call("unsubscribe")
-            deadline = time.monotonic() + 2
-            while time.monotonic() < deadline:
-                if self._call("unsubscribed"):
-                    release_subscriptions = True
-                    break
-                if not self.client.is_connected():
-                    break
-                time.sleep(0.05)
-            if not release_subscriptions and self.client.is_connected():
-                # Keep the worker and manual ACKs active until the caller aborts.
-                return False
-        elif self._attached:
-            release_subscriptions = release_subscriptions or self._call("unsubscribed")
-        self._attached = False
-        self._detach_handlers(release_subscriptions=release_subscriptions)
-        self._stopping = True
-        self._thread.join(timeout=10)
+        try:
+            self.stop_gateway()
+        finally:
+            confirmed = False
+            if self._client.is_connected():
+                self._call("shutdown")
+                deadline = time.monotonic() + 2
+                while time.monotonic() < deadline:
+                    if self._call("shutdown_confirmed"):
+                        confirmed = True
+                        break
+                    time.sleep(0.05)
+            try:
+                connection.close(self._client, graceful=confirmed)
+            finally:
+                self._attached = False
+                self._stopping = True
+                self._thread.join(timeout=10)
         if self._thread.is_alive():
             raise RuntimeError("chair worker did not stop")
-        return confirmed and release_subscriptions
+        return confirmed
 
     def _dispatch_call(self, name, args):
         if self._shutting_down and name not in {
             "health",
             "shutdown",
             "shutdown_confirmed",
-            "unsubscribe",
-            "unsubscribed",
         }:
-            raise RuntimeError("facade is shutting down")
+            raise RuntimeError("bridge is shutting down")
         if name == "publish":
             message, source_mac = args
             result = self._gateway.receive(
@@ -474,10 +377,6 @@ class ChairMqttBridge:
                 shutting_down=True,
             )
             return None
-        if name == "unsubscribe":
-            return self._coordinator.unsubscribe_owned_topics()
-        if name == "unsubscribed":
-            return self._coordinator.unsubscribed
         if name == "shutdown_confirmed":
             topic = f"smartchair/v1/bridges/{self.config.bridge_id}/status"
             row = self._store.db.execute(
@@ -546,7 +445,7 @@ class ChairMqttBridge:
             )
             self._coordinator = Coordinator(
                 self._store,
-                self.client,
+                self._client,
                 token_is_current=self._current_token,
                 on_command=self._notice,
             )
@@ -557,7 +456,7 @@ class ChairMqttBridge:
             self._startup.set()
             return
         self._startup.set()
-        next_expiry_check = 0.0
+        next_expiry_check = next_recovery = 0.0
         try:
             while not self._stopping:
                 if self._overflow.is_set():
@@ -580,16 +479,12 @@ class ChairMqttBridge:
                                 except Exception as error:
                                     future.set_exception(error)
                         elif kind == "connect":
-                            token, flags, reason, security_error = args
-                            self._coordinator.on_connect(
-                                flags, reason, token, security_error
-                            )
+                            token, flags, reason = args
+                            self._coordinator.on_connect(flags, reason, token)
                         elif kind == "disconnect":
                             self._coordinator.on_disconnect()
                         elif kind == "subscribe":
                             self._coordinator.on_subscribe(*args)
-                        elif kind == "unsubscribe":
-                            self._coordinator.on_unsubscribe(*args)
                         elif kind == "puback":
                             self._coordinator.on_publish(*args)
                         elif kind == "message":
@@ -611,6 +506,18 @@ class ChairMqttBridge:
                             now=time.time(),
                         )
                     self._coordinator.tick(time.time())
+                    coordinator = self._coordinator
+                    if (
+                        coordinator.reconnect_required
+                        and coordinator.connected
+                        and not coordinator.fatal
+                        and not self._shutting_down
+                        and now_mono >= next_recovery
+                    ):
+                        # Drop the connection so the broker redelivers; Paho reconnects.
+                        LOG.warning("Reconnecting MQTT to recover deliveries")
+                        next_recovery = now_mono + connection.RECOVERY_INTERVAL_S
+                        connection.abort(self._client)
                 except Exception as error:
                     LOG.exception("Chair MQTT protocol worker failed")
                     if isinstance(error, (sqlite3.Error, OSError)):

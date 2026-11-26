@@ -74,7 +74,6 @@ class BridgeConfig(StrictModel):
     bridge_id: str
     consumer_id: str
     database_path: Path
-    allow_local_plaintext: StrictBool = False
 
     @field_validator("node_id")
     @classmethod

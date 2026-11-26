@@ -225,27 +225,28 @@ transaction requirements. ESP data classes such as `StateSync`, `SeatEvent`,
 validated protocol fields and are not connection managers.
 
 For an application that deliberately embeds the Pi bridge, construct
-`ChairMqttBridge(paho_client, BridgeConfig(...))` and call `attach()` before
-connecting the Paho client. `connect_options()` returns its required connection
-options; `start_gateway(port)` and `stop_gateway()` control the serial adapter.
+`ChairMqttBridge(BridgeConfig(...), BrokerConfig(...))` and use it in a `with`
+block, or call `start()` and `stop()`. Like `ChairClient`, it owns its MQTT
+connection: `start()` returns without waiting for the broker, and the bridge
+reconnects and recovers unacknowledged deliveries itself. `stop()` publishes an
+offline status and waits up to two seconds for the broker to acknowledge it
+before disconnecting; without that confirmation it aborts the connection so the
+broker publishes the bridge's Will, and returns `False`.
+`start_gateway(port)` and `stop_gateway()` control the serial adapter.
 `publish(message, source_mac=...)` accepts a sensor message that arrived over a
 transport other than the gateway and returns a `PublishResult`: `status` is
 `accepted`, `duplicate` or `ignored` (with a `reason`), and a reliable event,
 including a retransmitted duplicate, carries the `EventAck` the caller must
 deliver to the sensor. Data passed to `publish` is never acknowledged over the
 gateway radio. `receive(timeout=None)` returns a command notice, not sensor data. `health()`
-returns `BridgeHealth`, `retry_quarantined()` retries previously quarantined
-publications after their cause is corrected, and `detach()` attempts an offline
-publication and unsubscribe without disconnecting Paho. A `False` detach result
-requires the owner to abort the transport and discard the client. Advanced
-custom-serial integrations can use `gateway_opened()`, `gateway_received(envelope)`,
-`gateway_next()`, `gateway_write(message, port)`, and `gateway_closed()`; the
-adapter normally handles that sequence. These methods are synchronous and are
-not needed by applications using the standalone service.
+returns `BridgeHealth`, and `retry_quarantined()` retries previously quarantined
+publications after their cause is corrected. A `fatal` health value or failed
+storage cannot be fixed by reconnecting; the standalone service exits so that
+systemd restarts it. Advanced custom-serial integrations can use
+`gateway_opened()`, `gateway_received(envelope)`, `gateway_next()`,
+`gateway_write(message, port)`, and `gateway_closed()`; the adapter normally
+handles that sequence. These methods are synchronous and are not needed by
+applications using the standalone service.
 
-An embedded bridge's application owns reconnecting its Paho client. If
-`health().reconnect_required` is true, abort the connection and reconnect to
-obtain redelivery. If detach returns false, keep manual acknowledgements enabled
-and abort and discard that Paho client; after disconnect call `detach()` again
-to close the storage worker. The library and tests do not establish Pi
-power-loss or physical radio reliability.
+The library and tests do not establish Pi power-loss or physical radio
+reliability.

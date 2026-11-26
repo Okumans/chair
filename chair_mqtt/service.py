@@ -4,28 +4,28 @@ import argparse
 import logging
 import os
 import signal
-import socket
 import threading
-import time
 import tomllib
 from pathlib import Path
 
-import paho.mqtt.client as mqtt
-
 from .facade import ChairMqttBridge
-from .models import BridgeConfig
+from .models import BridgeConfig, BrokerConfig
 
 LOG = logging.getLogger(__name__)
 
 
-def _abort_transport(client):
-    """Drop the connection without DISCONNECT; Paho's loop then reconnects."""
-    sock = client.socket()
-    if sock is not None:
-        try:
-            sock.shutdown(socket.SHUT_RDWR)
-        except OSError:
-            pass
+def broker_config(settings, environ):
+    """Build BrokerConfig from the ``[mqtt]`` table and environment credentials."""
+    if {"username", "password"} & settings.keys():
+        raise ValueError(
+            "set broker credentials in CHAIR_MQTT_USERNAME and CHAIR_MQTT_PASSWORD, "
+            "not in the configuration file"
+        )
+    return BrokerConfig(
+        **settings,
+        username=environ.get("CHAIR_MQTT_USERNAME") or None,
+        password=environ.get("CHAIR_MQTT_PASSWORD") or None,
+    )
 
 
 def main(argv=None):
@@ -37,63 +37,19 @@ def main(argv=None):
     with args.config.open("rb") as source:
         settings = tomllib.load(source)
     config = BridgeConfig(**settings["bridge"])
-    broker = settings["mqtt"]
-    if not broker.get("ca_file") and not (
-        config.allow_local_plaintext
-        and broker["host"] in {"localhost", "127.0.0.1", "::1"}
-    ):
-        raise ValueError(
-            "a CA file is required except for explicit loopback development"
-        )
-    client = mqtt.Client(
-        mqtt.CallbackAPIVersion.VERSION2,
-        client_id=broker["client_id"],
-        protocol=mqtt.MQTTv5,
-    )
-    if broker.get("ca_file"):
-        client.tls_set(ca_certs=broker["ca_file"])
-    username = os.environ.get("CHAIR_MQTT_USERNAME")
-    if username:
-        client.username_pw_set(username, os.environ.get("CHAIR_MQTT_PASSWORD"))
-    bridge = ChairMqttBridge(client, config).attach()
+    broker = broker_config(settings["mqtt"], os.environ)
     stopping = threading.Event()
     for sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, lambda *_: stopping.set())
-    started = False
-    try:
-        # Connect in Paho's network thread so an unreachable broker does not stop
-        # the gateway; sensor facts are buffered durably until it is reachable.
-        client.connect_async(
-            broker["host"], broker.get("port", 8883), **bridge.connect_options()
-        )
-        client.loop_start()
-        started = True
+    # The bridge connects in the background and reconnects by itself, so sensor
+    # facts are acknowledged and stored durably while the broker is unreachable.
+    with ChairMqttBridge(config, broker) as bridge:
         bridge.start_gateway(settings["gateway"]["port"])
-        aborted_at = None
         while not stopping.wait(1):
             health = bridge.health()
             if health.fatal or not health.storage_ok:
+                # Reconnecting cannot fix these; exit so systemd restarts the service.
                 raise RuntimeError(f"bridge requires restart: {health}")
-            if not health.mqtt_connected:
-                aborted_at = None  # Paho's loop is already reconnecting.
-            elif health.reconnect_required and (
-                aborted_at is None or time.monotonic() - aborted_at >= 30
-            ):
-                LOG.warning("Reconnecting MQTT to recover unacknowledged deliveries")
-                _abort_transport(client)
-                aborted_at = time.monotonic()
-    finally:
-        confirmed = bridge.detach()
-        if started:
-            if confirmed:
-                client.disconnect()
-            else:
-                sock = client.socket()
-                if sock is not None:
-                    sock.close()
-            client.loop_stop()
-            if not confirmed:
-                bridge.detach()
 
 
 if __name__ == "__main__":

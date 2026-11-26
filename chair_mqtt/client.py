@@ -32,8 +32,6 @@ LOG = logging.getLogger(__name__)
 # Paho keeps a QoS 1 publish made during a disconnect race (NO_CONN) and sends it
 # under the same MID after reconnecting, so both results mean "in flight".
 _QUEUED = {mqtt.MQTT_ERR_SUCCESS, mqtt.MQTT_ERR_NO_CONN}
-# Drop the connection at most this often while deliveries need redelivery.
-RECOVERY_INTERVAL_S = 30.0
 
 
 class SensorEvent(BaseModel):
@@ -666,5 +664,5 @@ class ChairClient:
             and time.monotonic() >= self._next_recovery
         ):
             LOG.warning("Reconnecting MQTT to recover deliveries: %s", self.error)
-            self._next_recovery = time.monotonic() + RECOVERY_INTERVAL_S
+            self._next_recovery = time.monotonic() + connection.RECOVERY_INTERVAL_S
             connection.abort(self._mqtt)

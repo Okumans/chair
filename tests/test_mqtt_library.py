@@ -4,6 +4,7 @@ import os
 import pty
 import re
 import select
+import socket
 import sqlite3
 import subprocess
 import sys
@@ -19,6 +20,7 @@ import paho.mqtt.client as mqtt
 
 from chair_mqtt import (
     BridgeConfig,
+    BrokerConfig,
     ChairMqttBridge,
     ConfigRequest,
     ControllerLedger,
@@ -879,54 +881,76 @@ class CoordinatorTests(StoreFixture):
         self.assertTrue(worker.reconnect_required)
 
 
+OFFLINE = BrokerConfig(
+    host="127.0.0.1", port=1, client_id="smartchair-pi-01", plaintext=True
+)
+
+
+def bridge_config(path):
+    return BridgeConfig(
+        node_id=NODE,
+        sensor_mac=MAC,
+        bridge_id="pi-01",
+        consumer_id="backend-01",
+        database_path=path,
+    )
+
+
+def offline_bridge(path):
+    """Return an unstarted bridge whose own Paho client never opens a socket."""
+    bridge = ChairMqttBridge(bridge_config(path), OFFLINE)
+    client = bridge._client
+    mids = itertools.count(200)
+    client.connect_async = Mock()
+    client.loop_start = Mock()
+    client.disconnect = Mock()
+    client.subscribe = Mock(side_effect=lambda *args, **kwargs: (0, next(mids)))
+    client.publish = Mock(
+        side_effect=lambda *args, **kwargs: SimpleNamespace(rc=0, mid=next(mids))
+    )
+    client.ack = Mock(return_value=0)
+    return bridge
+
+
+def simulate_connack(bridge):
+    client = bridge._client
+    client.on_connect(
+        client,
+        None,
+        SimpleNamespace(session_present=False),
+        SimpleNamespace(is_failure=False),
+        None,
+    )
+    bridge.health()  # Synchronize with the worker.
+
+
+def wait_until(predicate, timeout=2):
+    deadline = time.monotonic() + timeout
+    while not predicate():
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.02)
+    return True
+
+
 class FacadeTests(StoreFixture):
-    def test_facade_attaches_to_caller_owned_client_and_does_not_manage_lifecycle(self):
-        client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, protocol=mqtt.MQTTv5)
-        client.connect = Mock(side_effect=AssertionError("facade must not connect"))
-        client.disconnect = Mock(
-            side_effect=AssertionError("facade must not disconnect")
-        )
-        client.loop_start = Mock(
-            side_effect=AssertionError("facade must not start MQTT loop")
-        )
-        client.loop_stop = Mock(
-            side_effect=AssertionError("facade must not stop MQTT loop")
-        )
+    def test_bridge_owns_its_client_and_connects_in_the_background(self):
+        bridge = offline_bridge(self.path)
+        client = bridge._client
         client.subscribe = Mock(side_effect=[(0, 10), (0, 11)])
-        mids = itertools.count(200)
-        client.publish = Mock(
-            side_effect=lambda *args, **kwargs: SimpleNamespace(rc=0, mid=next(mids))
-        )
-        client.ack = Mock(return_value=0)
-        previous = Mock()
-        client.on_connect = previous
-        config = BridgeConfig(
-            node_id=NODE,
-            sensor_mac=MAC,
-            bridge_id="pi-01",
-            consumer_id="backend-01",
-            database_path=self.path,
-            allow_local_plaintext=True,
-        )
-        client._host = "127.0.0.1"
-        bridge = ChairMqttBridge(client, config).attach()
-        self.addCleanup(bridge.detach)
+        bridge.start()
+        self.addCleanup(bridge.stop)
         self.assertTrue(client._manual_ack)
-        self.assertTrue(client._will)
-        self.assertEqual(
-            bridge.connect_options()["properties"].SessionExpiryInterval, 86400
-        )
-        flags, success = (
-            SimpleNamespace(session_present=False),
-            SimpleNamespace(is_failure=False),
-        )
-        client.on_connect(client, None, flags, success, None)
+        self.assertTrue(client._will)  # Installed before CONNECT.
+        self.assertEqual(client.connect_async.call_args.args, ("127.0.0.1", 1))
+        options = client.connect_async.call_args.kwargs
+        self.assertEqual(options["keepalive"], 30)
+        self.assertEqual(options["clean_start"], mqtt.MQTT_CLEAN_START_FIRST_ONLY)
+        self.assertEqual(options["properties"].SessionExpiryInterval, 86400)
+        self.assertEqual(options["properties"].ReceiveMaximum, 16)
+        client.loop_start.assert_called_once()
+        simulate_connack(bridge)
         self.assertTrue(bridge.health().mqtt_connected)
-        previous.assert_called_once()
-        # A SUBACK for another application subscription must not break readiness.
-        client.on_subscribe(
-            client, None, 99, [SimpleNamespace(is_failure=False, value=0)], None
-        )
         for mid in (10, 11):
             client.on_subscribe(
                 client, None, mid, [SimpleNamespace(is_failure=False, value=1)], None
@@ -941,7 +965,7 @@ class FacadeTests(StoreFixture):
             qos=1,
             retain=False,
         )
-        bridge._on_message(client, None, message)
+        client.on_message(client, None, message)
         notice = bridge.receive(timeout=2)
         self.assertEqual(notice.disposition, "queued")
         self.assertEqual(notice.request.message.node_id, NODE)
@@ -952,28 +976,14 @@ class FacadeTests(StoreFixture):
             "accepted",
         )
         self.assertEqual(bridge.publish(event(), source_mac=MAC).status, "duplicate")
-        self.assertFalse(bridge.detach())
-        # The simulated disconnect never confirmed removal of the subscriptions.
-        # Keep manual acknowledgements and the topic callbacks in place, fail-closed.
-        self.assertTrue(client._manual_ack)
-        self.assertTrue(client._will)
-        self.assertIs(client.on_connect, previous)
-        client.connect.assert_not_called()
+        # Paho never really connected, so no offline status could be confirmed:
+        # the bridge aborts instead of disconnecting, and the broker sends the Will.
+        self.assertFalse(bridge.stop())
         client.disconnect.assert_not_called()
-        client.loop_start.assert_not_called()
-        client.loop_stop.assert_not_called()
 
     def test_publish_returns_sensor_ack_instead_of_queueing_it_for_radio(self):
-        client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, protocol=mqtt.MQTTv5)
-        config = BridgeConfig(
-            node_id=NODE,
-            sensor_mac=MAC,
-            bridge_id="pi-01",
-            consumer_id="backend-01",
-            database_path=self.path,
-        )
-        bridge = ChairMqttBridge(client, config).attach()
-        self.addCleanup(bridge.detach)
+        bridge = offline_bridge(self.path).start()
+        self.addCleanup(bridge.stop)
         first = bridge.publish(event(), source_mac=MAC)
         self.assertEqual(first.status, "accepted")
         self.assertEqual(first.ack.type, "EVENT_ACK")
@@ -1006,44 +1016,42 @@ class FacadeTests(StoreFixture):
             ("ignored", "awaiting_fresh_connection", None),
         )
 
-    def test_detach_before_connect_restores_client_settings(self):
-        client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, protocol=mqtt.MQTTv5)
-        config = BridgeConfig(
-            node_id=NODE,
-            sensor_mac=MAC,
-            bridge_id="pi-01",
-            consumer_id="backend-01",
-            database_path=self.path,
+    def test_stop_returns_promptly_when_the_broker_is_unreachable(self):
+        with socket.socket() as reserved:
+            reserved.bind(("127.0.0.1", 0))
+            port = reserved.getsockname()[1]
+        broker = BrokerConfig(
+            host="127.0.0.1", port=port, client_id="smartchair-pi-01", plaintext=True
         )
-        bridge = ChairMqttBridge(client, config).attach()
-        self.assertFalse(bridge.detach())
-        self.assertFalse(client._manual_ack)
-        self.assertFalse(client._will)
+        bridge = ChairMqttBridge(bridge_config(self.path), broker)
+        started = time.monotonic()
+        bridge.start()
+        time.sleep(0.3)
+        self.assertFalse(bridge.health().mqtt_connected)
+        self.assertFalse(bridge.stop())
+        self.assertLess(time.monotonic() - started, 3)
 
-    def test_remote_plaintext_is_rejected_without_managing_connection(self):
-        client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, protocol=mqtt.MQTTv5)
-        client._host = "example.org"
-        client.subscribe = Mock(side_effect=AssertionError("must not subscribe"))
-        config = BridgeConfig(
-            node_id=NODE,
-            sensor_mac=MAC,
-            bridge_id="pi-01",
-            consumer_id="backend-01",
-            database_path=self.path,
-        )
-        bridge = ChairMqttBridge(client, config).attach()
-        self.addCleanup(bridge.detach)
-        client.on_connect(
-            client,
-            None,
-            SimpleNamespace(session_present=False),
-            SimpleNamespace(is_failure=False),
-            None,
-        )
-        health = bridge.health()
-        self.assertFalse(health.subscriptions_ready)
-        self.assertIn("plaintext", health.fatal)
-        client.subscribe.assert_not_called()
+    def test_reconnect_required_drops_the_connection_at_most_every_30_seconds(self):
+        bridge = offline_bridge(self.path).start()
+        self.addCleanup(bridge.stop)
+        bridge._client.socket = Mock()
+        shutdown = bridge._client.socket.return_value.shutdown
+        simulate_connack(bridge)
+        with self.assertLogs("chair_mqtt.facade", level="WARNING"):
+            bridge._coordinator.reconnect_required = True
+            self.assertTrue(wait_until(lambda: shutdown.called))
+        time.sleep(0.5)  # Still required, but within the recovery interval.
+        shutdown.assert_called_once_with(socket.SHUT_RDWR)
+
+    def test_fatal_bridge_does_not_reconnect(self):
+        bridge = offline_bridge(self.path).start()
+        self.addCleanup(bridge.stop)
+        bridge._client.socket = Mock()
+        simulate_connack(bridge)
+        bridge._coordinator.fatal = "MQTT subscription rejected"
+        bridge._coordinator.reconnect_required = True
+        time.sleep(0.5)
+        bridge._client.socket.return_value.shutdown.assert_not_called()
 
 
 class BackendLedgerTests(StoreFixture):
@@ -1130,16 +1138,8 @@ class SerialAdapterTests(StoreFixture):
         master, slave = pty.openpty()
         self.addCleanup(os.close, master)
         self.addCleanup(os.close, slave)
-        client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, protocol=mqtt.MQTTv5)
-        config = BridgeConfig(
-            node_id=NODE,
-            sensor_mac=MAC,
-            bridge_id="pi-01",
-            consumer_id="backend-01",
-            database_path=self.path,
-        )
-        bridge = ChairMqttBridge(client, config).attach()
-        self.addCleanup(bridge.detach)
+        bridge = offline_bridge(self.path).start()
+        self.addCleanup(bridge.stop)
         bridge.start_gateway(os.ttyname(slave))
         pending = bytearray()
 
@@ -1172,16 +1172,8 @@ class SerialAdapterTests(StoreFixture):
         master, slave = pty.openpty()
         self.addCleanup(os.close, master)
         self.addCleanup(os.close, slave)
-        client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, protocol=mqtt.MQTTv5)
-        config = BridgeConfig(
-            node_id=NODE,
-            sensor_mac=MAC,
-            bridge_id="pi-01",
-            consumer_id="backend-01",
-            database_path=self.path,
-        )
-        bridge = ChairMqttBridge(client, config).attach()
-        self.addCleanup(bridge.detach)
+        bridge = offline_bridge(self.path).start()
+        self.addCleanup(bridge.stop)
         bridge.start_gateway(os.ttyname(slave))
         pending = bytearray()
         deadline = time.monotonic() + 5
