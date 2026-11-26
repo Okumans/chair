@@ -10,6 +10,7 @@ from pathlib import Path
 
 from .facade import ChairMqttBridge
 from .models import BridgeConfig, BrokerConfig
+from .serial_gateway import SerialTransport
 
 LOG = logging.getLogger(__name__)
 
@@ -43,8 +44,8 @@ def main(argv=None):
         signal.signal(sig, lambda *_: stopping.set())
     # The bridge connects in the background and reconnects by itself, so sensor
     # facts are acknowledged and stored durably while the broker is unreachable.
-    with ChairMqttBridge(config, broker) as bridge:
-        bridge.start_gateway(settings["gateway"]["port"])
+    gateway = SerialTransport(settings["gateway"]["port"])
+    with ChairMqttBridge(config, broker, gateway=gateway) as bridge:
         while not stopping.wait(1):
             health = bridge.health()
             if health.fatal or not health.storage_ok:

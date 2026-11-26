@@ -1,6 +1,5 @@
 """End-to-end bridge test against a private loopback MQTT broker."""
 
-import io
 import json
 import queue
 import shutil
@@ -15,6 +14,7 @@ from contextlib import closing
 from pathlib import Path
 
 import paho.mqtt.client as mqtt
+from gateway_fake import FakeGateway
 
 from chair_mqtt import BridgeConfig, BrokerConfig, ChairMqttBridge
 
@@ -129,7 +129,10 @@ class PrivateBrokerTests(unittest.TestCase):
                         client_id="smartchair-pi-01",
                         plaintext=True,
                     )
-                    bridge = ChairMqttBridge(settings, broker_settings).start()
+                    gateway = FakeGateway()
+                    bridge = ChairMqttBridge(
+                        settings, broker_settings, gateway=gateway
+                    ).start()
                     end = time.monotonic() + 5
                     while not bridge.health().subscriptions_ready:
                         if time.monotonic() >= end:
@@ -171,10 +174,12 @@ class PrivateBrokerTests(unittest.TestCase):
                     self.assertEqual(notice.disposition, "queued")
                     self.assertEqual(notice.request.message.command_id, COMMAND)
 
-                    hello = bridge.gateway_opened()
-                    bridge.gateway_received(
-                        dict(kind="hello", request_id=hello["request_id"])
-                    )
+                    gateway.send(gateway.expect("hello"))
+                    end = time.monotonic() + 5
+                    while not bridge.health().gateway_ready:
+                        if time.monotonic() >= end:
+                            self.fail("gateway handshake did not complete")
+                        time.sleep(0.05)
                     bridge.publish(
                         event(
                             "READY",
@@ -184,21 +189,18 @@ class PrivateBrokerTests(unittest.TestCase):
                         ),
                         source_mac=MAC,
                     )
-                    # Reconnect clears stale ACKs; a radio retransmission is ACKed again.
-                    retransmission = bridge.gateway_received(
+                    # A radio retransmission of an accepted event is ACKed again.
+                    gateway.send(
                         dict(kind="telemetry", source_mac=MAC, message=event())
                     )
-                    self.assertTrue(retransmission["duplicate"])
-                    outgoing = bridge.gateway_next()
-                    self.assertEqual(outgoing["kind"], "event_ack")
-                    self.assertTrue(bridge.gateway_write(outgoing, io.BytesIO()))
-                    bridge.gateway_received(
+                    outgoing = gateway.expect("event_ack")
+                    self.assertEqual(outgoing["message"]["ack_seq"], 1)
+                    gateway.send(
                         dict(kind="tx_result", request_id=outgoing["request_id"])
                     )
-                    outgoing = bridge.gateway_next()
+                    outgoing = gateway.expect("ready_probe")
                     self.assertEqual(outgoing["message"]["type"], "READY_PROBE")
-                    self.assertTrue(bridge.gateway_write(outgoing, io.BytesIO()))
-                    bridge.gateway_received(
+                    gateway.send(
                         dict(kind="tx_result", request_id=outgoing["request_id"])
                     )
                     probe = outgoing["message"]
@@ -209,13 +211,10 @@ class PrivateBrokerTests(unittest.TestCase):
                         ack_boot_id=probe["boot_id"],
                         ack_seq=probe["seq"],
                     )
-                    bridge.gateway_received(
-                        dict(kind="telemetry", source_mac=MAC, message=proof)
-                    )
-                    outgoing = bridge.gateway_next()
+                    gateway.send(dict(kind="telemetry", source_mac=MAC, message=proof))
+                    outgoing = gateway.expect("command")
                     self.assertEqual(outgoing["message"]["type"], "CONFIG_SET")
                     self.assertEqual(outgoing["message"]["command_id"], COMMAND)
-                    self.assertTrue(bridge.gateway_write(outgoing, io.BytesIO()))
                     result = event(
                         "COMMAND_RESULT", seq=4, command_id=COMMAND, status="applied"
                     )
