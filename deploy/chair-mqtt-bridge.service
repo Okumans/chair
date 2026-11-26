@@ -1,0 +1,19 @@
+[Unit]
+Description=Smart Chair MQTT gateway bridge
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=chair
+Group=chair
+SupplementaryGroups=dialout
+StateDirectory=chair-mqtt
+EnvironmentFile=-/etc/chair-mqtt/credentials
+ExecStart=/opt/chair-mqtt/bin/python -m chair_mqtt.service --config /etc/chair-mqtt/bridge.toml
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

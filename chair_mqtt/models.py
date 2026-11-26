@@ -118,6 +118,40 @@ class ConfigRequest(StrictModel):
     message: ConfigSet
 
 
+class ClientConfig(StrictModel):
+    node_id: str
+    bridge_id: str
+    consumer_id: str
+    allow_local_plaintext: StrictBool = False
+
+    @field_validator("node_id")
+    @classmethod
+    def valid_node(cls, value):
+        return BridgeConfig.valid_node(value)
+
+    @field_validator("bridge_id", "consumer_id")
+    @classmethod
+    def valid_id(cls, value):
+        return BridgeConfig.valid_id(value)
+
+
+class ChairConfiguration(StrictModel):
+    revision: Uint32
+    heartbeat_s: PositiveUint32
+    movement_batch_s: PositiveUint32
+    movement_enabled: StrictBool
+    radio_windows_enabled: StrictBool
+    radio_interval_s: PositiveUint32
+    radio_open_s: PositiveUint32
+    radio_motion_tail_s: PositiveUint32
+
+    @model_validator(mode="after")
+    def validate_window(self):
+        if self.radio_open_s > self.radio_interval_s:
+            raise ValueError("radio opening exceeds interval")
+        return self
+
+
 class BackendReceipt(StrictModel):
     schema_version: Literal[1]
     type: Literal["MQTT_ACK"]
