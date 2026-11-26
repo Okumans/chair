@@ -78,8 +78,11 @@ connection operations outside their event loop.
 
 The application must create its own tables before receiving events. The callback
 and all application database writes must use the transaction supplied by the
-connector, with no independent commits or external side effects. It must not
-call other `ChairClient` storage methods while its transaction callback runs.
+connector, with no independent commits or external side effects. Awaiting
+another storage-backed `ChairClient` method, such as `set_config` or
+`get_command`, inside the callback raises `RuntimeError` instead of waiting for
+the callback's own transaction; start a task with `asyncio.create_task` so the
+call runs after the callback returns.
 An exception rolls back the fact, application writes, and pending receipt and
 leaves the broker delivery unacknowledged. Duplicate facts do not invoke the
 callback again. Movement is best effort and has no transaction or receipt.

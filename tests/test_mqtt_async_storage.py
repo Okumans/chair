@@ -261,3 +261,58 @@ class StorageTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(calls, [1])
             self.assertEqual(len(await storage.pending_receipts()), 1)
             await storage.close()
+
+    async def test_storage_call_inside_fact_callback_raises_instead_of_hanging(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = MqttStore(
+                Path(directory) / "source.db",
+                bridge_id="pi-01",
+                consumer_id="backend-01",
+                mapping={"chair-01": "02:00:00:00:00:01"},
+                clock_trusted=lambda: True,
+            )
+            source.accept(
+                dict(
+                    version=2,
+                    type="STATE_SYNC",
+                    node_id="chair-01",
+                    boot_id="0000000000000001",
+                    boot_generation="0000000000000001",
+                    seq=1,
+                    uptime_ms=100,
+                    occupied=True,
+                    battery_mv=None,
+                    config_revision=0,
+                    health_flags=0,
+                ),
+                1800000000,
+            )
+            topic, payload = source.db.execute(
+                "SELECT topic,payload FROM mqtt_outbox"
+            ).fetchone()
+            source.db.close()
+            storage = SQLiteStorage(Path(directory) / "backend.db")
+            await storage.initialize("chair-01", "pi-01", "backend-01")
+            self.addAsyncCleanup(storage.close)
+
+            async def reenter(route, value, tx):
+                # The timeout only keeps a regression from hanging the suite.
+                await asyncio.wait_for(storage.pending_receipts(), 1)
+
+            with self.assertRaisesRegex(RuntimeError, "transaction callback"):
+                await storage.ingest(
+                    topic, payload, qos=1, retain=False, on_fact=reenter
+                )
+            self.assertEqual(await storage.pending_receipts(), [])
+
+            later = []
+
+            async def schedule(route, value, tx):
+                later.append(asyncio.create_task(storage.pending_receipts()))
+
+            self.assertTrue(
+                await storage.ingest(
+                    topic, payload, qos=1, retain=False, on_fact=schedule
+                )
+            )
+            self.assertEqual(len(await later[0]), 1)
