@@ -949,10 +949,11 @@ class FacadeTests(StoreFixture):
         self.assertEqual(notice.request.message.node_id, NODE)
         bridge.health()  # Synchronize with processing of the incoming acknowledgement.
         client.ack.assert_called_with(77, 1)
-        self.assertTrue(
-            bridge.publish(StateSync.model_validate(event()), source_mac=MAC)
+        self.assertEqual(
+            bridge.publish(StateSync.model_validate(event()), source_mac=MAC).status,
+            "accepted",
         )
-        self.assertFalse(bridge.publish(event(), source_mac=MAC))
+        self.assertEqual(bridge.publish(event(), source_mac=MAC).status, "duplicate")
         self.assertFalse(bridge.detach())
         # The simulated disconnect never confirmed removal of the subscriptions.
         # Keep manual acknowledgements and the topic callbacks in place, fail-closed.
@@ -963,6 +964,49 @@ class FacadeTests(StoreFixture):
         client.disconnect.assert_not_called()
         client.loop_start.assert_not_called()
         client.loop_stop.assert_not_called()
+
+    def test_publish_returns_sensor_ack_instead_of_queueing_it_for_radio(self):
+        client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, protocol=mqtt.MQTTv5)
+        config = BridgeConfig(
+            node_id=NODE,
+            sensor_mac=MAC,
+            bridge_id="pi-01",
+            consumer_id="backend-01",
+            database_path=self.path,
+        )
+        bridge = ChairMqttBridge(client, config).attach()
+        self.addCleanup(bridge.detach)
+        first = bridge.publish(event(), source_mac=MAC)
+        self.assertEqual(first.status, "accepted")
+        self.assertEqual(first.ack.type, "EVENT_ACK")
+        self.assertEqual(
+            (first.ack.ack_boot_id, first.ack.ack_seq), (event()["boot_id"], 1)
+        )
+        again = bridge.publish(event(), source_mac=MAC)
+        self.assertEqual(again.status, "duplicate")
+        self.assertEqual(again.ack.ack_seq, 1)  # A retransmission needs its ACK again.
+        movement = bridge.publish(
+            event(
+                "MOVEMENT_BATCH",
+                seq=2,
+                batch_start_ms=0,
+                duration_ms=40,
+                end_reason="stopped",
+                samples=[dict(offset_ms=0, ax=1, ay=2, az=3, gx=4, gy=5, gz=6)],
+            ),
+            source_mac=MAC,
+        )
+        self.assertEqual((movement.status, movement.ack), ("accepted", None))
+        self.assertIsNone(bridge.gateway_next())  # Nothing stale waits for the radio.
+        bridge.gateway_opened()
+        ready = bridge.publish(
+            event("READY", seq=3, reason="scheduled", listen_remaining_ms=10000),
+            source_mac=MAC,
+        )
+        self.assertEqual(
+            (ready.status, ready.reason, ready.ack),
+            ("ignored", "awaiting_fresh_connection", None),
+        )
 
     def test_detach_before_connect_restores_client_settings(self):
         client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, protocol=mqtt.MQTTv5)

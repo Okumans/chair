@@ -17,7 +17,13 @@ from pydantic import BaseModel
 
 from .contract import MAX_PAYLOAD
 from .coordinator import Coordinator, Oversized
-from .models import BridgeConfig, BridgeHealth, CommandNotice, ConfigRequest
+from .models import (
+    BridgeConfig,
+    BridgeHealth,
+    CommandNotice,
+    ConfigRequest,
+    PublishResult,
+)
 from .store import UNFINISHED, MqttStore, compact
 
 LOG = logging.getLogger(__name__)
@@ -279,7 +285,12 @@ class ChairMqttBridge:
         return future.result(timeout=timeout)
 
     def publish(self, message, *, source_mac):
-        """Accept validated sensor data; reliable MQTT work commits before return."""
+        """Accept sensor data from a transport other than the gateway hooks.
+
+        Reliable MQTT work commits before return. Returns a ``PublishResult``;
+        deliver its ``ack`` to the sensor, because data passed here is never
+        acknowledged over the gateway radio.
+        """
         if isinstance(message, BaseModel):
             message = message.model_dump(mode="json")
         if not isinstance(message, dict):
@@ -406,7 +417,16 @@ class ChairMqttBridge:
                 time.time(),
                 time.monotonic(),
             )
-            return not result.get("duplicate", False)
+            if result["kind"] == "ignored":
+                return PublishResult(status="ignored", reason=result["reason"])
+            accepted = result["message"]
+            # Hand the ACK to the caller instead of leaving it for the radio.
+            ack = self._gateway.acks.pop(
+                (accepted["node_id"], accepted["boot_id"], accepted["seq"]), None
+            )
+            return PublishResult(
+                status="duplicate" if result["duplicate"] else "accepted", ack=ack
+            )
         if name == "gateway_opened":
             self._gateway_connected = True
             self._gateway_outgoing = None
