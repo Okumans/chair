@@ -7,9 +7,12 @@ from contextlib import closing
 from pathlib import Path
 from unittest.mock import Mock
 
-from chair_mqtt import ChairClient, ClientConfig, ConfigRequest
+from chair_mqtt import BrokerConfig, ChairClient, ClientConfig, ConfigRequest
 from chair_mqtt.async_storage import SQLiteStorage
 from chair_mqtt.store import MqttStore
+
+# Never connected: these tests feed deliveries to the client directly.
+OFFLINE = BrokerConfig(host="127.0.0.1", port=1, client_id="unit", plaintext=True)
 
 
 class StorageTests(unittest.IsolatedAsyncioTestCase):
@@ -120,12 +123,13 @@ class StorageTests(unittest.IsolatedAsyncioTestCase):
             mqtt_client = Mock()
             mqtt_client.ack.return_value = 0
             chair = ChairClient(
-                mqtt_client,
                 ClientConfig(
                     node_id="chair-01", bridge_id="pi-01", consumer_id="backend-01"
                 ),
                 storage,
+                OFFLINE,
             )
+            chair._mqtt = mqtt_client
             chair._connected = True
             chair._generation = chair._network_generation = 1
             seen = []
@@ -172,12 +176,13 @@ class StorageTests(unittest.IsolatedAsyncioTestCase):
             await storage.initialize("chair-01", "pi-01", "backend-01")
             client = Mock()
             chair = ChairClient(
-                client,
                 ClientConfig(
                     node_id="chair-01", bridge_id="pi-01", consumer_id="backend-01"
                 ),
                 storage,
+                OFFLINE,
             )
+            chair._mqtt = client
             chair._connected = True
             chair._generation = chair._network_generation = 1
 
