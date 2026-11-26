@@ -70,8 +70,8 @@ service that connects the existing gateway/bridge adapter to the MQTT broker.
 | `N/movement/loss` | Sensor Node → backend/apps | Pi MQTT service → backend/apps | 0 | No | Bounded RAM only; no receipt |
 | `N/state` | Sensor Node → apps; Pi prepares latest snapshot | Pi MQTT service → apps | 1 | Yes | Regenerable latest projection; PUBACK only |
 | `N/commands/config` | Controller → Sensor Node via Pi and Gateway ESP | Controller → Pi MQTT service | 1 | **No** | Durable command admission before Pi PUBACK |
-| `N/commands/<command_id>/updates` | Pi MQTT service → backend/apps; includes Sensor Node results when available | Pi MQTT service → backend/apps | 1 | No | Durable reports; backend receipt required |
-| `N/commands/<command_id>/status` | Pi MQTT service → controller/apps; includes Sensor Node results when available | Pi MQTT service → controller/apps | 1 | Yes | Latest report projection; PUBACK only |
+| `N/commands/<command_id>/updates` | Pi MQTT service → backend/controllers/apps; includes Sensor Node results when available | Pi MQTT service → backend/controllers/apps | 1 | No | Durable reports; backend receipt required |
+| `N/commands/<command_id>/status` | Pi MQTT service → controller/apps; includes Sensor Node results when available | Pi MQTT service → controller/apps | 1 | Yes for the latest projection; no for duplicate responses after cleanup begins | PUBACK only |
 | `N/command_errors` | Pi MQTT service → controller/apps | Pi MQTT service → controller/apps | 1 | No | Bounded durable error outbox; PUBACK only |
 | `B/receipts` | Designated backend → Pi MQTT service | Designated backend → Pi MQTT service | 1 | **No** | Commit receipt before Pi PUBACK |
 | `B/status` | Pi MQTT service or broker Will → apps | Pi MQTT service or broker Will → apps | 1 | Yes | Live bridge status; no backend receipt |
@@ -309,6 +309,21 @@ Identical MQTT redelivery after a crash must repair/retry existing report work,
 not execute a new command. Preserve UUID history/fingerprints through ordinary
 restarts and do not silently drop a command tombstone to permit UUID reuse.
 
+If the retained status has been selected for deletion or already removed, each
+valid duplicate request schedules a non-retained QoS 1 `COMMAND_STATUS` response
+on that command's `/status` topic. It contains the current saved report with
+`publication_id: null` and its existing `report_seq`; it does not recreate a
+retained value, restart the retention period, or execute the command again. This
+also applies to a known duplicate received after its original deadline. Persist
+the response work before acknowledging the duplicate request, then remove it
+after successful broker PUBACK. Pending responses for the same command may be
+coalesced to the newest report, but a duplicate received after an earlier response
+was completed must schedule another response. If response work cannot be saved,
+withhold the incoming acknowledgement and recover instead of silently dropping it.
+The response is PUBACK-only and does not require a backend receipt; it does not
+replace or alter reliable `/updates` work. A broker PUBACK does not establish
+that a particular controller received the response.
+
 Admission errors use `N/command_errors`, with `schema_version`, `bridge_id`,
 `error_id` UUID, safely parsed `command_id` or null, `reason`,
 `retryable` boolean and `received_at_ms`. Reasons include `invalid_json`,
@@ -339,19 +354,42 @@ An admission error on `N/command_errors` has this form:
 
 The controller must keep a durable submission outbox containing the exact topic,
 request bytes/semantic content, command UUID and original expiry before publishing.
-Subscribe to that UUID's retained status topic before the first submission. Until
-a matching command report confirms Pi admission (`queued`, `delivered` or a terminal
+Subscribe to that UUID's `/status` and `/updates` topics at QoS 1 and wait for
+successful SUBACKs granting QoS 1 before the first submission. Re-establish the
+subscriptions, or confirm that a live session resumed them, before retrying after
+reconnection. Process both retained status projections and non-retained status
+responses; do not require the received RETAIN flag to distinguish them. Until a
+matching command report confirms Pi admission (`queued`, `delivered` or a terminal
 status), retry the same request every 15 seconds, including after controller restart
 or broker reconnect. Recompute only MQTT Message Expiry; never extend the payload
 deadline or allocate a new UUID to retry the same operation. A broker PUBACK alone
 must not clear this controller outbox.
 
+Process reports from both topics by `(node_id, command_id, report_seq)`, keeping
+the greatest accepted `report_seq` durably. Ignore duplicate or older reports
+instead of repeating actions or rolling back state. A status projection or
+response uses `publication_id: null`, whereas the equivalent `/updates` report
+has its own publication ID; compare report content excluding this publication
+metadata when checking the same sequence for conflicting content. Diagnose a
+same-sequence content conflict rather than silently accepting it.
+
 A matching admission report ends submission retries, not monitoring of the command.
 At the request deadline stop submitting. If no admission report was ever observed,
 record a controller-local `admission_unknown` outcome; do not assert that the Pi
 rejected the request or that the sensor did not execute it. Keep monitoring for an
-authentic late report. This retry requirement is essential because a fresh Pi
-process resets its broker session as specified below.
+authentic late report on `/updates`, including after the retained `/status` has
+been removed. Controllers that need late results must keep the `/updates`
+subscription active while monitoring. Updates are non-retained: a controller
+that is offline may miss one if its broker session expires or is reset; use a
+backend history or replay facility if recovery across such gaps is required. This
+specification does not define a controller history-query API. The retry requirement
+is essential because a fresh Pi process resets its broker session as specified below.
+
+For example, if a terminal status is evicted before a controller receives it, the
+controller's next identical request causes a fresh non-retained `/status` response.
+If the controller has already received `expired` and a sensor result arrives after
+cleanup, the later `/updates` report has a higher `report_seq` and carries the late
+result without recreating the retained status.
 
 ### Deadline semantics
 
@@ -485,13 +523,16 @@ Serialize status publications and deletion for each topic. Before sending a
 deletion, settle or fence older in-flight publications and discard any queued
 older projection so it cannot reappear after deletion, including after reconnect
 or restart. Once a command is selected for deletion, retries, duplicate commands,
-and late sensor results must not recreate its retained status. Continue to publish
-authentic late results through the reliable `/updates` stream, even after status
-cleanup. Cleanup must not delete unacknowledged reliable updates or alter their
-backend-receipt requirements.
+and late sensor results must not recreate its retained status. A duplicate request
+instead receives the non-retained `/status` response defined above. Continue to
+publish authentic late results through the reliable `/updates` stream, even after
+status cleanup. Cleanup must not delete unacknowledged reliable updates or alter
+their backend-receipt requirements.
 
-After cleanup, a controller subscribing late cannot obtain that retained status
-from the broker; history is available only if a backend provides it. This policy
+After cleanup, a controller subscribing late cannot obtain a retained status
+from the broker. It may retry the same request before its deadline to solicit a
+non-retained response while subscribed; history is available only if a backend
+provides it. This policy
 does not remove command history or deduplication records on the Pi or backend,
 and therefore does not by itself bound their database storage or allow command ID
 reuse. Those records require a separate retention policy.
