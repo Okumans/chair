@@ -567,6 +567,13 @@ class CoordinatorTests(StoreFixture):
         worker.on_subscribe(mid, [SimpleNamespace(is_failure=False, value=0)])
         self.assertFalse(worker.ready)
         self.assertIsNotNone(worker.fatal)
+        # A fatal policy failure survives reconnection without new subscriptions.
+        count = len(client.subscriptions)
+        worker.on_disconnect()
+        worker.on_connect(
+            SimpleNamespace(session_present=True), SimpleNamespace(is_failure=False), 2
+        )
+        self.assertEqual(len(client.subscriptions), count)
 
     def test_command_is_admitted_before_ack_and_duplicate_is_not_reexecuted(self):
         store, client, worker = self.coordinator()
@@ -657,6 +664,47 @@ class CoordinatorTests(StoreFixture):
             store.db.execute("SELECT state FROM mqtt_outbox").fetchone()[0],
             "quarantined",
         )
+
+    def test_refused_connack_recovers_on_next_successful_connection(self):
+        store = self.store()
+        client = FakeMqttClient()
+        worker = Coordinator(
+            store, client, monotonic=lambda: 100.0, wall_clock=lambda: 1800000000
+        )
+        refused = SimpleNamespace(is_failure=True)
+        worker.on_connect(SimpleNamespace(session_present=False), refused, 1)
+        self.assertIsNone(worker.fatal)
+        self.assertFalse(worker.connected)
+        worker.on_connect(
+            SimpleNamespace(session_present=False), SimpleNamespace(is_failure=False), 2
+        )
+        self.ready(worker, client)
+        self.assertIsNone(worker.fatal)
+        store.accept(event(), 1800000000)
+        worker.tick(1800000000)
+        self.assertTrue(any(t.endswith("/events") for t, _, _ in client.published))
+
+    def test_failed_subscribe_submission_requests_reconnect_not_fatal(self):
+        store = self.store()
+        client = FakeMqttClient()
+        results = iter([(mqtt.MQTT_ERR_NO_CONN, None)])
+        original = client.subscribe
+        client.subscribe = lambda topic, **kw: (
+            next(results, None) or original(topic, **kw)
+        )
+        worker = Coordinator(
+            store, client, monotonic=lambda: 100.0, wall_clock=lambda: 1800000000
+        )
+        connected = SimpleNamespace(is_failure=False)
+        worker.on_connect(SimpleNamespace(session_present=False), connected, 1)
+        self.assertIsNone(worker.fatal)
+        self.assertTrue(worker.reconnect_required)
+        worker.on_disconnect()
+        worker.on_connect(SimpleNamespace(session_present=True), connected, 2)
+        self.assertFalse(worker.reconnect_required)
+        client.subscriptions = client.subscriptions[-2:]
+        self.ready(worker, client)
+        self.assertIsNone(worker.fatal)
 
     def test_unrelated_client_suback_does_not_break_facade(self):
         _, client, worker = self.coordinator()

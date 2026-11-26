@@ -71,11 +71,15 @@ class Coordinator:
 
     def on_connect(self, flags, reason, generation, security_error=None):
         if reason.is_failure:
-            self.fatal = "MQTT connection rejected"
+            # The owner's network loop retries a refused CONNACK; the next
+            # successful CONNACK restores normal operation.
+            self.connected, self.ready = False, False
             return
         if security_error:
             self.fatal = security_error
             return
+        if self.fatal:
+            return  # Reconnecting cannot clear it, so leave chair topics unsubscribed.
         if self.first_connection and flags.session_present:
             self.fatal = "new facade unexpectedly resumed an MQTT session"
             self.reconnect_required = True
@@ -106,7 +110,8 @@ class Coordinator:
             )
             rc, mid = self.client.subscribe(topic, options=options)
             if rc != mqtt.MQTT_ERR_SUCCESS:
-                self.fatal = "MQTT subscription submission failed"
+                # Usually a disconnect race; a fresh connection resubscribes.
+                self.reconnect_required = True
                 return
             self.subscriptions.add(mid)
 
