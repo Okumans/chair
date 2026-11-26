@@ -13,7 +13,14 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from chair_mqtt import BrokerConfig, ChairClient, ClientConfig, SQLiteStorage
+from chair_mqtt import (
+    BridgeConfig,
+    BrokerConfig,
+    ChairClient,
+    ChairMqttBridge,
+    ClientConfig,
+    SQLiteStorage,
+)
 
 OPENSSL = shutil.which("openssl")
 CLIENT = ClientConfig(node_id="chair-01", bridge_id="pi-01", consumer_id="backend-01")
@@ -114,6 +121,43 @@ class VerifiedTlsTests(unittest.IsolatedAsyncioTestCase):
         failures, received = await self.attempt(
             host="localhost", ca_file=self.server.cert
         )
+        self.assertEqual(received[:1], [b"\x10"])  # MQTT CONNECT
+
+
+@unittest.skipUnless(OPENSSL, "openssl unavailable")
+class BridgeVerifiedTlsTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.directory, True)
+        self.server = TlsServer(self.directory)
+        self.addCleanup(self.server.close)
+
+    def attempt(self, **broker):
+        bridge = ChairMqttBridge(
+            BridgeConfig(
+                node_id="chair-01",
+                sensor_mac="02:00:00:00:00:01",
+                bridge_id="pi-01",
+                consumer_id="backend-01",
+                database_path=self.directory / "bridge.sqlite",
+            ),
+            BrokerConfig(port=self.server.port, client_id="smartchair-pi-01", **broker),
+        )
+        with bridge:
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and not (
+                self.server.failures or self.server.received
+            ):
+                time.sleep(0.05)
+        return self.server.failures, self.server.received
+
+    def test_untrusted_certificate_receives_no_mqtt_bytes(self):
+        failures, received = self.attempt(host="localhost")
+        self.assertGreater(failures, 0)
+        self.assertEqual(received, [])
+
+    def test_trusted_certificate_and_host_receive_connect(self):
+        failures, received = self.attempt(host="localhost", ca_file=self.server.cert)
         self.assertEqual(received[:1], [b"\x10"])  # MQTT CONNECT
 
 

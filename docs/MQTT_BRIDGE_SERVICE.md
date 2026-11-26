@@ -10,16 +10,23 @@ serial permissions for the installation before enabling the unit.
 If the broker requires credentials, set `CHAIR_MQTT_USERNAME` and
 `CHAIR_MQTT_PASSWORD` in `/etc/chair-mqtt/credentials` and restrict that file to
 the service administrator. This file is read by systemd's `EnvironmentFile`;
-the example configuration contains no credentials. Broker TLS with certificate
-and hostname verification is required except for explicitly enabled loopback
-development.
+the example configuration contains no credentials, and the service refuses a
+`username` or `password` in the `[mqtt]` table. The `[mqtt]` keys are those of
+`BrokerConfig`: `host`, `port` (default 8883), `client_id` and an optional
+`ca_file`. TLS always verifies the broker certificate and host name, against
+`ca_file` or else the system trust store, before anything is sent. Only for
+development against a broker on the same machine, `plaintext = true` disables
+TLS; it is rejected for any host other than `localhost`, `127.0.0.1` or `::1`.
 
 The service starts the serial adapter immediately and connects to the broker in
 the background, so sensor facts are acknowledged and stored durably while the
 broker or network is unavailable; they are published once it is reachable.
-When the bridge needs MQTT redelivery it drops and re-establishes the broker
-connection itself. Systemd restarts the service only after a fatal protocol
-error or a storage failure, which a reconnect cannot fix. Back up any
+The bridge reconnects with a 1–30 second backoff, and when it needs MQTT
+redelivery it drops the connection itself, at most once every 30 seconds.
+Systemd restarts the service only after a fatal protocol error or a storage
+failure, which a reconnect cannot fix. On stop the service publishes an offline
+status and disconnects once the broker acknowledges it, or aborts the
+connection so the broker publishes the Will. Back up any
 existing bridge database before upgrading; the MQTT schema upgrade prevents the
 older protocol-only bridge from opening it. Deployment and hardware acceptance
 have not yet been performed.

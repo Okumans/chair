@@ -11,6 +11,8 @@ RECEIVE_MAXIMUM = 16
 MAXIMUM_PACKET_SIZE = 65536
 # The spec's reconnect delay range; Paho doubles the delay but adds no jitter.
 RECONNECT_DELAY_S = (1, 30)
+# While deliveries need redelivery, drop the connection at most this often.
+RECOVERY_INTERVAL_S = 30.0
 
 
 def create_client(broker):

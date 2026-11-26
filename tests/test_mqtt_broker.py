@@ -1,4 +1,4 @@
-"""End-to-end facade test against a private loopback MQTT broker."""
+"""End-to-end bridge test against a private loopback MQTT broker."""
 
 import io
 import json
@@ -16,7 +16,7 @@ from pathlib import Path
 
 import paho.mqtt.client as mqtt
 
-from chair_mqtt import BridgeConfig, ChairMqttBridge
+from chair_mqtt import BridgeConfig, BrokerConfig, ChairMqttBridge
 
 BROKER = shutil.which("mosquitto")
 NODE = "chair-01"
@@ -45,7 +45,7 @@ def event(kind="STATE_SYNC", seq=1, **fields):
 
 @unittest.skipUnless(BROKER, "private Mosquitto broker unavailable")
 class PrivateBrokerTests(unittest.TestCase):
-    def test_caller_owned_client_sensor_command_and_backend_receipts(self):
+    def test_sensor_command_and_backend_receipts_through_a_broker(self):
         with tempfile.TemporaryDirectory(prefix="chair-mqtt-broker-") as temporary:
             directory = Path(temporary)
             with socket.socket() as reservation:
@@ -60,7 +60,6 @@ class PrivateBrokerTests(unittest.TestCase):
                     [BROKER, "-c", str(config_file)], stdout=log, stderr=log
                 )
                 observer = None
-                app_client = None
                 bridge = None
                 try:
                     end = time.monotonic() + 5
@@ -117,28 +116,25 @@ class PrivateBrokerTests(unittest.TestCase):
                     observer.loop_start()
                     self.assertTrue(subscribed.wait(5))
 
-                    app_client = mqtt.Client(
-                        mqtt.CallbackAPIVersion.VERSION2,
-                        client_id="chair-test-app",
-                        protocol=mqtt.MQTTv5,
-                    )
                     settings = BridgeConfig(
                         node_id=NODE,
                         sensor_mac=MAC,
                         bridge_id="pi-01",
                         consumer_id="backend-01",
                         database_path=directory / "chair.sqlite",
-                        allow_local_plaintext=True,
                     )
-                    bridge = ChairMqttBridge(app_client, settings).attach()
-                    # The application creates, connects, and runs the client.
-                    app_client.connect("127.0.0.1", port, **bridge.connect_options())
-                    app_client.loop_start()
+                    broker_settings = BrokerConfig(
+                        host="127.0.0.1",
+                        port=port,
+                        client_id="smartchair-pi-01",
+                        plaintext=True,
+                    )
+                    bridge = ChairMqttBridge(settings, broker_settings).start()
                     end = time.monotonic() + 5
                     while not bridge.health().subscriptions_ready:
                         if time.monotonic() >= end:
                             self.fail(
-                                f"facade subscriptions not ready: {bridge.health()}"
+                                f"bridge subscriptions not ready: {bridge.health()}"
                             )
                         time.sleep(0.02)
 
@@ -338,15 +334,15 @@ class PrivateBrokerTests(unittest.TestCase):
                         probe.disconnect()
                         probe.loop_stop()
 
-                    # The application owns reconnection. A fact accepted while the
-                    # broker is down must be forwarded after the caller's loop reconnects.
+                    # The bridge reconnects by itself. A fact accepted while the
+                    # broker is down must be forwarded after it reconnects.
                     subscribed.clear()
                     broker.terminate()
                     broker.wait(timeout=5)
                     end = time.monotonic() + 5
                     while bridge.health().mqtt_connected:
                         if time.monotonic() >= end:
-                            self.fail("facade did not observe broker disconnection")
+                            self.fail("bridge did not observe broker disconnection")
                         time.sleep(0.05)
                     bridge.publish(event("HEARTBEAT", seq=5), source_mac=MAC)
                     with closing(sqlite3.connect(directory / "chair.sqlite")) as db:
@@ -362,7 +358,7 @@ class PrivateBrokerTests(unittest.TestCase):
                     end = time.monotonic() + 15
                     while not bridge.health().subscriptions_ready:
                         if time.monotonic() >= end:
-                            self.fail(f"facade did not recover: {bridge.health()}")
+                            self.fail(f"bridge did not recover: {bridge.health()}")
                         time.sleep(0.05)
                     self.assertTrue(subscribed.wait(10))
                     end = time.monotonic() + 8
@@ -376,15 +372,15 @@ class PrivateBrokerTests(unittest.TestCase):
                             break
                     else:
                         self.fail("offline heartbeat was not forwarded after reconnect")
-                    self.assertTrue(bridge.detach())
+                    # The broker acknowledged the offline status before DISCONNECT.
+                    self.assertTrue(bridge.stop())
                     bridge = None
                 finally:
                     if bridge is not None:
-                        bridge.detach()
-                    for client in (app_client, observer):
-                        if client is not None:
-                            client.disconnect()
-                            client.loop_stop()
+                        bridge.stop()
+                    if observer is not None:
+                        observer.disconnect()
+                        observer.loop_stop()
                     if broker.poll() is None:
                         broker.terminate()
                         try:

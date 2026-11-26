@@ -1,4 +1,4 @@
-"""MQTT protocol worker using a caller-owned Paho client.
+"""MQTT protocol worker for the bridge's own Paho client.
 
 All methods run on a single worker thread. Paho callbacks must be queued to that
 worker, so callbacks cannot race the registration of a publish MID.
@@ -52,8 +52,6 @@ class Coordinator:
         self.reconnect_required = False
         self.generation = 0
         self.subscriptions = set()
-        self.unsubscribe_mid = None
-        self.unsubscribed = False
         self.subscription_deadline = 0.0
         self.flights = {}
         self.retry_until = {}
@@ -76,14 +74,11 @@ class Coordinator:
         """Return the outbox due time, in monotonic milliseconds, after ``delay``."""
         return int((self.monotonic() + delay) * 1000)
 
-    def on_connect(self, flags, reason, generation, security_error=None):
+    def on_connect(self, flags, reason, generation):
         if reason.is_failure:
             # The owner's network loop retries a refused CONNACK; the next
             # successful CONNACK restores normal operation.
             self.connected, self.ready = False, False
-            return
-        if security_error:
-            self.fatal = security_error
             return
         if self.fatal:
             return  # Reconnecting cannot clear it, so leave chair topics unsubscribed.
@@ -95,8 +90,6 @@ class Coordinator:
         self.generation = generation
         self.connected, self.ready = True, False
         self.reconnect_required = False
-        self.unsubscribed = False
-        self.unsubscribe_mid = None
         for flight in self.flights.values():
             flight.deadline = self.monotonic() + 30
         self.subscriptions.clear()
@@ -124,14 +117,13 @@ class Coordinator:
 
     def on_disconnect(self):
         self.connected, self.ready = False, False
-        self.unsubscribe_mid = None
         self.pending_incoming.clear()
 
     def on_subscribe(self, mid, reasons):
         if self.fatal:
             return
         if mid not in self.subscriptions:
-            return  # Other subscriptions belong to the caller-owned MQTT client.
+            return  # A SUBACK from an earlier connection.
         if len(reasons) != 1 or reasons[0].is_failure or reasons[0].value != 1:
             self.ready = False
             self.fatal = "MQTT subscription rejected, downgraded or unmatched"
@@ -142,32 +134,6 @@ class Coordinator:
             pending, self.pending_incoming = self.pending_incoming, []
             for message in pending:
                 self.on_message(*message[:-1], self.wall_clock())
-
-    def unsubscribe_owned_topics(self):
-        """Remove only this facade's subscriptions before releasing its handlers."""
-        if self.unsubscribed:
-            return True
-        if self.unsubscribe_mid is not None:
-            return False
-        node = next(iter(self.store.mapping))
-        result, mid = self.client.unsubscribe(
-            [
-                f"smartchair/v1/nodes/{node}/commands/config",
-                f"smartchair/v1/bridges/{self.store.bridge_id}/receipts",
-            ]
-        )
-        if result != mqtt.MQTT_ERR_SUCCESS:
-            return False
-        self.unsubscribe_mid = mid
-        return False
-
-    def on_unsubscribe(self, mid, reasons):
-        if mid != self.unsubscribe_mid:
-            return
-        self.unsubscribe_mid = None
-        self.unsubscribed = len(reasons) == 2 and all(
-            not reason.is_failure for reason in reasons
-        )
 
     def on_message(self, generation, mid, qos, retain, topic, payload, now):
         if (
