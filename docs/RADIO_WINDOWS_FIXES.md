@@ -75,7 +75,7 @@ If left unchanged, lost ACKs can suppress command delivery during valid windows.
 ## Validation and remaining acceptance work
 
 - Formatting and lint checks passed.
-- All 35 existing tests passed using `python -m unittest discover -s tests -v`.
+- All 35 existing tests passed using `uv run --locked python -m unittest discover -s tests -v`.
 - The three cases above were reproduced separately against the implementation in
   a temporary copy. Those reproduction checks are not committed regression tests.
 - `make check` reached its test step but could not use the default uv cache under

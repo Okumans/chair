@@ -5,9 +5,9 @@ MQTT 5 client. It does not create, connect, disconnect, or run that client.
 The independent Pi bridge service is described in
 [MQTT_BRIDGE_SERVICE.md](MQTT_BRIDGE_SERVICE.md).
 
-Install Python 3.11 or later and install this project with `python -m pip install .`
-from the repository root. The package includes Paho, Pydantic and the other
-required dependencies. Configure a reachable MQTT 5 broker, a running Pi bridge,
+Install uv and run `uv sync` from the repository root; uv provisions Python 3.11
+or later. The package includes Paho, Pydantic and the other required
+dependencies. Configure a reachable MQTT 5 broker, a running Pi bridge,
 and a writable database directory before starting the backend application.
 The `node_id`, `bridge_id` and `consumer_id` must match the Pi configuration;
 the consumer ID identifies the backend whose receipts the Pi accepts.
@@ -163,6 +163,9 @@ a later report can update it. Applications that need late reports should keep
 the client running and handle `on_command_update` after an initial wait returns.
 
 ## Storage connector contract
+
+To write a connector for another database, follow the step-by-step guide
+and PostgreSQL example in [MQTT_STORAGE_CONNECTOR.md](MQTT_STORAGE_CONNECTOR.md).
 
 The async `Storage` protocol in `chair_mqtt.async_storage` specifies the methods
 custom connectors implement. `initialize` binds node, bridge and consumer IDs.
