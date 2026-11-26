@@ -18,7 +18,7 @@ from pydantic import BaseModel
 from .contract import MAX_PAYLOAD
 from .coordinator import Coordinator, Oversized
 from .models import BridgeConfig, BridgeHealth, CommandNotice, ConfigRequest
-from .store import MqttStore, compact
+from .store import UNFINISHED, MqttStore, compact
 
 LOG = logging.getLogger(__name__)
 
@@ -473,7 +473,7 @@ class ChairMqttBridge:
             )
         if name == "health":
             count = self._store.db.execute(
-                "SELECT count(*) FROM mqtt_outbox WHERE state!='completed'"
+                f"SELECT count(*) FROM mqtt_outbox WHERE state IN {UNFINISHED}"
             ).fetchone()[0]
             quarantined = (
                 self._store.db.execute(

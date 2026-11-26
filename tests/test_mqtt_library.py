@@ -655,7 +655,11 @@ class CoordinatorTests(StoreFixture):
             "SELECT publication_id,state FROM mqtt_outbox"
         ).fetchone()
         self.assertEqual(row["state"], "pending")
-        self.assertGreater(worker.wait_until[row["publication_id"]], 100)
+        retry_at = store.db.execute(
+            "SELECT retry_at_ms FROM mqtt_outbox WHERE publication_id=?",
+            (row["publication_id"],),
+        ).fetchone()[0]
+        self.assertGreater(retry_at, 100_000)  # Backed off past the current time.
         worker.monotonic = lambda: 1000.0
         worker.tick(1800000001)
         latest = [mid for t, _, mid in client.published if t.endswith("/events")][-1]
@@ -736,6 +740,116 @@ class CoordinatorTests(StoreFixture):
         worker.monotonic = lambda: 1000.0
         worker.tick(1800000900)
         self.assertFalse(worker.reconnect_required)
+
+    def test_steady_worker_iteration_cost_does_not_grow_with_backlog(self):
+        def steps(backlog):
+            path = Path(self.tmp.name) / f"backlog-{backlog}.sqlite"
+            store = MqttStore(
+                path,
+                bridge_id="pi-01",
+                consumer_id="backend-01",
+                mapping=MAPPING,
+                clock_trusted=lambda: True,
+            )
+            self.addCleanup(store.db.close)
+            client = FakeMqttClient()
+            worker = Coordinator(
+                store, client, monotonic=lambda: 100.0, wall_clock=lambda: 1800000000
+            )
+            worker.on_connect(
+                SimpleNamespace(session_present=False),
+                SimpleNamespace(is_failure=False),
+                1,
+            )
+            self.ready(worker, client)
+            # Published facts awaiting a backend receipt, plus confirmed history.
+            with store.db:
+                store.db.executemany(
+                    "INSERT INTO mqtt_outbox(publication_id,logical_key,topic,payload,"
+                    "consumer_id,state,retry_at_ms) VALUES (?,?,?,?,?,?,?)",
+                    (
+                        (f"id-{n}", f"key-{n}", "t", b"{}", "backend-01", state, 10**9)
+                        for n in range(backlog)
+                        for state in ("waiting",)
+                    ),
+                )
+                store.db.executemany(
+                    "INSERT INTO mqtt_outbox(publication_id,logical_key,topic,payload,"
+                    "consumer_id,state) VALUES (?,?,?,?,?,'completed')",
+                    (
+                        (f"done-{n}", f"done-{n}", "t", b"{}", "backend-01")
+                        for n in range(backlog)
+                    ),
+                )
+            status = dict(gateway_connected=True, gateway_ready=True, now=1800000000)
+            worker.bridge_status("instance", **status)
+            worker.tick(1800000000)
+            count = [0]
+            store.db.set_progress_handler(
+                lambda: count.__setitem__(0, count[0] + 1) or 0, 100
+            )
+            for _ in range(10):
+                worker.bridge_status("instance", **status)
+                worker.tick(1800000000)
+            store.db.set_progress_handler(None, 0)
+            return count[0]
+
+        small, large = steps(20), steps(4000)
+        self.assertLess(large, 2 * small + 20)
+
+    def test_backed_off_outbox_rows_do_not_starve_later_rows(self):
+        store, client, worker = self.coordinator()
+        self.ready(worker, client)
+        for seq in range(1, 21):
+            store.accept(event("HEARTBEAT", seq=seq), 1800000000)
+        original, refused = client.publish, [16]
+
+        def queue_full_for_first_rows(topic, **kwargs):
+            if topic.endswith("/events") and refused[0]:
+                refused[0] -= 1
+                return SimpleNamespace(rc=mqtt.MQTT_ERR_QUEUE_SIZE, mid=None)
+            return original(topic, **kwargs)
+
+        client.publish = queue_full_for_first_rows
+        worker.tick(1800000000)
+        worker.tick(1800000000)
+        published = store.db.execute(
+            "SELECT count(*) FROM mqtt_outbox WHERE state='inflight'"
+        ).fetchone()[0]
+        self.assertEqual(published, 4)
+
+    def test_new_fact_cost_does_not_grow_with_confirmed_history(self):
+        def steps(history):
+            path = Path(self.tmp.name) / f"history-{history}.sqlite"
+            store = MqttStore(
+                path,
+                bridge_id="pi-01",
+                consumer_id="backend-01",
+                mapping=MAPPING,
+                clock_trusted=lambda: True,
+            )
+            self.addCleanup(store.db.close)
+            with store.db:
+                store.db.executemany(
+                    "INSERT INTO mqtt_outbox(publication_id,logical_key,topic,payload,"
+                    "consumer_id,state) VALUES (?,?,?,?,?,'completed')",
+                    (
+                        (f"done-{n}", f"done-{n}", "t", b"{}", "backend-01")
+                        for n in range(history)
+                    ),
+                )
+            store.accept(event(), 1800000000)
+            count = [0]
+            store.db.set_progress_handler(
+                lambda: count.__setitem__(0, count[0] + 1) or 0, 100
+            )
+            for seq in range(2, 7):
+                store.accept(event("HEARTBEAT", seq=seq), 1800000000)
+            store.db.set_progress_handler(None, 0)
+            return count[0]
+
+        small, large = steps(20), steps(4000)
+        self.assertLess(large, 2 * small + 20)
 
     def test_unrelated_client_suback_does_not_break_facade(self):
         _, client, worker = self.coordinator()
