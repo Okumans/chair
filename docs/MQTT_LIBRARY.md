@@ -83,6 +83,9 @@ call other `ChairClient` storage methods while its transaction callback runs.
 An exception rolls back the fact, application writes, and pending receipt and
 leaves the broker delivery unacknowledged. Duplicate facts do not invoke the
 callback again. Movement is best effort and has no transaction or receipt.
+Exceptions from the other handlers are logged and do not stop the client: the
+delivery is still acknowledged and later handlers still run, because movement is
+never redelivered and a command update is committed before its handlers run.
 
 Additional async decorators are `on_state`, `on_movement_loss`,
 `on_bridge_status`, and `on_command_error`. On the supplied client, configure
