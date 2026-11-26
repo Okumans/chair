@@ -933,6 +933,40 @@ class SerialAdapterTests(StoreFixture):
                 db.execute("SELECT count(*) FROM mqtt_outbox").fetchone()[0], 1
             )
 
+    def test_firmware_hello_with_fractional_tx_power_completes_handshake(self):
+        master, slave = pty.openpty()
+        self.addCleanup(os.close, master)
+        self.addCleanup(os.close, slave)
+        client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, protocol=mqtt.MQTTv5)
+        config = BridgeConfig(
+            node_id=NODE,
+            sensor_mac=MAC,
+            bridge_id="pi-01",
+            consumer_id="backend-01",
+            database_path=self.path,
+        )
+        bridge = ChairMqttBridge(client, config).attach()
+        self.addCleanup(bridge.detach)
+        bridge.start_gateway(os.ttyname(slave))
+        pending = bytearray()
+        deadline = time.monotonic() + 5
+        while b"\n" not in pending and time.monotonic() < deadline:
+            if select.select([master], [], [], 0.1)[0]:
+                pending.extend(os.read(master, 8192))
+        request = json.loads(pending.partition(b"\n")[0])
+        # Shape of HelloMessage in shared/include/json_messages.h; 34 quarter-dBm.
+        reply = (
+            b'{"kind":"hello","request_id":%d,"role":"gateway",'
+            b'"mac":"02:00:00:00:00:02","peer_mac":"02:00:00:00:00:01",'
+            b'"key_id":"k1","channel":1,"power_save":0,"tx_power_dbm":8.5,'
+            b'"ready":true,"max_payload":250,"lifecycle_busy":false}\n'
+        ) % request["request_id"]
+        os.write(master, reply)
+        deadline = time.monotonic() + 5
+        while not bridge.health().gateway_ready and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertTrue(bridge.health().gateway_ready)
+
 
 class ControllerLedgerTests(StoreFixture):
     def test_retry_and_reports_deduplicate_across_status_and_updates(self):
