@@ -13,7 +13,7 @@ from dataclasses import dataclass
 import paho.mqtt.client as mqtt
 
 from .contract import ContractError, decode
-from .store import CommandAdmissionError
+from .store import UNFINISHED, CommandAdmissionError
 
 
 @dataclass
@@ -56,18 +56,25 @@ class Coordinator:
         self.unsubscribed = False
         self.subscription_deadline = 0.0
         self.flights = {}
-        self.wait_until = {}
         self.retry_until = {}
         self.pending_incoming = []
         self.first_connection = True
         self.next_cleanup = 0.0
         self.storage_ok = True
         self._last_status = None
-        self._last_status_at = 0.0
+        self._last_status_check = 0.0
         with self.store.db:
             self.store.db.execute(
                 "UPDATE mqtt_outbox SET state='pending' WHERE state IN ('inflight','waiting')"
             )
+            # retry_at_ms holds this worker's monotonic clock; a new worker retries now.
+            self.store.db.execute(
+                f"UPDATE mqtt_outbox SET retry_at_ms=0 WHERE state IN {UNFINISHED} AND retry_at_ms!=0"
+            )
+
+    def _retry_at(self, delay):
+        """Return the outbox due time, in monotonic milliseconds, after ``delay``."""
+        return int((self.monotonic() + delay) * 1000)
 
     def on_connect(self, flags, reason, generation, security_error=None):
         if reason.is_failure:
@@ -307,7 +314,11 @@ class Coordinator:
                 )
             elif qos and info.rc == mqtt.MQTT_ERR_QUEUE_SIZE:
                 if kind == "outbox":
-                    self.wait_until[key] = self.monotonic() + 1
+                    with self.store.db:
+                        self.store.db.execute(
+                            "UPDATE mqtt_outbox SET retry_at_ms=? WHERE publication_id=?",
+                            (self._retry_at(1), key),
+                        )
                 else:
                     self.retry_until[(kind, key)] = self.monotonic() + 1
             return False
@@ -320,31 +331,39 @@ class Coordinator:
         return True
 
     def _send_outbox(self, now_mono):
-        rows = self.store.db.execute(
-            """SELECT publication_id,topic FROM mqtt_outbox
-               WHERE state IN ('pending','waiting')
-               ORDER BY CASE WHEN state='pending' THEN 0 ELSE 1 END,rowid"""
-        ).fetchall()
         active = {
             flight.key for flight in self.flights.values() if flight.kind == "outbox"
         }
-        for row in rows:
-            if len(self.flights) >= 16:
-                break
-            identity = row["publication_id"]
-            if identity in active or now_mono < self.wait_until.get(identity, 0):
-                continue
-            payload = self.store.db.execute(
-                "SELECT payload FROM mqtt_outbox WHERE publication_id=?", (identity,)
-            ).fetchone()[0]
-            if self._publish(
-                "outbox", identity, row["topic"], payload, qos=1, retain=False
-            ):
-                with self.store.db:
-                    self.store.db.execute(
-                        "UPDATE mqtt_outbox SET state='inflight' WHERE publication_id=? AND state!='completed'",
-                        (identity,),
-                    )
+        # New work goes first, then receipt retries; each query reads only due rows
+        # through the (state, retry_at_ms) index and at most the free flight slots.
+        for state in ("pending", "waiting"):
+            capacity = 16 - len(self.flights)
+            if capacity <= 0:
+                return
+            rows = self.store.db.execute(
+                """SELECT publication_id,topic,payload FROM mqtt_outbox
+                   WHERE state=? AND retry_at_ms<=? ORDER BY retry_at_ms,rowid LIMIT ?""",
+                (state, int(now_mono * 1000), capacity + len(active)),
+            ).fetchall()
+            for row in rows:
+                if len(self.flights) >= 16:
+                    return
+                identity = row["publication_id"]
+                if identity in active:
+                    continue
+                if self._publish(
+                    "outbox",
+                    identity,
+                    row["topic"],
+                    row["payload"],
+                    qos=1,
+                    retain=False,
+                ):
+                    with self.store.db:
+                        self.store.db.execute(
+                            "UPDATE mqtt_outbox SET state='inflight' WHERE publication_id=? AND state!='completed'",
+                            (identity,),
+                        )
 
     def _send_projections(self):
         active = {
@@ -433,23 +452,12 @@ class Coordinator:
     def bridge_status(
         self, instance_id, *, gateway_connected, gateway_ready, now, shutting_down=False
     ):
-        """Stage a retained bridge-status projection on material changes."""
+        """Stage a retained bridge-status projection on material changes.
+
+        Critical flags publish immediately; backlog counters are rechecked at most
+        every 10 seconds, so the worker loop does not count the outbox each pass.
+        """
         now_mono = self.monotonic()
-        pending, quarantined = self.store.db.execute(
-            """SELECT count(*),coalesce(sum(state='quarantined'),0)
-               FROM mqtt_outbox WHERE state!='completed'"""
-        ).fetchone()
-        quarantined += self.store.db.execute(
-            "SELECT count(*) FROM mqtt_quarantine"
-        ).fetchone()[0]
-        waiting = self.store.db.execute(
-            "SELECT publication_id FROM mqtt_outbox WHERE state='waiting'"
-        ).fetchall()
-        overdue = sum(
-            1
-            for row in waiting
-            if now_mono >= self.wait_until.get(row[0], float("inf"))
-        )
         critical = (
             gateway_connected,
             gateway_ready,
@@ -457,13 +465,29 @@ class Coordinator:
             self.ready,
             shutting_down,
         )
-        counters = (pending, overdue, quarantined, self.store.best_effort_dropped)
         if self._last_status is not None:
             old_critical, old_counters = self._last_status
-            if critical == old_critical and (
-                counters == old_counters or now_mono - self._last_status_at < 10
-            ):
+            if critical == old_critical and now_mono - self._last_status_check < 10:
                 return
+        self._last_status_check = now_mono
+        pending, quarantined = self.store.db.execute(
+            f"""SELECT count(*),coalesce(sum(state='quarantined'),0)
+               FROM mqtt_outbox WHERE state IN {UNFINISHED}"""
+        ).fetchone()
+        quarantined += self.store.db.execute(
+            "SELECT count(*) FROM mqtt_quarantine"
+        ).fetchone()[0]
+        overdue = self.store.db.execute(
+            "SELECT count(*) FROM mqtt_outbox WHERE state='waiting' AND retry_at_ms<=?",
+            (int(now_mono * 1000),),
+        ).fetchone()[0]
+        counters = (pending, overdue, quarantined, self.store.best_effort_dropped)
+        if (
+            self._last_status is not None
+            and critical == old_critical
+            and counters == old_counters
+        ):
+            return
         value = {
             "schema_version": 1,
             "type": "BRIDGE_STATUS",
@@ -491,7 +515,6 @@ class Coordinator:
         with self.store.db:
             self.store._queue_projection(topic, payload)
         self._last_status = (critical, counters)
-        self._last_status_at = now_mono
 
     def _publication_failure(self, flight, code, description):
         with self.store.db:
@@ -512,12 +535,17 @@ class Coordinator:
                 (flight.kind, flight.key, code),
             ).fetchone()[0]
             quarantine = code != 0x97 and (code != 0x91 or attempts > 1)
+            backoff = 0.0
+            if code == 0x97:
+                delay = min(300, 2 ** min(attempts - 1, 8))
+                backoff = random.uniform(delay, min(300, delay * 1.2))
             if flight.kind == "outbox":
                 self.store.db.execute(
-                    "UPDATE mqtt_outbox SET state=?,error=? WHERE publication_id=? AND state!='completed'",
+                    "UPDATE mqtt_outbox SET state=?,error=?,retry_at_ms=? WHERE publication_id=? AND state!='completed'",
                     (
                         "quarantined" if quarantine else "pending",
                         description,
+                        self._retry_at(backoff),
                         flight.key,
                     ),
                 )
@@ -526,15 +554,8 @@ class Coordinator:
                     "INSERT OR REPLACE INTO mqtt_quarantine(kind,item_key,reason) VALUES (?,?,?)",
                     (flight.kind, flight.key, description),
                 )
-            if code == 0x97:
-                delay = min(300, 2 ** min(attempts - 1, 8))
-                deadline = self.monotonic() + random.uniform(
-                    delay, min(300, delay * 1.2)
-                )
-                if flight.kind == "outbox":
-                    self.wait_until[flight.key] = deadline
-                else:
-                    self.retry_until[(flight.kind, flight.key)] = deadline
+            if code == 0x97 and flight.kind != "outbox":
+                self.retry_until[(flight.kind, flight.key)] = self.monotonic() + backoff
             if code == 0x91:
                 self.reconnect_required = True
 
@@ -557,13 +578,16 @@ class Coordinator:
                 ).fetchone()
                 if row and row["state"] != "completed":
                     attempts = row["attempts"] + 1
-                    self.store.db.execute(
-                        "UPDATE mqtt_outbox SET state='waiting',attempts=? WHERE publication_id=?",
-                        (attempts, flight.key),
-                    )
                     delay = min(300, 15 * (2 ** min(attempts - 1, 5)))
-                    self.wait_until[flight.key] = self.monotonic() + random.uniform(
-                        delay, min(300, delay * 1.2)
+                    self.store.db.execute(
+                        "UPDATE mqtt_outbox SET state='waiting',attempts=?,retry_at_ms=? WHERE publication_id=?",
+                        (
+                            attempts,
+                            self._retry_at(
+                                random.uniform(delay, min(300, delay * 1.2))
+                            ),
+                            flight.key,
+                        ),
                     )
             elif flight.kind == "projection":
                 row = self.store.db.execute(

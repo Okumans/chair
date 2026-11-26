@@ -63,6 +63,10 @@ def compact_sensor_event(value):
     return result
 
 
+# Outbox states that still need MQTT work; 'completed' rows are tombstones.
+UNFINISHED = "('pending','inflight','waiting','quarantined')"
+
+
 class MqttStore(Store):
     """Extend sensor acceptance and MQTT outbox insertion in one transaction.
 
@@ -139,6 +143,11 @@ class MqttStore(Store):
                 attempts INTEGER NOT NULL DEFAULT 0,
                 error TEXT
             )""")
+            # Unfinished work is found by state and due time without scanning the
+            # completion tombstones the specification requires us to keep.
+            self.db.execute(
+                "CREATE INDEX IF NOT EXISTS mqtt_outbox_due ON mqtt_outbox(state,retry_at_ms)"
+            )
             self.db.execute("""CREATE TABLE IF NOT EXISTS mqtt_projection (
                 topic TEXT PRIMARY KEY, desired BLOB, inflight BLOB, dirty INTEGER NOT NULL
             )""")
@@ -266,7 +275,7 @@ class MqttStore(Store):
                 (reserved_command,),
             )
         rows, size = self.db.execute(
-            "SELECT count(*),coalesce(sum(length(payload)),0) FROM mqtt_outbox WHERE state!='completed'"
+            f"SELECT count(*),coalesce(sum(length(payload)),0) FROM mqtt_outbox WHERE state IN {UNFINISHED}"
         ).fetchone()
         reserved = self.db.execute(
             "SELECT coalesce(sum(reserved),0) FROM mqtt_commands"
