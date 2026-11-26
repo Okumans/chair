@@ -58,7 +58,7 @@ Identify the sensor's stable serial path and flash the desired bench image:
 
 ```sh
 pio run -e sensor-window-test -t upload --upload-port /dev/serial/by-id/SENSOR
-python3 tools/radio_window_bench.py trace \
+uv run tools/radio_window_bench.py trace \
   --port /dev/serial/by-id/SENSOR --duration 90 --tail-s 10 | tee tail-trace.jsonl
 ```
 
@@ -98,12 +98,12 @@ Matching settings produce `already_applied`; a mismatch is inconclusive. It does
 not deliberately change settings or increment revisions.
 
 ```sh
-python3 tools/radio_window_bench.py delayed-ready \
+uv run tools/radio_window_bench.py delayed-ready \
   --port /dev/serial/by-id/GATEWAY --nodes nodes.json --node chair-01 \
   --db /tmp/chair-delayed-ready.sqlite --config /tmp/current-chair-config.json \
   --duration 120 | tee delayed-ready.jsonl
 
-python3 tools/radio_window_bench.py lost-ack \
+uv run tools/radio_window_bench.py lost-ack \
   --port /dev/serial/by-id/GATEWAY --nodes nodes.json --node chair-01 \
   --db /tmp/chair-lost-ack.sqlite --config /tmp/current-chair-config.json \
   --duration 120 | tee lost-ack.jsonl
