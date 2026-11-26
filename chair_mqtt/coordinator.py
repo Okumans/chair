@@ -611,7 +611,10 @@ class Coordinator:
         now_mono = self.monotonic()
         if self.connected and not self.ready and now_mono >= self.subscription_deadline:
             self.reconnect_required = True
-        if any(now_mono >= flight.deadline for flight in self.flights.values()):
+        # Deadlines restart on reconnect; a disconnected client cannot be late.
+        if self.connected and any(
+            now_mono >= flight.deadline for flight in self.flights.values()
+        ):
             self.reconnect_required = True
         if (
             not self.connected
