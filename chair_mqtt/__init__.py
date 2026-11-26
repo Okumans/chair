@@ -22,6 +22,9 @@ _EXPORTS = {
     "SensorState": ".client",
     "ControllerLedger": ".controller",
     "ChairMqttBridge": ".facade",
+    "GatewayStream": ".gateway",
+    "GatewayTransport": ".gateway",
+    "SerialTransport": ".serial_gateway",
     "BridgeConfig": ".models",
     "BridgeHealth": ".models",
     "BrokerConfig": ".models",
@@ -63,6 +66,8 @@ __all__ = [
     "ConfigSet",
     "ControllerLedger",
     "EventAck",
+    "GatewayStream",
+    "GatewayTransport",
     "MovementBatch",
     "MovementLoss",
     "MovementSample",
@@ -71,6 +76,7 @@ __all__ = [
     "SQLiteStorage",
     "SeatEvent",
     "SensorEvent",
+    "SerialTransport",
     "SensorState",
     "StateSync",
     "Storage",
@@ -105,6 +111,7 @@ if TYPE_CHECKING:
     )
     from .controller import ControllerLedger
     from .facade import ChairMqttBridge
+    from .gateway import GatewayStream, GatewayTransport
     from .models import (
         BridgeConfig,
         BridgeHealth,
@@ -125,3 +132,4 @@ if TYPE_CHECKING:
         SeatEvent,
         StateSync,
     )
+    from .serial_gateway import SerialTransport

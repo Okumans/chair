@@ -17,7 +17,7 @@ from unittest.mock import MagicMock, Mock, patch
 
 from pydantic import ValidationError
 
-from chair_mqtt import service
+from chair_mqtt import SerialTransport, service
 from chair_mqtt.models import BridgeHealth
 
 BROKER = shutil.which("mosquitto")
@@ -93,9 +93,10 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(broker.ca_file, Path("/ca.pem"))
         self.assertEqual(broker.username, "pi")
         self.assertEqual(broker.password.get_secret_value(), "secret")
-        bridge = cls.return_value
-        bridge.start_gateway.assert_called_once_with("/dev/gateway")
-        bridge.__exit__.assert_called_once()
+        gateway = cls.call_args.kwargs["gateway"]
+        self.assertIsInstance(gateway, SerialTransport)
+        self.assertEqual(gateway.port, "/dev/gateway")
+        cls.return_value.__exit__.assert_called_once()
 
     def test_credentials_in_the_configuration_file_are_refused(self):
         with self.assertRaisesRegex(ValueError, "CHAIR_MQTT_USERNAME"):

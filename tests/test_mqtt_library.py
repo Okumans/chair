@@ -17,6 +17,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import paho.mqtt.client as mqtt
+from gateway_fake import FakeGateway
 
 from chair_mqtt import (
     BridgeConfig,
@@ -25,6 +26,7 @@ from chair_mqtt import (
     ConfigRequest,
     ControllerLedger,
     MovementBatch,
+    SerialTransport,
     StateSync,
 )
 from chair_mqtt.backend import BackendLedger
@@ -896,9 +898,9 @@ def bridge_config(path):
     )
 
 
-def offline_bridge(path):
+def offline_bridge(path, gateway=None):
     """Return an unstarted bridge whose own Paho client never opens a socket."""
-    bridge = ChairMqttBridge(bridge_config(path), OFFLINE)
+    bridge = ChairMqttBridge(bridge_config(path), OFFLINE, gateway=gateway)
     client = bridge._client
     mids = itertools.count(200)
     client.connect_async = Mock()
@@ -981,9 +983,25 @@ class FacadeTests(StoreFixture):
         self.assertFalse(bridge.stop())
         client.disconnect.assert_not_called()
 
-    def test_publish_returns_sensor_ack_instead_of_queueing_it_for_radio(self):
-        bridge = offline_bridge(self.path).start()
+    def test_custom_gateway_transport_gets_ack_after_durable_commit(self):
+        gateway = FakeGateway()
+        bridge = offline_bridge(self.path, gateway=gateway).start()
         self.addCleanup(bridge.stop)
+        gateway.send(gateway.expect("hello"))
+        self.assertTrue(wait_until(lambda: bridge.health().gateway_ready))
+        gateway.send(envelope(event()))
+        ack = gateway.expect("event_ack")
+        self.assertEqual(ack["message"]["ack_seq"], 1)
+        with closing(sqlite3.connect(self.path)) as db:
+            self.assertEqual(
+                db.execute("SELECT count(*) FROM mqtt_outbox").fetchone()[0], 1
+            )
+
+    def test_publish_returns_sensor_ack_instead_of_queueing_it_for_radio(self):
+        gateway = FakeGateway()
+        bridge = offline_bridge(self.path, gateway=gateway).start()
+        self.addCleanup(bridge.stop)
+        hello = gateway.expect("hello")  # Open, but the gateway has not answered.
         first = bridge.publish(event(), source_mac=MAC)
         self.assertEqual(first.status, "accepted")
         self.assertEqual(first.ack.type, "EVENT_ACK")
@@ -1005,8 +1023,6 @@ class FacadeTests(StoreFixture):
             source_mac=MAC,
         )
         self.assertEqual((movement.status, movement.ack), ("accepted", None))
-        self.assertIsNone(bridge.gateway_next())  # Nothing stale waits for the radio.
-        bridge.gateway_opened()
         ready = bridge.publish(
             event("READY", seq=3, reason="scheduled", listen_remaining_ms=10000),
             source_mac=MAC,
@@ -1015,6 +1031,9 @@ class FacadeTests(StoreFixture):
             (ready.status, ready.reason, ready.ack),
             ("ignored", "awaiting_fresh_connection", None),
         )
+        gateway.send(hello)
+        # Nothing stale waits for the radio once the gateway is ready.
+        self.assertNotIn("event_ack", gateway.kinds_written(0.5))
 
     def test_stop_returns_promptly_when_the_broker_is_unreachable(self):
         with socket.socket() as reserved:
@@ -1138,9 +1157,10 @@ class SerialAdapterTests(StoreFixture):
         master, slave = pty.openpty()
         self.addCleanup(os.close, master)
         self.addCleanup(os.close, slave)
-        bridge = offline_bridge(self.path).start()
+        bridge = offline_bridge(
+            self.path, gateway=SerialTransport(os.ttyname(slave))
+        ).start()
         self.addCleanup(bridge.stop)
-        bridge.start_gateway(os.ttyname(slave))
         pending = bytearray()
 
         def read_message(kind):
@@ -1172,9 +1192,10 @@ class SerialAdapterTests(StoreFixture):
         master, slave = pty.openpty()
         self.addCleanup(os.close, master)
         self.addCleanup(os.close, slave)
-        bridge = offline_bridge(self.path).start()
+        bridge = offline_bridge(
+            self.path, gateway=SerialTransport(os.ttyname(slave))
+        ).start()
         self.addCleanup(bridge.stop)
-        bridge.start_gateway(os.ttyname(slave))
         pending = bytearray()
         deadline = time.monotonic() + 5
         while b"\n" not in pending and time.monotonic() < deadline:

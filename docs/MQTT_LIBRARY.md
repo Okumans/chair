@@ -225,14 +225,15 @@ transaction requirements. ESP data classes such as `StateSync`, `SeatEvent`,
 validated protocol fields and are not connection managers.
 
 For an application that deliberately embeds the Pi bridge, construct
-`ChairMqttBridge(BridgeConfig(...), BrokerConfig(...))` and use it in a `with`
-block, or call `start()` and `stop()`. Like `ChairClient`, it owns its MQTT
+`ChairMqttBridge(BridgeConfig(...), BrokerConfig(...), gateway=SerialTransport(port))`
+and use it in a `with` block, or call `start()` and `stop()`. Like `ChairClient`, it owns its MQTT
 connection: `start()` returns without waiting for the broker, and the bridge
 reconnects and recovers unacknowledged deliveries itself. `stop()` publishes an
 offline status and waits up to two seconds for the broker to acknowledge it
 before disconnecting; without that confirmation it aborts the connection so the
-broker publishes the bridge's Will, and returns `False`.
-`start_gateway(port)` and `stop_gateway()` control the serial adapter.
+broker publishes the bridge's Will, and returns `False`. The bridge opens the
+gateway transport on `start()`, reopens it a second after it disconnects, and
+closes it on `stop()`; without `gateway` it runs MQTT only.
 `publish(message, source_mac=...)` accepts a sensor message that arrived over a
 transport other than the gateway and returns a `PublishResult`: `status` is
 `accepted`, `duplicate` or `ignored` (with a `reason`), and a reliable event,
@@ -242,11 +243,15 @@ gateway radio. `receive(timeout=None)` returns a command notice, not sensor data
 returns `BridgeHealth`, and `retry_quarantined()` retries previously quarantined
 publications after their cause is corrected. A `fatal` health value or failed
 storage cannot be fixed by reconnecting; the standalone service exits so that
-systemd restarts it. Advanced custom-serial integrations can use
-`gateway_opened()`, `gateway_received(envelope)`, `gateway_next()`,
-`gateway_write(message, port)`, and `gateway_closed()`; the adapter normally
-handles that sequence. These methods are synchronous and are not needed by
-applications using the standalone service.
+systemd restarts it.
+
+`SerialTransport` is the USB link to the gateway firmware. Another link
+implements `GatewayTransport`: its `open()` returns a `GatewayStream` whose
+`read()` returns the bytes that arrived, waiting at most about 20 ms,
+`write(data)` writes a prefix of `data` within about a second and returns its
+length, and `close()` ends the connection. Raise `OSError` when the gateway is
+unavailable or disconnects. The bridge does the line framing, the hello
+handshake, ACK timing and the command deadline check before each write.
 
 The library and tests do not establish Pi power-loss or physical radio
 reliability.

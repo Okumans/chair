@@ -16,6 +16,7 @@ from pydantic import BaseModel
 from . import connection
 from .contract import MAX_PAYLOAD
 from .coordinator import Coordinator, Oversized
+from .gateway import GatewayLink
 from .models import (
     BridgeConfig,
     BridgeHealth,
@@ -33,19 +34,24 @@ LOG = logging.getLogger(__name__)
 class ChairMqttBridge:
     """Run the Pi bridge between the gateway and an MQTT 5 broker it connects to.
 
-    ``start`` (or ``with``) opens the durable database and connects in the
-    background; the bridge reconnects with backoff and recovers unacknowledged
-    deliveries itself, so a broker outage never stops sensor acknowledgements.
-    SQLite and MQTT protocol work is serialized on one worker thread.
+    ``start`` (or ``with``) opens the durable database, connects in the
+    background and, when ``gateway`` is a ``GatewayTransport`` such as
+    ``SerialTransport``, starts driving the gateway. The bridge reconnects to
+    the broker with backoff and recovers unacknowledged deliveries itself, so a
+    broker outage never stops sensor acknowledgements. SQLite and MQTT protocol
+    work is serialized on one worker thread.
     """
 
-    def __init__(self, config: BridgeConfig, broker: BrokerConfig):
+    def __init__(self, config: BridgeConfig, broker: BrokerConfig, *, gateway=None):
         if not isinstance(config, BridgeConfig):
             raise TypeError("config must be a BridgeConfig")
         if not isinstance(broker, BrokerConfig):
             raise TypeError("broker must be a BrokerConfig")
+        if gateway is not None and not callable(getattr(gateway, "open", None)):
+            raise TypeError("gateway must be a GatewayTransport")
         # The application explicitly assumes the Pi's UTC clock is trustworthy.
         self.config, self.broker, self.clock_trusted = config, broker, lambda: True
+        self._transport, self._link = gateway, None
         self.instance_id = str(uuid.uuid4())
         self._events = queue.Queue(maxsize=128)
         self._notifications = queue.Queue(maxsize=128)
@@ -60,7 +66,6 @@ class ChairMqttBridge:
         self._thread = None
         self._gateway_connected = False
         self._gateway_outgoing = None
-        self._serial_adapter = None
         self._shutting_down = False
         self._store = self._coordinator = self._gateway = None
         self._attached = False
@@ -184,6 +189,9 @@ class ChairMqttBridge:
         try:
             self._configure_will()  # Before CONNECT, as the spec requires.
             connection.connect(self._client, self.broker)
+            if self._transport is not None:
+                self._link = GatewayLink(self, self._transport)
+                self._link.start()
         except BaseException:
             self.stop()
             raise
@@ -203,7 +211,7 @@ class ChairMqttBridge:
         return future.result(timeout=timeout)
 
     def publish(self, message, *, source_mac):
-        """Accept sensor data from a transport other than the gateway hooks.
+        """Accept sensor data that arrived without going through the gateway.
 
         Reliable MQTT work commits before return. Returns a ``PublishResult``;
         deliver its ``ack`` to the sensor, because data passed here is never
@@ -219,53 +227,30 @@ class ChairMqttBridge:
         """Return the next command notification, or None on timeout.
 
         Notifications are best effort; durable command dispatch is managed by
-        the facade even if the application does not read notifications.
+        the bridge even if the application does not read notifications.
         """
         try:
             return self._notifications.get(timeout=timeout)
         except queue.Empty:
             return None
 
-    def gateway_opened(self):
-        """Reset gateway state and return the handshake for the serial adapter."""
+    # Gateway operations, run on the worker for the GatewayLink thread.
+
+    def _gateway_opened(self):
         return self._call("gateway_opened")
 
-    def gateway_closed(self):
-        """Tell the protocol engine its gateway serial connection has closed."""
+    def _gateway_closed(self):
         self._call("gateway_closed")
 
-    def gateway_received(self, envelope):
-        """Feed an envelope from the provisioned gateway to the protocol engine."""
-        return self._call("gateway_received", copy.deepcopy(envelope))
+    def _gateway_received(self, envelope):
+        return self._call("gateway_received", envelope)
 
-    def gateway_next(self):
-        """Return the next gateway message, if an ACK or command is ready."""
+    def _gateway_next(self):
         return self._call("gateway_next")
 
-    def gateway_write(self, message, port):
-        """Write a generated gateway message after its final dispatch guard.
-
-        The port must provide bounded writes; use the supplied serial adapter for
-        normal operation. The radio lease and deadline are checked for each write.
-        """
-        if not callable(getattr(port, "write", None)):
-            raise TypeError("port must provide a write method")
-        return self._call("gateway_write", copy.deepcopy(message), port)
-
-    def start_gateway(self, port):
-        """Start the optional serial adapter without managing the MQTT client."""
-        if not self._attached or self._serial_adapter is not None:
-            raise RuntimeError("bridge must be started and gateway not already started")
-        from .serial_gateway import SerialGateway
-
-        self._serial_adapter = SerialGateway(self, port)
-        self._serial_adapter.start()
-
-    def stop_gateway(self):
-        """Stop the optional serial adapter and leave the MQTT client running."""
-        if self._serial_adapter is not None:
-            self._serial_adapter.stop()
-            self._serial_adapter = None
+    def _gateway_write(self, message, stream):
+        # The radio lease and command deadline are checked before each write.
+        return self._call("gateway_write", message, stream)
 
     def health(self):
         """Return the bridge's current connection, storage, and publication health."""
@@ -285,7 +270,8 @@ class ChairMqttBridge:
         if not self._attached:
             return False
         try:
-            self.stop_gateway()
+            if self._link is not None:
+                self._link.stop()
         finally:
             confirmed = False
             if self._client.is_connected():
