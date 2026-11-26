@@ -145,7 +145,9 @@ class PrivateBrokerTests(unittest.TestCase):
                             )
                         time.sleep(0.02)
 
-                    self.assertTrue(bridge.publish(event(), source_mac=MAC))
+                    self.assertEqual(
+                        bridge.publish(event(), source_mac=MAC).status, "accepted"
+                    )
                     command = dict(
                         schema_version=1,
                         expires_at_ms=int(time.time() * 1000) + 60000,
@@ -189,8 +191,11 @@ class PrivateBrokerTests(unittest.TestCase):
                         ),
                         source_mac=MAC,
                     )
-                    # Reconnect clears stale ACKs; a sensor retransmission is ACKed again.
-                    self.assertFalse(bridge.publish(event(), source_mac=MAC))
+                    # Reconnect clears stale ACKs; a radio retransmission is ACKed again.
+                    retransmission = bridge.gateway_received(
+                        dict(kind="telemetry", source_mac=MAC, message=event())
+                    )
+                    self.assertTrue(retransmission["duplicate"])
                     outgoing = bridge.gateway_next()
                     self.assertEqual(outgoing["kind"], "event_ack")
                     self.assertTrue(bridge.gateway_write(outgoing, io.BytesIO()))

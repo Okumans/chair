@@ -337,6 +337,31 @@ class CommandNotice(StrictModel):
     disposition: Literal["queued", "expired", "duplicate"]
 
 
+class EventAck(StrictModel):
+    """The EVENT_ACK a sensor needs before it discards a reliable event."""
+
+    version: Literal[2]
+    type: Literal["EVENT_ACK"]
+    node_id: str
+    boot_id: str
+    seq: PositiveUint32
+    ack_boot_id: str
+    ack_seq: PositiveUint32
+
+
+class PublishResult(StrictModel):
+    """Outcome of ``ChairMqttBridge.publish`` for one sensor message.
+
+    ``accepted`` and ``duplicate`` messages are durably stored. A reliable
+    event, including a retransmitted duplicate, carries the ``ack`` the caller
+    must deliver to the sensor; ``ignored`` explains the drop in ``reason``.
+    """
+
+    status: Literal["accepted", "duplicate", "ignored"]
+    reason: str | None = None
+    ack: EventAck | None = None
+
+
 class BridgeHealth(StrictModel):
     """Current Pi bridge connection, storage, and publication health."""
 

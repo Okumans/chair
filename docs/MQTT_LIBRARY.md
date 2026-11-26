@@ -239,8 +239,12 @@ For an application that deliberately embeds the Pi bridge, construct
 `ChairMqttBridge(paho_client, BridgeConfig(...))` and call `attach()` before
 connecting the Paho client. `connect_options()` returns its required connection
 options; `start_gateway(port)` and `stop_gateway()` control the serial adapter.
-`publish(message, source_mac=...)` accepts a sensor message into the bridge;
-`receive(timeout=None)` returns a command notice, not sensor data. `health()`
+`publish(message, source_mac=...)` accepts a sensor message that arrived over a
+transport other than the gateway and returns a `PublishResult`: `status` is
+`accepted`, `duplicate` or `ignored` (with a `reason`), and a reliable event,
+including a retransmitted duplicate, carries the `EventAck` the caller must
+deliver to the sensor. Data passed to `publish` is never acknowledged over the
+gateway radio. `receive(timeout=None)` returns a command notice, not sensor data. `health()`
 returns `BridgeHealth`, `retry_quarantined()` retries previously quarantined
 publications after their cause is corrected, and `detach()` attempts an offline
 publication and unsubscribe without disconnecting Paho. A `False` detach result
