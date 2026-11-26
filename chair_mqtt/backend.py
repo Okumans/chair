@@ -154,6 +154,7 @@ class BackendLedger:
         return not bool(fact)
 
     def pending_receipts(self, limit=16):
+        """Return up to ``limit`` pending (publication ID, topic, payload) rows."""
         if type(limit) is not int or limit <= 0:
             raise ValueError("limit must be positive")
         return self.db.execute(

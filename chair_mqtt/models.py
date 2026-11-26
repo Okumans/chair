@@ -119,6 +119,8 @@ class ConfigRequest(StrictModel):
 
 
 class ClientConfig(StrictModel):
+    """Backend/controller identities and optional loopback-only plaintext setting."""
+
     node_id: str
     bridge_id: str
     consumer_id: str
@@ -136,6 +138,8 @@ class ClientConfig(StrictModel):
 
 
 class ChairConfiguration(StrictModel):
+    """A complete sensor configuration to be submitted through ChairClient."""
+
     revision: Uint32
     heartbeat_s: PositiveUint32
     movement_batch_s: PositiveUint32
@@ -178,6 +182,8 @@ class BackendReceipt(StrictModel):
 
 
 class MovementSample(StrictModel):
+    """One raw accelerometer and gyroscope sample within a movement batch."""
+
     offset_ms: Annotated[int, Field(strict=True, ge=0, le=65535)]
     ax: Annotated[int, Field(strict=True, ge=-32768, le=32767)]
     ay: Annotated[int, Field(strict=True, ge=-32768, le=32767)]
@@ -217,6 +223,8 @@ class SensorTelemetry(SensorIdentity):
 
 
 class SeatEvent(SensorTelemetry):
+    """An occupancy, heartbeat, or low-battery sensor event."""
+
     type: Literal["OCCUPIED", "VACATED", "HEARTBEAT", "BATTERY_LOW"]
 
     @model_validator(mode="after")
@@ -229,6 +237,8 @@ class SeatEvent(SensorTelemetry):
 
 
 class StateSync(SensorTelemetry):
+    """A sensor's current state and persistent boot generation."""
+
     type: Literal["STATE_SYNC"] = "STATE_SYNC"
     boot_generation: str
 
@@ -244,6 +254,8 @@ class StateSync(SensorTelemetry):
 
 
 class MovementBatch(SensorTelemetry):
+    """A best-effort movement batch with ordered raw sensor samples."""
+
     type: Literal["MOVEMENT_BATCH"] = "MOVEMENT_BATCH"
     batch_start_ms: Uint32
     duration_ms: Uint32
@@ -263,17 +275,23 @@ class MovementBatch(SensorTelemetry):
 
 
 class MovementLoss(SensorTelemetry):
+    """A sensor report of movement batches lost before transmission."""
+
     type: Literal["MOVEMENT_LOSS"] = "MOVEMENT_LOSS"
     dropped_batches: PositiveUint32
 
 
 class RadioReady(SensorTelemetry):
+    """A sensor radio-window readiness announcement."""
+
     type: Literal["READY"] = "READY"
     reason: Literal["seat_occupied", "movement_started", "scheduled"]
     listen_remaining_ms: Annotated[int, Field(strict=True, ge=0, le=4294967294)] | None
 
 
 class CommandResult(SensorTelemetry):
+    """The sensor's result for a previously received configuration command."""
+
     type: Literal["COMMAND_RESULT"] = "COMMAND_RESULT"
     command_id: str
     status: Literal[
@@ -292,6 +310,8 @@ class CommandResult(SensorTelemetry):
 
 
 class CommandReceipt(SensorIdentity):
+    """A sensor acknowledgement or outcome for a configuration command."""
+
     type: Literal["COMMAND_RECEIPT"] = "COMMAND_RECEIPT"
     command_id: str
     status: Literal[
@@ -318,6 +338,8 @@ class CommandNotice(StrictModel):
 
 
 class BridgeHealth(StrictModel):
+    """Current Pi bridge connection, storage, and publication health."""
+
     mqtt_connected: bool
     subscriptions_ready: bool
     gateway_connected: bool

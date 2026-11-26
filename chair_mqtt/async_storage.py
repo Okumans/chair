@@ -20,17 +20,38 @@ class Storage(Protocol):
     Receipt confirmation must occur only after successful broker PUBACK.
     """
 
-    async def initialize(self, node_id, bridge_id, consumer_id): ...
-    async def ingest(self, topic, payload, *, qos, retain, on_fact): ...
-    async def reject(self, topic, payload, reason): ...
-    async def pending_receipts(self): ...
-    async def confirm_receipt(self, publication_id): ...
-    async def enqueue_command(self, request, now_ms): ...
-    async def due_commands(self, now_ms): ...
-    async def command_submitted(self, command_id, now_ms): ...
-    async def observe_report(self, topic, payload, *, qos, retain): ...
-    async def get_command(self, command_id): ...
-    async def close(self): ...
+    async def initialize(self, node_id, bridge_id, consumer_id):
+        """Bind persistent storage to the configured chair identities."""
+
+    async def ingest(self, topic, payload, *, qos, retain, on_fact):
+        """Deduplicate and commit a publication and receipt with its callback."""
+
+    async def reject(self, topic, payload, reason):
+        """Persist a bounded diagnosis of an invalid delivery."""
+
+    async def pending_receipts(self):
+        """Return pending (publication_id, topic, payload) tuples."""
+
+    async def confirm_receipt(self, publication_id):
+        """Remove a receipt only after the broker acknowledges its publication."""
+
+    async def enqueue_command(self, request, now_ms):
+        """Persist an immutable ConfigRequest and return whether it is new."""
+
+    async def due_commands(self, now_ms):
+        """Return retry-ready (id, topic, payload, expiry_ms) tuples and expire old work."""
+
+    async def command_submitted(self, command_id, now_ms):
+        """Schedule the next admission retry; return whether the row was updated."""
+
+    async def observe_report(self, topic, payload, *, qos, retain):
+        """Validate and deduplicate a command report; return whether state advanced."""
+
+    async def get_command(self, command_id):
+        """Return stored admission, outcome, report sequence and report, or None."""
+
+    async def close(self):
+        """Release storage resources after in-progress operations finish."""
 
 
 class SQLiteTransaction:
@@ -42,6 +63,11 @@ class SQLiteTransaction:
         self._operations = queue.Queue()
 
     async def execute(self, statement, parameters=()):
+        """Execute one SQL statement; return selected rows or affected-row count.
+
+        Use only inside the event callback. Commit and rollback are controlled
+        by the connector so the application write and receipt stay atomic.
+        """
         if not self._active:
             raise RuntimeError("transaction is no longer active")
         verb = statement.lstrip().split(None, 1)[0].upper()
@@ -65,7 +91,11 @@ class SQLiteTransaction:
 
 
 class SQLiteStorage:
-    """SQLite-backed connector; all ledger operations run off the event loop."""
+    """Durable SQLite connector at ``path``; database work runs off the event loop.
+
+    Use a file path, not an in-memory database. The parent directory must exist.
+    The client initializes and closes the connector; do not reuse it afterwards.
+    """
 
     def __init__(self, path):
         self.path = Path(path)
@@ -85,6 +115,7 @@ class SQLiteStorage:
         )
 
     async def initialize(self, node_id, bridge_id, consumer_id):
+        """Open the database and bind it to the configured identities."""
         if self._loop is not None:
             raise RuntimeError("storage already initialized")
         self._loop = asyncio.get_running_loop()
@@ -106,6 +137,8 @@ class SQLiteStorage:
             raise
 
     async def ingest(self, topic, payload, *, qos, retain, on_fact):
+        """Commit one validated delivery, application callback and receipt atomically."""
+
         def ingest():
             def callback(db, route, value):
                 tx = SQLiteTransaction(db)
@@ -143,32 +176,41 @@ class SQLiteStorage:
         return await self._run(ingest)
 
     async def reject(self, topic, payload, reason):
+        """Record a bounded diagnosis for invalid delivery bytes."""
         return await self._run(self._backend.reject, topic, payload, reason)
 
     async def pending_receipts(self):
+        """Return pending (publication_id, topic, payload) tuples."""
         return await self._run(self._backend.pending_receipts)
 
     async def confirm_receipt(self, publication_id):
+        """Remove a receipt following successful MQTT PUBACK."""
         return await self._run(self._backend.confirmed, publication_id)
 
     async def enqueue_command(self, request, now_ms):
+        """Durably store a ConfigRequest and return whether it was newly queued."""
         return await self._run(self._controller.enqueue, request, now_ms=now_ms)
 
     async def due_commands(self, now_ms):
+        """Return commands due for publication and record unconfirmed expiry."""
         return await self._run(self._controller.due, now_ms=now_ms)
 
     async def command_submitted(self, command_id, now_ms):
+        """Record a publish attempt and schedule the next admission retry."""
         return await self._run(self._controller.submitted, command_id, now_ms=now_ms)
 
     async def observe_report(self, topic, payload, *, qos, retain):
+        """Persist and deduplicate a report; return whether it advanced the state."""
         return await self._run(
             self._controller.observe, topic, payload, qos=qos, retain=retain
         )
 
     async def get_command(self, command_id):
+        """Return a stored command dictionary, or None when the ID is unknown."""
         return await self._run(self._controller.get, command_id)
 
     async def close(self):
+        """Close the database and its worker; this connector cannot be reused."""
         if self._db is not None:
             await self._run(self._db.close)
             self._db = None

@@ -17,6 +17,7 @@ LOG = logging.getLogger(__name__)
 
 
 def main(argv=None):
+    """Load ``--config`` TOML and run the Pi bridge until shutdown or failure."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True, type=Path)
     args = parser.parse_args(argv)
