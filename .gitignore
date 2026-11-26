@@ -6,3 +6,6 @@ smart_chair_project_handoff.md
 shared/include/link_config.local.h
 .venv/
 __pycache__/
+build/
+dist/
+*.egg-info/

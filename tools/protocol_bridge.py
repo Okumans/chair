@@ -227,7 +227,7 @@ def validate(message, mapping):
 class Store:
     """SQLite durable facts, command lifecycle and boot-aware current physical state."""
 
-    def __init__(self, path):
+    def __init__(self, path, *, _additional_versions=()):
         """Open the explicit database path and enable WAL with FULL synchronization."""
         if not path or str(path) == ":memory:":
             raise ValueError("a durable SQLite file path is required")
@@ -238,7 +238,9 @@ class Store:
         existing = self.db.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' LIMIT 1"
         ).fetchone()
-        if version != SCHEMA_VERSION and (existing or version):
+        if version not in (SCHEMA_VERSION, *_additional_versions) and (
+            existing or version
+        ):
             self.db.close()
             raise ValueError(
                 "unsupported database version; explicitly reset test data or use a new database"
@@ -295,6 +297,12 @@ class Store:
         self.db.execute("INSERT INTO boots VALUES (?,?,?)", (node, boot, generation))
         return generation
 
+    def _after_accept(self, message, *, prior, received_at, generation, now):
+        """Optional transactional integration hook; any error rolls back sensor acceptance."""
+
+    def _after_expire(self, commands, now):
+        """Optional transactional integration hook for newly expired commands."""
+
     def accept(self, m, now):
         """Commit before returning (fresh, first_received_at); only then may the caller ACK."""
         node, boot, seq = m["node_id"], m["boot_id"], m["seq"]
@@ -333,7 +341,10 @@ class Store:
                     else "rejected"
                 )
                 self.db.execute(
-                    """UPDATE commands SET result=?,status=CASE WHEN status IN
+                    """UPDATE commands SET result=CASE
+                    WHEN status IN ('applied','rejected') OR
+                    (status='expired' AND result IS NOT NULL) THEN result ELSE ? END,
+                    status=CASE WHEN status IN
                     ('expired','applied','rejected') THEN status ELSE ? END WHERE id=? AND node=?""",
                     (payload, status, m["command_id"], node),
                 )
@@ -342,6 +353,13 @@ class Store:
                     "UPDATE commands SET status='delivered' WHERE id=? AND node=? AND status='queued'",
                     (m["command_id"], node),
                 )
+            self._after_accept(
+                m,
+                prior=prior,
+                received_at=prior["received_at"] if prior else now,
+                generation=generation,
+                now=now,
+            )
         return not bool(prior), prior["received_at"] if prior else now
 
     def queue(self, node, command_id, config, expires, now):
@@ -363,13 +381,18 @@ class Store:
                 (command_id, node, encoded, expires, "queued"),
             )
 
-    def pending(self, now):
+    def pending(self, now, monotonic=None):
         """Commit command expiry and return the oldest live command for each node."""
         with self.db:
+            expired = self.db.execute(
+                "SELECT * FROM commands WHERE expires<=? AND status IN ('queued','delivered')",
+                (now,),
+            ).fetchall()
             self.db.execute(
                 "UPDATE commands SET status='expired' WHERE expires<=? AND status IN ('queued','delivered')",
                 (now,),
             )
+            self._after_expire(expired, now)
         return self.db.execute("""SELECT * FROM commands c WHERE status IN ('queued','delivered') AND
             rowid=(SELECT MIN(rowid) FROM commands WHERE node=c.node AND status IN ('queued','delivered'))
             ORDER BY rowid""").fetchall()
@@ -611,7 +634,11 @@ class Bridge:
         else:
             clock = started
         # Mark expired commands even while serial/radio is unavailable.
-        pending = self.store.pending(now)
+        pending = (
+            self.store.pending(now)
+            if monotonic is None
+            else self.store.pending(now, monotonic=monotonic)
+        )
         # SQLite may wait for a writer or disk I/O. Never authorize from the pre-I/O time.
         elapsed = max(0, self.monotonic_clock() - started)
         now = self.wall_clock() if supplied_now is None else now + elapsed
@@ -669,7 +696,7 @@ class Bridge:
             self.radio_at = clock
         return message
 
-    def send(self, port, outgoing):
+    def send(self, port, outgoing, *, before_write=None):
         """Recheck command deadlines after encoding and before every serial write."""
         from transport import write_message
 
@@ -686,6 +713,7 @@ class Bridge:
                 and self.wall_clock() < dispatch.expires
                 and self.monotonic_clock()
                 < min(dispatch.lease_expires, self.available_until(control["node_id"]))
+                and (before_write is None or before_write())
             )
 
         sent = write_message(port, outgoing, before_write=allowed)

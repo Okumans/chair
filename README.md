@@ -26,8 +26,8 @@ while vacant it can deep sleep and wake from the seat switch or heartbeat timer.
      --nodes ./nodes.json --db ./chair.sqlite
    ```
 
-Only the bridge needs to own the gateway's serial port. No MQTT broker or background
-service is required. Update the checked-in `nodes.json` to match your own sensor MAC.
+Only one bridge may own the gateway's serial port. The protocol-only bridge does not
+require an MQTT broker or background service. Update the checked-in `nodes.json` to match your own sensor MAC.
 
 ## Development
 
@@ -62,12 +62,13 @@ are separate; see [development checks](docs/SETUP.md#development-checks).
 - [Setup and dependencies](docs/SETUP.md): installation, provisioning, builds, editor setup and checks.
 - [Transport and Pi bridge](docs/TRANSPORT.md): MAC retrieval, commands, diagnostics and physical acceptance.
 - [Protocol specification](docs/PROTOCOL_SPEC.md): message formats, state transitions and delivery rules.
+- [MQTT library](docs/MQTT_LIBRARY.md): caller-owned MQTT client integration and usage.
 - The confirmed radio-window design covers wire v2, state-machine integration and implementation
   acceptance. [Radio windows specification](docs/RADIO_WINDOWS_SPEC.md)
 
 - [Radio-window bench tools](docs/RADIO_WINDOWS_BENCH.md): recovery policy, contact traces, fault tests and current measurement.
 
-Battery measurement, MQTT, systemd deployment and actual occupied light sleep remain
-deferred. The occupied radio uses a test schedule; physical validation is still required.
+Battery measurement, systemd deployment and actual occupied light sleep remain
+deferred. The MQTT library requires integration and deployment on the Pi. The occupied radio uses a test schedule; physical validation is still required.
 Native tests do not establish physical radio reliability,
 sample timing, power use or correct wiring; those require board testing.

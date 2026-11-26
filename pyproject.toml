@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "chair-mqtt"
+version = "0.1.0"
+description = "MQTT integration for the Smart Chair protocol"
+requires-python = ">=3.11"
+dependencies = ["jsonschema>=4.26,<5", "paho-mqtt>=2.1,<3", "pydantic>=2.12,<3", "pyserial>=3.5,<4"]
+
+[tool.setuptools]
+packages = ["chair_mqtt"]
+py-modules = ["protocol_bridge", "transport"]
+
+[tool.setuptools.package-dir]
+"" = "tools"
+chair_mqtt = "chair_mqtt"
+
+[tool.setuptools.package-data]
+chair_mqtt = ["mqtt.schema.json"]

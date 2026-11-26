@@ -1,0 +1,1449 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:smartchair:mqtt:v1",
+  "title": "Smart Chair MQTT v1 contract",
+  "$comment": "Topic routing, exact integer syntax, cross-field relations and transport flags are checked by contract.py. All references are local.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/command"
+    },
+    {
+      "$ref": "#/$defs/event"
+    },
+    {
+      "$ref": "#/$defs/state"
+    },
+    {
+      "$ref": "#/$defs/movement"
+    },
+    {
+      "$ref": "#/$defs/movement_loss"
+    },
+    {
+      "$ref": "#/$defs/report_update"
+    },
+    {
+      "$ref": "#/$defs/report_status"
+    },
+    {
+      "$ref": "#/$defs/receipt"
+    },
+    {
+      "$ref": "#/$defs/command_error"
+    },
+    {
+      "$ref": "#/$defs/bridge_status"
+    }
+  ],
+  "$defs": {
+    "u32": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4294967295
+    },
+    "seq": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 4294967295
+    },
+    "safe_int": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "counter": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 32,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "not": {
+        "pattern": "[^A-Za-z0-9_-]"
+      }
+    },
+    "node": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 15,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "not": {
+        "pattern": "[^A-Za-z0-9_-]"
+      }
+    },
+    "uuid": {
+      "type": "string",
+      "minLength": 36,
+      "maxLength": 36,
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "not": {
+        "const": "00000000-0000-0000-0000-000000000000"
+      }
+    },
+    "boot": {
+      "type": "string",
+      "minLength": 16,
+      "maxLength": 16,
+      "pattern": "^[0-9a-f]{16}$",
+      "not": {
+        "const": "0000000000000000"
+      }
+    },
+    "generation": {
+      "type": "string",
+      "minLength": 16,
+      "maxLength": 16,
+      "pattern": "^[0-7][0-9a-f]{15}$",
+      "not": {
+        "const": "0000000000000000"
+      }
+    },
+    "mac": {
+      "type": "string",
+      "minLength": 17,
+      "maxLength": 17,
+      "pattern": "^[0-9a-f]{2}(:[0-9a-f]{2}){5}$"
+    },
+    "configuration": {
+      "type": "object",
+      "properties": {
+        "revision": {
+          "$ref": "#/$defs/u32"
+        },
+        "heartbeat_s": {
+          "$ref": "#/$defs/seq"
+        },
+        "movement_batch_s": {
+          "$ref": "#/$defs/seq"
+        },
+        "movement_enabled": {
+          "type": "boolean"
+        },
+        "radio_windows_enabled": {
+          "type": "boolean"
+        },
+        "radio_interval_s": {
+          "$ref": "#/$defs/seq"
+        },
+        "radio_open_s": {
+          "$ref": "#/$defs/seq"
+        },
+        "radio_motion_tail_s": {
+          "$ref": "#/$defs/seq"
+        }
+      },
+      "required": [
+        "revision",
+        "heartbeat_s",
+        "movement_batch_s",
+        "movement_enabled",
+        "radio_windows_enabled",
+        "radio_interval_s",
+        "radio_open_s",
+        "radio_motion_tail_s"
+      ],
+      "additionalProperties": false
+    },
+    "esp_occupied": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "const": 2
+        },
+        "type": {
+          "const": "OCCUPIED"
+        },
+        "node_id": {
+          "$ref": "#/$defs/node"
+        },
+        "boot_id": {
+          "$ref": "#/$defs/boot"
+        },
+        "seq": {
+          "$ref": "#/$defs/seq"
+        },
+        "uptime_ms": {
+          "$ref": "#/$defs/u32"
+        },
+        "occupied": {
+          "const": true
+        },
+        "battery_mv": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 65534
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "config_revision": {
+          "$ref": "#/$defs/u32"
+        },
+        "health_flags": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3
+        }
+      },
+      "required": [
+        "version",
+        "type",
+        "node_id",
+        "boot_id",
+        "seq",
+        "uptime_ms",
+        "occupied",
+        "battery_mv",
+        "config_revision",
+        "health_flags"
+      ],
+      "additionalProperties": false
+    },
+    "esp_vacated": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "const": 2
+        },
+        "type": {
+          "const": "VACATED"
+        },
+        "node_id": {
+          "$ref": "#/$defs/node"
+        },
+        "boot_id": {
+          "$ref": "#/$defs/boot"
+        },
+        "seq": {
+          "$ref": "#/$defs/seq"
+        },
+        "uptime_ms": {
+          "$ref": "#/$defs/u32"
+        },
+        "occupied": {
+          "const": false
+        },
+        "battery_mv": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 65534
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "config_revision": {
+          "$ref": "#/$defs/u32"
+        },
+        "health_flags": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3
+        }
+      },
+      "required": [
+        "version",
+        "type",
+        "node_id",
+        "boot_id",
+        "seq",
+        "uptime_ms",
+        "occupied",
+        "battery_mv",
+        "config_revision",
+        "health_flags"
+      ],
+      "additionalProperties": false
+    },
+    "esp_heartbeat": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "const": 2
+        },
+        "type": {
+          "const": "HEARTBEAT"
+        },
+        "node_id": {
+          "$ref": "#/$defs/node"
+        },
+        "boot_id": {
+          "$ref": "#/$defs/boot"
+        },
+        "seq": {
+          "$ref": "#/$defs/seq"
+        },
+        "uptime_ms": {
+          "$ref": "#/$defs/u32"
+        },
+        "occupied": {
+          "type": "boolean"
+        },
+        "battery_mv": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 65534
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "config_revision": {
+          "$ref": "#/$defs/u32"
+        },
+        "health_flags": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3
+        }
+      },
+      "required": [
+        "version",
+        "type",
+        "node_id",
+        "boot_id",
+        "seq",
+        "uptime_ms",
+        "occupied",
+        "battery_mv",
+        "config_revision",
+        "health_flags"
+      ],
+      "additionalProperties": false
+    },
+    "esp_state_sync": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "const": 2
+        },
+        "type": {
+          "const": "STATE_SYNC"
+        },
+        "node_id": {
+          "$ref": "#/$defs/node"
+        },
+        "boot_id": {
+          "$ref": "#/$defs/boot"
+        },
+        "seq": {
+          "$ref": "#/$defs/seq"
+        },
+        "uptime_ms": {
+          "$ref": "#/$defs/u32"
+        },
+        "occupied": {
+          "type": "boolean"
+        },
+        "battery_mv": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 65534
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "config_revision": {
+          "$ref": "#/$defs/u32"
+        },
+        "health_flags": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3
+        },
+        "boot_generation": {
+          "$ref": "#/$defs/generation"
+        }
+      },
+      "required": [
+        "version",
+        "type",
+        "node_id",
+        "boot_id",
+        "seq",
+        "uptime_ms",
+        "occupied",
+        "battery_mv",
+        "config_revision",
+        "health_flags",
+        "boot_generation"
+      ],
+      "additionalProperties": false
+    },
+    "esp_battery_low": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "const": 2
+        },
+        "type": {
+          "const": "BATTERY_LOW"
+        },
+        "node_id": {
+          "$ref": "#/$defs/node"
+        },
+        "boot_id": {
+          "$ref": "#/$defs/boot"
+        },
+        "seq": {
+          "$ref": "#/$defs/seq"
+        },
+        "uptime_ms": {
+          "$ref": "#/$defs/u32"
+        },
+        "occupied": {
+          "type": "boolean"
+        },
+        "battery_mv": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 65534
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "config_revision": {
+          "$ref": "#/$defs/u32"
+        },
+        "health_flags": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3
+        }
+      },
+      "required": [
+        "version",
+        "type",
+        "node_id",
+        "boot_id",
+        "seq",
+        "uptime_ms",
+        "occupied",
+        "battery_mv",
+        "config_revision",
+        "health_flags"
+      ],
+      "additionalProperties": false
+    },
+    "esp_command_result": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "const": 2
+        },
+        "type": {
+          "const": "COMMAND_RESULT"
+        },
+        "node_id": {
+          "$ref": "#/$defs/node"
+        },
+        "boot_id": {
+          "$ref": "#/$defs/boot"
+        },
+        "seq": {
+          "$ref": "#/$defs/seq"
+        },
+        "uptime_ms": {
+          "$ref": "#/$defs/u32"
+        },
+        "occupied": {
+          "type": "boolean"
+        },
+        "battery_mv": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 65534
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "config_revision": {
+          "$ref": "#/$defs/u32"
+        },
+        "health_flags": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3
+        },
+        "command_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "status": {
+          "enum": [
+            "applied",
+            "already_applied",
+            "revision_conflict",
+            "stale_revision",
+            "busy",
+            "command_conflict"
+          ]
+        }
+      },
+      "required": [
+        "version",
+        "type",
+        "node_id",
+        "boot_id",
+        "seq",
+        "uptime_ms",
+        "occupied",
+        "battery_mv",
+        "config_revision",
+        "health_flags",
+        "command_id",
+        "status"
+      ],
+      "additionalProperties": false
+    },
+    "esp_reliable": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/esp_occupied"
+        },
+        {
+          "$ref": "#/$defs/esp_vacated"
+        },
+        {
+          "$ref": "#/$defs/esp_heartbeat"
+        },
+        {
+          "$ref": "#/$defs/esp_state_sync"
+        },
+        {
+          "$ref": "#/$defs/esp_battery_low"
+        },
+        {
+          "$ref": "#/$defs/esp_command_result"
+        }
+      ]
+    },
+    "sample": {
+      "type": "object",
+      "properties": {
+        "offset_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "ax": {
+          "type": "integer",
+          "minimum": -32768,
+          "maximum": 32767
+        },
+        "ay": {
+          "type": "integer",
+          "minimum": -32768,
+          "maximum": 32767
+        },
+        "az": {
+          "type": "integer",
+          "minimum": -32768,
+          "maximum": 32767
+        },
+        "gx": {
+          "type": "integer",
+          "minimum": -32768,
+          "maximum": 32767
+        },
+        "gy": {
+          "type": "integer",
+          "minimum": -32768,
+          "maximum": 32767
+        },
+        "gz": {
+          "type": "integer",
+          "minimum": -32768,
+          "maximum": 32767
+        }
+      },
+      "required": [
+        "offset_ms",
+        "ax",
+        "ay",
+        "az",
+        "gx",
+        "gy",
+        "gz"
+      ],
+      "additionalProperties": false
+    },
+    "esp_movement": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "const": 2
+        },
+        "type": {
+          "const": "MOVEMENT_BATCH"
+        },
+        "node_id": {
+          "$ref": "#/$defs/node"
+        },
+        "boot_id": {
+          "$ref": "#/$defs/boot"
+        },
+        "seq": {
+          "$ref": "#/$defs/seq"
+        },
+        "uptime_ms": {
+          "$ref": "#/$defs/u32"
+        },
+        "occupied": {
+          "type": "boolean"
+        },
+        "battery_mv": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 65534
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "config_revision": {
+          "$ref": "#/$defs/u32"
+        },
+        "health_flags": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3
+        },
+        "batch_start_ms": {
+          "$ref": "#/$defs/u32"
+        },
+        "duration_ms": {
+          "$ref": "#/$defs/u32"
+        },
+        "end_reason": {
+          "enum": [
+            "interval",
+            "capacity",
+            "stopped",
+            "vacant",
+            "disabled"
+          ]
+        },
+        "samples": {
+          "type": "array",
+          "maxItems": 75,
+          "items": {
+            "$ref": "#/$defs/sample"
+          }
+        }
+      },
+      "required": [
+        "version",
+        "type",
+        "node_id",
+        "boot_id",
+        "seq",
+        "uptime_ms",
+        "occupied",
+        "battery_mv",
+        "config_revision",
+        "health_flags",
+        "batch_start_ms",
+        "duration_ms",
+        "end_reason",
+        "samples"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "end_reason": {
+                "enum": [
+                  "interval",
+                  "capacity"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "samples": {
+                "minItems": 1
+              }
+            }
+          }
+        }
+      ]
+    },
+    "esp_movement_loss": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "const": 2
+        },
+        "type": {
+          "const": "MOVEMENT_LOSS"
+        },
+        "node_id": {
+          "$ref": "#/$defs/node"
+        },
+        "boot_id": {
+          "$ref": "#/$defs/boot"
+        },
+        "seq": {
+          "$ref": "#/$defs/seq"
+        },
+        "uptime_ms": {
+          "$ref": "#/$defs/u32"
+        },
+        "occupied": {
+          "type": "boolean"
+        },
+        "battery_mv": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 65534
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "config_revision": {
+          "$ref": "#/$defs/u32"
+        },
+        "health_flags": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3
+        },
+        "dropped_batches": {
+          "$ref": "#/$defs/seq"
+        }
+      },
+      "required": [
+        "version",
+        "type",
+        "node_id",
+        "boot_id",
+        "seq",
+        "uptime_ms",
+        "occupied",
+        "battery_mv",
+        "config_revision",
+        "health_flags",
+        "dropped_batches"
+      ],
+      "additionalProperties": false
+    },
+    "command_template": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "const": 2
+        },
+        "type": {
+          "const": "CONFIG_SET"
+        },
+        "node_id": {
+          "$ref": "#/$defs/node"
+        },
+        "command_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "revision": {
+          "$ref": "#/$defs/u32"
+        },
+        "heartbeat_s": {
+          "$ref": "#/$defs/seq"
+        },
+        "movement_batch_s": {
+          "$ref": "#/$defs/seq"
+        },
+        "movement_enabled": {
+          "type": "boolean"
+        },
+        "radio_windows_enabled": {
+          "type": "boolean"
+        },
+        "radio_interval_s": {
+          "$ref": "#/$defs/seq"
+        },
+        "radio_open_s": {
+          "$ref": "#/$defs/seq"
+        },
+        "radio_motion_tail_s": {
+          "$ref": "#/$defs/seq"
+        }
+      },
+      "required": [
+        "version",
+        "type",
+        "node_id",
+        "command_id",
+        "revision",
+        "heartbeat_s",
+        "movement_batch_s",
+        "movement_enabled",
+        "radio_windows_enabled",
+        "radio_interval_s",
+        "radio_open_s",
+        "radio_motion_tail_s"
+      ],
+      "additionalProperties": false
+    },
+    "command": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "expires_at_ms": {
+          "$ref": "#/$defs/safe_int"
+        },
+        "message": {
+          "$ref": "#/$defs/command_template"
+        }
+      },
+      "required": [
+        "schema_version",
+        "expires_at_ms",
+        "message"
+      ],
+      "additionalProperties": false
+    },
+    "event": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "bridge_id": {
+          "$ref": "#/$defs/id"
+        },
+        "publication_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "source_mac": {
+          "$ref": "#/$defs/mac"
+        },
+        "received_at_ms": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/safe_int"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "boot_generation": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/generation"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "message": {
+          "$ref": "#/$defs/esp_reliable"
+        }
+      },
+      "required": [
+        "schema_version",
+        "bridge_id",
+        "publication_id",
+        "source_mac",
+        "received_at_ms",
+        "boot_generation",
+        "message"
+      ],
+      "additionalProperties": false
+    },
+    "state": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "bridge_id": {
+          "$ref": "#/$defs/id"
+        },
+        "publication_id": {
+          "type": "null"
+        },
+        "source_mac": {
+          "$ref": "#/$defs/mac"
+        },
+        "received_at_ms": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/safe_int"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "boot_generation": {
+          "$ref": "#/$defs/generation"
+        },
+        "message": {
+          "$ref": "#/$defs/esp_reliable"
+        }
+      },
+      "required": [
+        "schema_version",
+        "bridge_id",
+        "publication_id",
+        "source_mac",
+        "received_at_ms",
+        "boot_generation",
+        "message"
+      ],
+      "additionalProperties": false
+    },
+    "movement": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "bridge_id": {
+          "$ref": "#/$defs/id"
+        },
+        "publication_id": {
+          "type": "null"
+        },
+        "source_mac": {
+          "$ref": "#/$defs/mac"
+        },
+        "received_at_ms": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/safe_int"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "boot_generation": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/generation"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "message": {
+          "$ref": "#/$defs/esp_movement"
+        }
+      },
+      "required": [
+        "schema_version",
+        "bridge_id",
+        "publication_id",
+        "source_mac",
+        "received_at_ms",
+        "boot_generation",
+        "message"
+      ],
+      "additionalProperties": false
+    },
+    "movement_loss": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "bridge_id": {
+          "$ref": "#/$defs/id"
+        },
+        "publication_id": {
+          "type": "null"
+        },
+        "source_mac": {
+          "$ref": "#/$defs/mac"
+        },
+        "received_at_ms": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/safe_int"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "boot_generation": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/generation"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "message": {
+          "$ref": "#/$defs/esp_movement_loss"
+        }
+      },
+      "required": [
+        "schema_version",
+        "bridge_id",
+        "publication_id",
+        "source_mac",
+        "received_at_ms",
+        "boot_generation",
+        "message"
+      ],
+      "additionalProperties": false
+    },
+    "report_update": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "type": {
+          "const": "COMMAND_STATUS"
+        },
+        "bridge_id": {
+          "$ref": "#/$defs/id"
+        },
+        "publication_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "command_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "report_seq": {
+          "$ref": "#/$defs/counter"
+        },
+        "status": {
+          "enum": [
+            "queued",
+            "delivered",
+            "applied",
+            "rejected",
+            "expired"
+          ]
+        },
+        "requested_revision": {
+          "$ref": "#/$defs/u32"
+        },
+        "expires_at_ms": {
+          "$ref": "#/$defs/safe_int"
+        },
+        "updated_at_ms": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/safe_int"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "late_result": {
+          "type": "boolean"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "message": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/esp_command_result"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "schema_version",
+        "type",
+        "bridge_id",
+        "publication_id",
+        "command_id",
+        "report_seq",
+        "status",
+        "requested_revision",
+        "expires_at_ms",
+        "updated_at_ms",
+        "late_result",
+        "reason",
+        "message"
+      ],
+      "additionalProperties": false
+    },
+    "report_status": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "type": {
+          "const": "COMMAND_STATUS"
+        },
+        "bridge_id": {
+          "$ref": "#/$defs/id"
+        },
+        "publication_id": {
+          "type": "null"
+        },
+        "command_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "report_seq": {
+          "$ref": "#/$defs/counter"
+        },
+        "status": {
+          "enum": [
+            "queued",
+            "delivered",
+            "applied",
+            "rejected",
+            "expired"
+          ]
+        },
+        "requested_revision": {
+          "$ref": "#/$defs/u32"
+        },
+        "expires_at_ms": {
+          "$ref": "#/$defs/safe_int"
+        },
+        "updated_at_ms": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/safe_int"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "late_result": {
+          "type": "boolean"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "message": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/esp_command_result"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "schema_version",
+        "type",
+        "bridge_id",
+        "publication_id",
+        "command_id",
+        "report_seq",
+        "status",
+        "requested_revision",
+        "expires_at_ms",
+        "updated_at_ms",
+        "late_result",
+        "reason",
+        "message"
+      ],
+      "additionalProperties": false
+    },
+    "receipt": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "type": {
+          "const": "MQTT_ACK"
+        },
+        "consumer_id": {
+          "$ref": "#/$defs/id"
+        },
+        "publication_id": {
+          "$ref": "#/$defs/uuid"
+        }
+      },
+      "required": [
+        "schema_version",
+        "type",
+        "consumer_id",
+        "publication_id"
+      ],
+      "additionalProperties": false
+    },
+    "command_error": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "bridge_id": {
+          "$ref": "#/$defs/id"
+        },
+        "error_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "command_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reason": {
+          "enum": [
+            "invalid_json",
+            "invalid_schema",
+            "unsupported_version",
+            "unknown_node",
+            "node_mismatch",
+            "retained_command",
+            "invalid_config",
+            "clock_untrusted",
+            "deadline_too_far",
+            "command_id_conflict",
+            "queue_full"
+          ]
+        },
+        "retryable": {
+          "type": "boolean"
+        },
+        "received_at_ms": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/safe_int"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "schema_version",
+        "bridge_id",
+        "error_id",
+        "command_id",
+        "reason",
+        "retryable",
+        "received_at_ms"
+      ],
+      "additionalProperties": false
+    },
+    "bridge_status": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "type": {
+          "const": "BRIDGE_STATUS"
+        },
+        "bridge_id": {
+          "$ref": "#/$defs/id"
+        },
+        "instance_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "status": {
+          "enum": [
+            "online",
+            "offline"
+          ]
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "observed_at_ms": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/safe_int"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "gateway_connected": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "gateway_ready": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "storage_ok": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "subscriptions_ready": {
+          "type": "boolean"
+        },
+        "pending_publications": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/safe_int"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "overdue_receipts": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/safe_int"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "quarantined_publications": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/safe_int"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "mqtt_best_effort_dropped": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/safe_int"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "schema_version",
+        "type",
+        "bridge_id",
+        "instance_id",
+        "status",
+        "reason",
+        "observed_at_ms"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "online"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "gateway_connected",
+              "gateway_ready",
+              "storage_ok",
+              "subscriptions_ready",
+              "pending_publications",
+              "overdue_receipts",
+              "quarantined_publications",
+              "mqtt_best_effort_dropped"
+            ]
+          }
+        }
+      ]
+    }
+  }
+}
