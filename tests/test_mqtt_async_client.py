@@ -276,3 +276,46 @@ class AsyncClientUnitTests(unittest.IsolatedAsyncioTestCase):
                 chair._flights[7][:2],
                 ("receipt", (await storage.pending_receipts())[0][0]),
             )
+
+    async def test_failing_notification_handler_is_logged_and_delivery_acked(self):
+        with tempfile.TemporaryDirectory() as directory:
+            storage = SQLiteStorage(Path(directory) / "backend.db")
+            await storage.initialize("chair-01", "pi-01", "backend-01")
+            self.addAsyncCleanup(storage.close)
+            client = Mock()
+            client.ack.return_value = mqtt.MQTT_ERR_SUCCESS
+            chair = ChairClient(
+                client,
+                ClientConfig(
+                    node_id="chair-01", bridge_id="pi-01", consumer_id="backend-01"
+                ),
+                storage,
+            )
+            chair._connected = True
+            chair._generation = chair._network_generation = 1
+            seen = []
+
+            @chair.on_bridge_status
+            async def broken(status):
+                raise KeyError("application bug")
+
+            @chair.on_bridge_status
+            async def healthy(status):
+                seen.append(status.status)
+
+            status = (
+                b'{"schema_version":1,"type":"BRIDGE_STATUS","bridge_id":"pi-01",'
+                b'"instance_id":"5fd84ecd-e28f-48fb-9b9b-f7041f040461",'
+                b'"status":"online","reason":null,"observed_at_ms":1800000000123,'
+                b'"gateway_connected":true,"gateway_ready":true,"storage_ok":true,'
+                b'"subscriptions_ready":true,"pending_publications":0,'
+                b'"overdue_receipts":0,"quarantined_publications":0,'
+                b'"mqtt_best_effort_dropped":0}'
+            )
+            with self.assertLogs("chair_mqtt.client", level="ERROR"):
+                await chair._incoming(
+                    1, 42, 1, True, "smartchair/v1/bridges/pi-01/status", status
+                )
+            self.assertFalse(chair.reconnect_required)
+            self.assertEqual(seen, ["online"])
+            client.ack.assert_called_once_with(42, 1)

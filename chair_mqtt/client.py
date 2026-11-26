@@ -229,6 +229,21 @@ class ChairClient:
         for callback in self._handlers[name]:
             await callback(*args)
 
+    async def _notify(self, name, *args):
+        """Run notification handlers; redelivery cannot repeat them, so log failures.
+
+        Movement is QoS 0 and command updates are already committed, so leaving a
+        delivery unacknowledged would only stall the client. Only ``on_event``,
+        which writes inside the fact's transaction, withholds acknowledgement.
+        """
+        for callback in self._handlers[name]:
+            try:
+                await callback(*args)
+            except Exception:
+                LOG.exception(
+                    "Chair %s handler failed; delivery still acknowledged", name
+                )
+
     def connect_options(self):
         """Return required MQTT 5 options to unpack into the client's ``connect``."""
         properties = mqtt.Properties(mqtt.PacketTypes.CONNECT)
@@ -459,27 +474,27 @@ class ChairClient:
                         topic, payload, qos=qos, retain=retain
                     )
                     if changed:
-                        await self._emit(
+                        await self._notify(
                             "command_update", CommandUpdate.model_validate(value)
                         )
                 elif target.kind == "report_update" and fresh:
-                    await self._emit(
+                    await self._notify(
                         "command_update", CommandUpdate.model_validate(value)
                     )
             elif target.kind == "movement":
-                await self._emit(
+                await self._notify(
                     "movement", MovementBatch.model_validate(value["message"])
                 )
             elif target.kind == "movement_loss":
-                await self._emit(
+                await self._notify(
                     "movement_loss", MovementLoss.model_validate(value["message"])
                 )
             elif target.kind == "state":
-                await self._emit("state", SensorState.model_validate(value))
+                await self._notify("state", SensorState.model_validate(value))
             elif target.kind == "bridge_status":
-                await self._emit("bridge_status", BridgeStatus.model_validate(value))
+                await self._notify("bridge_status", BridgeStatus.model_validate(value))
             elif target.kind == "command_error":
-                await self._emit("command_error", CommandError.model_validate(value))
+                await self._notify("command_error", CommandError.model_validate(value))
         except ContractError as error:
             await self.storage.reject(topic, payload, str(error))
         except Exception as error:
