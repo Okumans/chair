@@ -26,14 +26,14 @@ The client calls the connector like this:
 
 | Moment | Calls |
 | --- | --- |
-| `await chair.attach()` | `initialize(node_id, bridge_id, consumer_id)` once. |
+| `await chair.start()` (or entering `async with chair`) | `initialize(node_id, bridge_id, consumer_id)` once. |
 | Reliable event or report update arrives | `ingest(...)`; for reports, also `get_command` and `observe_report`. |
 | A delivery fails validation | `reject(topic, payload, reason)`. |
 | Worker tick (after each MQTT event, and at least every 250 ms) | `due_commands(now_ms)`, `command_submitted(...)` after each publish, `pending_receipts()`. |
 | Broker PUBACK for a receipt | `confirm_receipt(publication_id)`. |
 | `chair.set_config(...)` | `enqueue_command(request, now_ms)`. |
 | `chair.get_command(...)` / `command.wait()` | `due_commands(now_ms)` then `get_command(command_id)`. |
-| `await chair.detach()` | `close()` once, last. |
+| `await chair.stop()` (or leaving `async with chair`) | `close()` once, last. |
 
 Worker calls are sequential, but application tasks can call `set_config` and
 `get_command` at the same time, so every method must be safe to run concurrently
@@ -443,9 +443,10 @@ Use it exactly like `SQLiteStorage`. Note that the callback's transaction now
 uses PostgreSQL placeholders:
 
 ```python
-chair = ChairClient(client, ClientConfig(node_id="chair-01", bridge_id="pi-01",
-                                         consumer_id="backend-01"),
-                    PostgresStorage("postgresql://chair@db.example/chair"))
+chair = ChairClient(ClientConfig(node_id="chair-01", bridge_id="pi-01",
+                                 consumer_id="backend-01"),
+                    PostgresStorage("postgresql://chair@db.example/chair"),
+                    BrokerConfig(host="broker.example", client_id="chair-backend"))
 
 @chair.on_event
 async def event_received(event, transaction):

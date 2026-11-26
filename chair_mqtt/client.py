@@ -4,7 +4,6 @@ import asyncio
 import inspect
 import logging
 import math
-import ssl
 import threading
 import time
 import uuid
@@ -13,8 +12,10 @@ from typing import Literal
 import paho.mqtt.client as mqtt
 from pydantic import BaseModel, ConfigDict
 
+from . import connection
 from .contract import ContractError, route, validate
 from .models import (
+    BrokerConfig,
     ChairConfiguration,
     ClientConfig,
     CommandResult,
@@ -31,6 +32,8 @@ LOG = logging.getLogger(__name__)
 # Paho keeps a QoS 1 publish made during a disconnect race (NO_CONN) and sends it
 # under the same MID after reconnecting, so both results mean "in flight".
 _QUEUED = {mqtt.MQTT_ERR_SUCCESS, mqtt.MQTT_ERR_NO_CONN}
+# Drop the connection at most this often while deliveries need redelivery.
+RECOVERY_INTERVAL_S = 30.0
 
 
 class SensorEvent(BaseModel):
@@ -171,17 +174,20 @@ class CommandHandle:
 
 
 class ChairClient:
-    """Backend/controller interface for a caller-owned Paho MQTT 5 client.
+    """Backend/controller interface that owns its MQTT 5 connection.
 
-    Provide ``ClientConfig`` and a ``Storage`` connector, register async
-    callbacks, then await ``attach`` before connecting the supplied client.
-    The application owns connection, network loop and recovery.
+    Provide ``ClientConfig``, a ``Storage`` connector and ``BrokerConfig``,
+    register async callbacks, then ``async with`` the client (or await
+    ``start`` and ``stop``). The client connects, reconnects with backoff and
+    recovers unacknowledged deliveries itself.
     """
 
-    def __init__(self, mqtt_client, config: ClientConfig, storage):
+    def __init__(self, config: ClientConfig, storage, broker: BrokerConfig):
         if not isinstance(config, ClientConfig):
             raise TypeError("config must be ClientConfig")
-        self.client, self.config, self.storage = mqtt_client, config, storage
+        if not isinstance(broker, BrokerConfig):
+            raise TypeError("broker must be BrokerConfig")
+        self.config, self.storage, self.broker = config, storage, broker
         self._handlers = {
             name: []
             for name in (
@@ -194,12 +200,11 @@ class ChairClient:
                 "command_error",
             )
         }
-        self._old = {}
-        self._installed = {}
         self._queue = asyncio.Queue(maxsize=128)
         self._loop = self._task = None
-        self._attached = self._connected = self._ready = False
-        self._stopping = self._draining = self._ever_connected = False
+        self._started = self._attached = self._connected = self._ready = False
+        self._stopping = self._draining = False
+        self._next_recovery = 0.0
         self._generation = 0
         self._network_generation = 0
         self._network_lock = threading.Lock()
@@ -207,10 +212,30 @@ class ChairClient:
         self._subscription_deadline = 0.0
         self._flights = {}
         self._inflight_receipts = set()
-        self._previous_manual_ack = None
         self._command_waiters = {}
         self.error = None
         self.reconnect_required = False
+        node, bridge = config.node_id, config.bridge_id
+        self._filters = [
+            f"smartchair/v1/nodes/{node}/events",
+            f"smartchair/v1/nodes/{node}/state",
+            f"smartchair/v1/nodes/{node}/movement",
+            f"smartchair/v1/nodes/{node}/movement/loss",
+            f"smartchair/v1/nodes/{node}/commands/+/updates",
+            f"smartchair/v1/nodes/{node}/commands/+/status",
+            f"smartchair/v1/nodes/{node}/command_errors",
+            f"smartchair/v1/bridges/{bridge}/status",
+        ]
+        self._mqtt = connection.create_client(broker)
+        self._mqtt.on_connect = self._on_connect
+        self._mqtt.on_disconnect = self._on_disconnect
+        self._mqtt.on_message = self._message
+        self._mqtt.on_subscribe = lambda c, u, mid, r, p: self._enqueue(
+            ("subscribe", mid, r)
+        )
+        self._mqtt.on_publish = lambda c, u, mid, r, p: self._enqueue(
+            ("publish", mid, r)
+        )
 
     def _watch_command(self, command_id):
         """Return a future resolved when this client sees the command advance."""
@@ -287,18 +312,6 @@ class ChairClient:
                     "Chair %s handler failed; delivery still acknowledged", name
                 )
 
-    def connect_options(self):
-        """Return required MQTT 5 options to unpack into the client's ``connect``."""
-        properties = mqtt.Properties(mqtt.PacketTypes.CONNECT)
-        properties.SessionExpiryInterval = 86400
-        properties.ReceiveMaximum = 16
-        properties.MaximumPacketSize = 65536
-        return {
-            "keepalive": 30,
-            "clean_start": mqtt.MQTT_CLEAN_START_FIRST_ONLY,
-            "properties": properties,
-        }
-
     @property
     def ready(self):
         """Whether all chair subscriptions have been granted at QoS 1."""
@@ -319,68 +332,54 @@ class ChairClient:
 
         self._loop.call_soon_threadsafe(put)
 
-    def _chain(self, name, fn):
-        previous = getattr(self.client, name)
-        self._old[name] = previous
+    async def start(self):
+        """Initialize storage and connect in the background; return this client.
 
-        def callback(*args):
-            fn(*args)
-            if previous:
-                try:
-                    previous(*args)
-                except Exception:
-                    LOG.exception("Application MQTT callback failed")
-
-        setattr(self.client, name, callback)
-        self._installed[name] = callback
-
-    async def attach(self):
-        """Initialize storage and install MQTT handlers before the client connects.
-
-        Returns this client. Call once from the event loop used for callbacks.
-        Enables manual acknowledgements for the entire supplied Paho client.
+        Does not wait for the broker: sensor facts and commands are durable, and
+        ``ready`` reports when the chair subscriptions are granted. Call once,
+        on the event loop that runs the callbacks.
         """
-        if self._attached or self.client.is_connected():
-            raise RuntimeError("attach once before connecting")
-        if (
-            self.client.callback_api_version != mqtt.CallbackAPIVersion.VERSION2
-            or self.client._protocol != mqtt.MQTTv5
-        ):
-            raise ValueError("Paho MQTT 5 with callback API version 2 is required")
+        if self._started:
+            raise RuntimeError("a ChairClient can be started only once")
+        self._started = True
         self._loop = asyncio.get_running_loop()
         await self.storage.initialize(
             self.config.node_id, self.config.bridge_id, self.config.consumer_id
         )
-        self._previous_manual_ack = self.client._manual_ack
-        self.client.manual_ack_set(True)
-        self._chain("on_connect", self._on_connect)
-        self._chain("on_disconnect", self._on_disconnect)
-        self._chain(
-            "on_subscribe", lambda c, u, mid, r, p: self._enqueue(("subscribe", mid, r))
-        )
-        self._chain(
-            "on_publish", lambda c, u, mid, r, p: self._enqueue(("publish", mid, r))
-        )
-        self._chain(
-            "on_unsubscribe",
-            lambda c, u, mid, r, p: self._enqueue(("unsubscribe", mid, r)),
-        )
-        node, bridge = self.config.node_id, self.config.bridge_id
-        self._filters = [
-            f"smartchair/v1/nodes/{node}/events",
-            f"smartchair/v1/nodes/{node}/state",
-            f"smartchair/v1/nodes/{node}/movement",
-            f"smartchair/v1/nodes/{node}/movement/loss",
-            f"smartchair/v1/nodes/{node}/commands/+/updates",
-            f"smartchair/v1/nodes/{node}/commands/+/status",
-            f"smartchair/v1/nodes/{node}/command_errors",
-            f"smartchair/v1/bridges/{bridge}/status",
-        ]
-        for topic in self._filters:
-            self.client.message_callback_add(topic, self._message)
         self._attached = True
         self._task = asyncio.create_task(self._worker())
+        try:
+            connection.connect(self._mqtt, self.broker)
+        except BaseException:
+            await self.stop()
+            raise
         return self
+
+    async def stop(self):
+        """Disconnect, stop the worker and close storage; the client cannot restart.
+
+        The next client starts a clean broker session: the bridge republishes
+        reliable facts until it receives their receipts, and receipts not yet
+        confirmed are resent from storage.
+        """
+        if not self._attached:
+            return
+        self._draining = self._stopping = True
+        try:
+            await self._task
+        finally:
+            try:
+                await asyncio.to_thread(connection.close, self._mqtt, graceful=True)
+            finally:
+                self._attached = False
+                await self.storage.close()
+                self._wake_commands()  # Pending waits re-check and raise RuntimeError.
+
+    async def __aenter__(self):
+        return await self.start()
+
+    async def __aexit__(self, *exc_info):
+        await self.stop()
 
     def _message(self, client, userdata, message):
         with self._network_lock:
@@ -401,25 +400,7 @@ class ChairClient:
         with self._network_lock:
             self._network_generation += 1
             generation = self._network_generation
-        security_error = None
-        if not reason.is_failure:
-            context = getattr(client, "_ssl_context", None)
-            if getattr(client, "_ssl", False):
-                if (
-                    context is None
-                    or context.verify_mode != ssl.CERT_REQUIRED
-                    or not context.check_hostname
-                    or getattr(client, "_tls_insecure", False)
-                ):
-                    security_error = "MQTT TLS must verify certificate and hostname"
-            elif not (
-                self.config.allow_local_plaintext
-                and getattr(client, "_host", None) in {"localhost", "127.0.0.1", "::1"}
-            ):
-                security_error = (
-                    "MQTT plaintext requires explicit loopback configuration"
-                )
-        self._enqueue(("connect", generation, reason, security_error))
+        self._enqueue(("connect", generation, reason))
 
     def _on_disconnect(self, client, userdata, flags, reason, properties):
         with self._network_lock:
@@ -493,7 +474,7 @@ class ChairClient:
                 with self._network_lock:
                     still_current = generation == self._network_generation
                 if qos == 1 and target.node == self.config.node_id and still_current:
-                    self.client.ack(mid, qos)
+                    self._mqtt.ack(mid, qos)
                 return
             target, value = validate(
                 topic,
@@ -554,7 +535,7 @@ class ChairClient:
             and self._connected
             and still_current
         ):
-            if self.client.ack(mid, qos) != mqtt.MQTT_ERR_SUCCESS:
+            if self._mqtt.ack(mid, qos) != mqtt.MQTT_ERR_SUCCESS:
                 self.reconnect_required = True
 
     async def _tick(self):
@@ -583,7 +564,7 @@ class ChairClient:
             props.MessageExpiryInterval = max(1, math.ceil((expires - now) / 1000))
             props.PayloadFormatIndicator = 1
             props.ContentType = "application/json"
-            info = self.client.publish(
+            info = self._mqtt.publish(
                 topic, payload, qos=1, retain=False, properties=props
             )
             if info.rc in _QUEUED:
@@ -597,7 +578,7 @@ class ChairClient:
             props = mqtt.Properties(mqtt.PacketTypes.PUBLISH)
             props.PayloadFormatIndicator = 1
             props.ContentType = "application/json"
-            info = self.client.publish(
+            info = self._mqtt.publish(
                 topic, payload, qos=1, retain=False, properties=props
             )
             if info.rc in _QUEUED:
@@ -622,11 +603,8 @@ class ChairClient:
                     if kind == "connect":
                         self._generation = args[0]
                         self._connected = not args[1].is_failure
-                        self._ever_connected |= self._connected
                         if args[1].is_failure:
-                            raise RuntimeError("MQTT connection rejected")
-                        if args[2]:
-                            raise RuntimeError(args[2])
+                            raise RuntimeError(f"MQTT connection refused: {args[1]}")
                         self._ready = False
                         self._subscriptions.clear()
                         self._subscription_deadline = time.monotonic() + 30
@@ -638,7 +616,7 @@ class ChairClient:
                             self.error = None
                             self.reconnect_required = False
                             for topic in self._filters:
-                                rc, mid = self.client.subscribe(
+                                rc, mid = self._mqtt.subscribe(
                                     topic,
                                     options=mqtt.SubscribeOptions(
                                         qos=1, retainAsPublished=True
@@ -672,53 +650,21 @@ class ChairClient:
                                 raise RuntimeError("MQTT publication rejected")
                             if flight_kind == "receipt":
                                 await self.storage.confirm_receipt(key)
-                    elif (
-                        kind == "unsubscribe"
-                        and getattr(self, "_unsubscribe_mid", None) == args[0]
-                    ):
-                        if not self._unsubscribe_result.done():
-                            self._unsubscribe_result.set_result(
-                                len(args[1]) == len(self._filters)
-                                and all(not r.is_failure for r in args[1])
-                            )
                 await self._tick()
             except Exception as error:
                 self.error = str(error)
                 self.reconnect_required = True
                 LOG.exception("Chair client worker failed")
+            self._recover()
 
-    async def detach(self):
-        """Stop processing and remove subscriptions without disconnecting Paho.
-
-        Return True if it was safe to release handlers. On False, abort and
-        discard the MQTT client; if still connected, call detach again after
-        aborting to finish closing storage. Do not reuse this facade.
-        """
-        if not self._attached:
-            return False
-        self._draining = True
-        released = not self._ever_connected
-        if self.client.is_connected():
-            self._unsubscribe_result = self._loop.create_future()
-            rc, self._unsubscribe_mid = self.client.unsubscribe(self._filters)
-            if rc == mqtt.MQTT_ERR_SUCCESS:
-                try:
-                    released = await asyncio.wait_for(self._unsubscribe_result, 5)
-                except asyncio.TimeoutError:
-                    released = False
-            if not released and self.client.is_connected():
-                return False
-        self._stopping = True
-        await self._task
-        if released:
-            for topic in self._filters:
-                self.client.message_callback_remove(topic)
-        for name, callback in self._installed.items():
-            if getattr(self.client, name) is callback:
-                setattr(self.client, name, self._old[name])
-        if released:
-            self.client.manual_ack_set(self._previous_manual_ack)
-        self._attached = False
-        await self.storage.close()
-        self._wake_commands()  # Pending waits re-check and raise RuntimeError.
-        return released
+    def _recover(self):
+        """Drop a connection that needs redelivery; Paho then reconnects."""
+        if (
+            self.reconnect_required
+            and self._connected
+            and not self._draining
+            and time.monotonic() >= self._next_recovery
+        ):
+            LOG.warning("Reconnecting MQTT to recover deliveries: %s", self.error)
+            self._next_recovery = time.monotonic() + RECOVERY_INTERVAL_S
+            connection.abort(self._mqtt)

@@ -9,6 +9,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    SecretStr,
     StrictBool,
     field_validator,
     model_validator,
@@ -22,8 +23,47 @@ ID_RE = re.compile(r"[A-Za-z0-9_-]{1,32}\Z")
 MAC_RE = re.compile(r"(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}\Z")
 
 
+LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+
+
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
+
+
+class BrokerConfig(StrictModel):
+    """The MQTT 5 broker that the library connects to and owns a session with.
+
+    TLS verifies the broker certificate and host name before CONNECT, using
+    ``ca_file`` or, when it is omitted, the system trust store. ``plaintext``
+    disables TLS and is accepted only for a loopback host.
+    """
+
+    host: str = Field(min_length=1)
+    port: Annotated[int, Field(strict=True, ge=1, le=65535)] = 8883
+    client_id: str = Field(min_length=1, max_length=64)
+    ca_file: Path | None = None
+    username: str | None = None
+    password: SecretStr | None = None
+    plaintext: StrictBool = False
+
+    @field_validator("ca_file", mode="before")
+    @classmethod
+    def valid_ca_file(cls, value):
+        if value is None:
+            return None
+        if not isinstance(value, (str, Path)) or str(value) in {"", "."}:
+            raise ValueError("CA file must be a path")
+        return Path(value)
+
+    @model_validator(mode="after")
+    def validate_security(self):
+        if self.plaintext and self.host not in LOOPBACK_HOSTS:
+            raise ValueError("plaintext MQTT is permitted only to a loopback host")
+        if self.plaintext and self.ca_file is not None:
+            raise ValueError("a CA file requires TLS; remove plaintext")
+        if self.password is not None and self.username is None:
+            raise ValueError("a password requires a username")
+        return self
 
 
 class BridgeConfig(StrictModel):
@@ -119,12 +159,11 @@ class ConfigRequest(StrictModel):
 
 
 class ClientConfig(StrictModel):
-    """Backend/controller identities and optional loopback-only plaintext setting."""
+    """Backend/controller identities; the broker is configured by BrokerConfig."""
 
     node_id: str
     bridge_id: str
     consumer_id: str
-    allow_local_plaintext: StrictBool = False
 
     @field_validator("node_id")
     @classmethod

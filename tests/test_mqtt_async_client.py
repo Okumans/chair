@@ -12,31 +12,118 @@ from unittest.mock import Mock
 
 import paho.mqtt.client as mqtt
 
-from chair_mqtt import ChairClient, ChairConfiguration, ClientConfig, SQLiteStorage
+from chair_mqtt import (
+    BrokerConfig,
+    ChairClient,
+    ChairConfiguration,
+    ClientConfig,
+    SQLiteStorage,
+    connection,
+)
 from chair_mqtt.store import MqttStore
 
 MOSQUITTO = shutil.which("mosquitto")
+CONFIG = ClientConfig(node_id="chair-01", bridge_id="pi-01", consumer_id="backend-01")
+
+
+def loopback(port):
+    return BrokerConfig(
+        host="127.0.0.1", port=port, client_id="backend-test", plaintext=True
+    )
+
+
+def free_port():
+    with socket.socket() as reserved:
+        reserved.bind(("127.0.0.1", 0))
+        return reserved.getsockname()[1]
+
+
+def start_broker(test, directory):
+    """Run a private loopback Mosquitto for the test and return its port."""
+    port = free_port()
+    conf = Path(directory) / "mosquitto.conf"
+    conf.write_text(
+        f"listener {port} 127.0.0.1\nallow_anonymous true\npersistence false\n"
+    )
+    broker = subprocess.Popen(
+        [MOSQUITTO, "-c", str(conf)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    test.addCleanup(broker.wait, timeout=5)
+    test.addCleanup(broker.terminate)
+    deadline = time.monotonic() + 5
+    while True:
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.1):
+                return port
+        except OSError:
+            if time.monotonic() >= deadline:
+                test.fail("private broker did not start")
+            time.sleep(0.05)
+
+
+class AsyncClientLifecycleTests(unittest.IsolatedAsyncioTestCase):
+    async def test_start_does_not_wait_for_an_unreachable_broker(self):
+        with tempfile.TemporaryDirectory() as directory:
+            chair = ChairClient(
+                CONFIG,
+                SQLiteStorage(Path(directory) / "backend.db"),
+                loopback(free_port()),
+            )
+            started = time.monotonic()
+            async with chair:
+                await asyncio.sleep(0.3)
+                self.assertFalse(chair.connected)
+            self.assertLess(time.monotonic() - started, 3)
+
+    @unittest.skipUnless(MOSQUITTO, "private Mosquitto broker unavailable")
+    async def test_failed_event_handler_is_redelivered_after_the_client_reconnects(
+        self,
+    ):
+        with tempfile.TemporaryDirectory() as directory:
+            port = start_broker(self, directory)
+            chair = ChairClient(
+                CONFIG, SQLiteStorage(Path(directory) / "backend.db"), loopback(port)
+            )
+            attempts = []
+
+            @chair.on_event
+            async def flaky(event, transaction):
+                attempts.append(event.message.seq)
+                if len(attempts) == 1:
+                    raise RuntimeError("application not ready yet")
+
+            async def until(predicate):
+                for _ in range(200):
+                    if predicate():
+                        return
+                    await asyncio.sleep(0.05)
+                self.fail(f"timed out: {chair.error}")
+
+            topic, payload = sensor_publication(directory)
+            publisher = mqtt.Client(
+                mqtt.CallbackAPIVersion.VERSION2, protocol=mqtt.MQTTv5
+            )
+            publisher.connect("127.0.0.1", port)
+            publisher.loop_start()
+            self.addCleanup(publisher.loop_stop)
+            self.addCleanup(publisher.disconnect)
+            async with chair:
+                await until(lambda: chair.ready)
+                with self.assertLogs("chair_mqtt.client", level="ERROR"):
+                    publisher.publish(topic, payload, qos=1)
+                    # Without application help, the client drops the connection so
+                    # the broker redelivers the unacknowledged event.
+                    await until(lambda: attempts == [1, 1] and chair.ready)
+                self.assertFalse(chair.reconnect_required)
 
 
 @unittest.skipUnless(MOSQUITTO, "private Mosquitto broker unavailable")
 class AsyncClientBrokerTests(unittest.IsolatedAsyncioTestCase):
     async def test_receipt_and_async_command_round_trip(self):
         with tempfile.TemporaryDirectory() as directory:
-            with socket.socket() as reserved:
-                reserved.bind(("127.0.0.1", 0))
-                port = reserved.getsockname()[1]
-            conf = Path(directory) / "mosquitto.conf"
-            conf.write_text(
-                f"listener {port} 127.0.0.1\nallow_anonymous true\npersistence false\n"
-            )
-            broker = subprocess.Popen(
-                [MOSQUITTO, "-c", str(conf)],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            self.addCleanup(broker.wait, timeout=5)
-            self.addCleanup(broker.terminate)
-            await asyncio.sleep(0.2)
+            port = start_broker(self, directory)
             observer = mqtt.Client(
                 mqtt.CallbackAPIVersion.VERSION2, protocol=mqtt.MQTTv5
             )
@@ -50,20 +137,8 @@ class AsyncClientBrokerTests(unittest.IsolatedAsyncioTestCase):
             self.addCleanup(observer.loop_stop)
             self.addCleanup(observer.disconnect)
 
-            client = mqtt.Client(
-                mqtt.CallbackAPIVersion.VERSION2,
-                client_id="backend-test",
-                protocol=mqtt.MQTTv5,
-            )
             chair = ChairClient(
-                client,
-                ClientConfig(
-                    node_id="chair-01",
-                    bridge_id="pi-01",
-                    consumer_id="backend-01",
-                    allow_local_plaintext=True,
-                ),
-                SQLiteStorage(Path(directory) / "backend.db"),
+                CONFIG, SQLiteStorage(Path(directory) / "backend.db"), loopback(port)
             )
             received = []
 
@@ -77,10 +152,7 @@ class AsyncClientBrokerTests(unittest.IsolatedAsyncioTestCase):
                 )
                 received.append(event.message.seq)
 
-            await chair.attach()
-            client.connect("127.0.0.1", port, **chair.connect_options())
-            client.loop_start()
-            try:
+            async with chair:
 
                 async def until(predicate):
                     for _ in range(100):
@@ -89,7 +161,7 @@ class AsyncClientBrokerTests(unittest.IsolatedAsyncioTestCase):
                         await asyncio.sleep(0.05)
                     self.fail(f"timed out: {chair.error}")
 
-                await until(lambda: chair._ready)
+                await until(lambda: chair.ready)
                 source = MqttStore(
                     Path(directory) / "source.db",
                     bridge_id="pi-01",
@@ -123,11 +195,9 @@ class AsyncClientBrokerTests(unittest.IsolatedAsyncioTestCase):
                         and any(t.endswith("/receipts") for t, p in messages)
                     )
                 )
-                client.disconnect()
-                await until(lambda: not chair._connected)
-                client.loop_stop()
-                # Paho 2.x does not close the loop socketpair in loop_stop.
-                client._reset_sockets(sockpair_only=True)
+                # Drop the network; the client reconnects and resumes its session.
+                connection.abort(chair._mqtt)
+                await until(lambda: not chair.connected)
                 heartbeat = dict(
                     version=2,
                     type="HEARTBEAT",
@@ -145,9 +215,7 @@ class AsyncClientBrokerTests(unittest.IsolatedAsyncioTestCase):
                     "SELECT topic,payload FROM mqtt_outbox ORDER BY rowid DESC LIMIT 1"
                 ).fetchone()
                 observer.publish(event[0], event[1], qos=1).wait_for_publish(timeout=3)
-                client.reconnect()
-                client.loop_start()
-                await until(lambda: chair._ready and received == [1, 2])
+                await until(lambda: chair.ready and received == [1, 2])
                 command = await chair.set_config(
                     ChairConfiguration(
                         revision=1,
@@ -209,10 +277,6 @@ class AsyncClientBrokerTests(unittest.IsolatedAsyncioTestCase):
                 result = await command.wait(timeout=5)
                 self.assertEqual(result.status, "applied")
                 source.db.close()
-                self.assertTrue(await chair.detach())
-            finally:
-                client.disconnect()
-                client.loop_stop()
 
 
 def sensor_publication(directory):
@@ -261,13 +325,8 @@ class AsyncClientUnitTests(unittest.IsolatedAsyncioTestCase):
             client.publish.return_value = SimpleNamespace(
                 rc=mqtt.MQTT_ERR_NO_CONN, mid=7
             )
-            chair = ChairClient(
-                client,
-                ClientConfig(
-                    node_id="chair-01", bridge_id="pi-01", consumer_id="backend-01"
-                ),
-                storage,
-            )
+            chair = ChairClient(CONFIG, storage, loopback(1))
+            chair._mqtt = client
             chair._connected = chair._ready = True
             await chair._tick()
             await chair._tick()
@@ -284,13 +343,8 @@ class AsyncClientUnitTests(unittest.IsolatedAsyncioTestCase):
             self.addAsyncCleanup(storage.close)
             client = Mock()
             client.ack.return_value = mqtt.MQTT_ERR_SUCCESS
-            chair = ChairClient(
-                client,
-                ClientConfig(
-                    node_id="chair-01", bridge_id="pi-01", consumer_id="backend-01"
-                ),
-                storage,
-            )
+            chair = ChairClient(CONFIG, storage, loopback(1))
+            chair._mqtt = client
             chair._connected = True
             chair._generation = chair._network_generation = 1
             seen = []
@@ -330,20 +384,10 @@ class AsyncClientUnitTests(unittest.IsolatedAsyncioTestCase):
             return await original(command_id)
 
         storage.get_command = counted
-        client = Mock()
-        client.is_connected.return_value = False
-        client.callback_api_version = mqtt.CallbackAPIVersion.VERSION2
-        client._protocol = mqtt.MQTTv5
-        client._manual_ack = False
-        client.ack.return_value = mqtt.MQTT_ERR_SUCCESS
-        chair = ChairClient(
-            client,
-            ClientConfig(
-                node_id="chair-01", bridge_id="pi-01", consumer_id="backend-01"
-            ),
-            storage,
-        )
-        await chair.attach()
+        chair = ChairClient(CONFIG, storage, loopback(1))
+        chair._mqtt = Mock()  # Offline: tests feed deliveries to _incoming directly.
+        chair._mqtt.ack.return_value = mqtt.MQTT_ERR_SUCCESS
+        await chair.start()
         chair._connected = True
         chair._generation = chair._network_generation = 1
         return chair, storage, calls
@@ -351,7 +395,7 @@ class AsyncClientUnitTests(unittest.IsolatedAsyncioTestCase):
     async def test_command_wait_sleeps_until_its_report_advances(self):
         with tempfile.TemporaryDirectory() as directory:
             chair, storage, calls = await self.command_client(directory)
-            self.addAsyncCleanup(chair.detach)
+            self.addAsyncCleanup(chair.stop)
             command = await chair.set_config(
                 ChairConfiguration(
                     revision=1,
@@ -410,7 +454,7 @@ class AsyncClientUnitTests(unittest.IsolatedAsyncioTestCase):
     async def test_command_wait_reports_unknown_admission_at_expiry(self):
         with tempfile.TemporaryDirectory() as directory:
             chair, _, _ = await self.command_client(directory)
-            self.addAsyncCleanup(chair.detach)
+            self.addAsyncCleanup(chair.stop)
             command = await chair.set_config(
                 ChairConfiguration(
                     revision=1,
@@ -427,7 +471,7 @@ class AsyncClientUnitTests(unittest.IsolatedAsyncioTestCase):
             result = await command.wait(timeout=3)
             self.assertEqual(result.status, "admission_unknown")
 
-    async def test_detach_releases_an_unbounded_command_wait(self):
+    async def test_stop_releases_an_unbounded_command_wait(self):
         with tempfile.TemporaryDirectory() as directory:
             chair, _, _ = await self.command_client(directory)
             command = await chair.set_config(
@@ -445,6 +489,6 @@ class AsyncClientUnitTests(unittest.IsolatedAsyncioTestCase):
             )
             waiter = asyncio.create_task(command.wait())
             await asyncio.sleep(0.1)
-            self.assertTrue(await chair.detach())
+            await chair.stop()
             with self.assertRaises(RuntimeError):
                 await asyncio.wait_for(waiter, 2)

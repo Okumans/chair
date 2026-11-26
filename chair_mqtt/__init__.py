@@ -24,6 +24,7 @@ _EXPORTS = {
     "ChairMqttBridge": ".facade",
     "BridgeConfig": ".models",
     "BridgeHealth": ".models",
+    "BrokerConfig": ".models",
     "ChairConfiguration": ".models",
     "ClientConfig": ".models",
     "CommandNotice": ".models",
@@ -46,6 +47,7 @@ __all__ = [
     "BridgeConfig",
     "BridgeHealth",
     "BridgeStatus",
+    "BrokerConfig",
     "ChairClient",
     "ChairConfiguration",
     "ChairMqttBridge",
@@ -106,6 +108,7 @@ if TYPE_CHECKING:
     from .models import (
         BridgeConfig,
         BridgeHealth,
+        BrokerConfig,
         ChairConfiguration,
         ClientConfig,
         CommandNotice,
