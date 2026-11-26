@@ -28,6 +28,10 @@ from .models import (
 
 LOG = logging.getLogger(__name__)
 
+# Paho keeps a QoS 1 publish made during a disconnect race (NO_CONN) and sends it
+# under the same MID after reconnecting, so both results mean "in flight".
+_QUEUED = {mqtt.MQTT_ERR_SUCCESS, mqtt.MQTT_ERR_NO_CONN}
+
 
 class SensorEvent(BaseModel):
     """A reliable sensor publication; ``message`` contains its typed ESP data."""
@@ -523,7 +527,7 @@ class ChairClient:
             info = self.client.publish(
                 topic, payload, qos=1, retain=False, properties=props
             )
-            if info.rc == mqtt.MQTT_ERR_SUCCESS:
+            if info.rc in _QUEUED:
                 self._flights[info.mid] = ("command", command_id, time.monotonic() + 30)
                 await self.storage.command_submitted(command_id, now)
             else:
@@ -537,7 +541,7 @@ class ChairClient:
             info = self.client.publish(
                 topic, payload, qos=1, retain=False, properties=props
             )
-            if info.rc == mqtt.MQTT_ERR_SUCCESS:
+            if info.rc in _QUEUED:
                 self._flights[info.mid] = (
                     "receipt",
                     publication_id,
