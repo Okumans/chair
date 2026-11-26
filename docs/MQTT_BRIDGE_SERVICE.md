@@ -14,8 +14,12 @@ the example configuration contains no credentials. Broker TLS with certificate
 and hostname verification is required except for explicitly enabled loopback
 development.
 
-The service starts the MQTT client and the serial adapter, and systemd restarts
-it after a reported fatal protocol or connection recovery error. Back up any
+The service starts the serial adapter immediately and connects to the broker in
+the background, so sensor facts are acknowledged and stored durably while the
+broker or network is unavailable; they are published once it is reachable.
+When the bridge needs MQTT redelivery it drops and re-establishes the broker
+connection itself. Systemd restarts the service only after a fatal protocol
+error or a storage failure, which a reconnect cannot fix. Back up any
 existing bridge database before upgrading; the MQTT schema upgrade prevents the
 older protocol-only bridge from opening it. Deployment and hardware acceptance
 have not yet been performed.

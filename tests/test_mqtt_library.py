@@ -726,6 +726,17 @@ class CoordinatorTests(StoreFixture):
             store.db.execute("SELECT state FROM mqtt_outbox").fetchone()[0], "waiting"
         )
 
+    def test_puback_deadline_does_not_expire_while_disconnected(self):
+        store, client, worker = self.coordinator()
+        self.ready(worker, client)
+        store.accept(event(), 1800000000)
+        worker.tick(1800000000)
+        self.assertTrue(worker.flights)
+        worker.on_disconnect()
+        worker.monotonic = lambda: 1000.0
+        worker.tick(1800000900)
+        self.assertFalse(worker.reconnect_required)
+
     def test_unrelated_client_suback_does_not_break_facade(self):
         _, client, worker = self.coordinator()
         worker.on_subscribe(999, [SimpleNamespace(is_failure=False, value=0)])

@@ -4,7 +4,9 @@ import argparse
 import logging
 import os
 import signal
+import socket
 import threading
+import time
 import tomllib
 from pathlib import Path
 
@@ -14,6 +16,16 @@ from .facade import ChairMqttBridge
 from .models import BridgeConfig
 
 LOG = logging.getLogger(__name__)
+
+
+def _abort_transport(client):
+    """Drop the connection without DISCONNECT; Paho's loop then reconnects."""
+    sock = client.socket()
+    if sock is not None:
+        try:
+            sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
 
 
 def main(argv=None):
@@ -49,16 +61,27 @@ def main(argv=None):
         signal.signal(sig, lambda *_: stopping.set())
     started = False
     try:
-        client.connect(
+        # Connect in Paho's network thread so an unreachable broker does not stop
+        # the gateway; sensor facts are buffered durably until it is reachable.
+        client.connect_async(
             broker["host"], broker.get("port", 8883), **bridge.connect_options()
         )
         client.loop_start()
         started = True
         bridge.start_gateway(settings["gateway"]["port"])
+        aborted_at = None
         while not stopping.wait(1):
             health = bridge.health()
-            if health.fatal or health.reconnect_required:
-                raise RuntimeError(f"bridge requires recovery: {health}")
+            if health.fatal or not health.storage_ok:
+                raise RuntimeError(f"bridge requires restart: {health}")
+            if not health.mqtt_connected:
+                aborted_at = None  # Paho's loop is already reconnecting.
+            elif health.reconnect_required and (
+                aborted_at is None or time.monotonic() - aborted_at >= 30
+            ):
+                LOG.warning("Reconnecting MQTT to recover unacknowledged deliveries")
+                _abort_transport(client)
+                aborted_at = time.monotonic()
     finally:
         confirmed = bridge.detach()
         if started:
