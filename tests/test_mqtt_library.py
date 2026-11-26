@@ -5,6 +5,7 @@ import pty
 import re
 import select
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import time
@@ -16,11 +17,7 @@ from unittest.mock import Mock, patch
 
 import paho.mqtt.client as mqtt
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
-
-from protocol_bridge import Bridge, Store  # noqa: E402
-
-from chair_mqtt import (  # noqa: E402
+from chair_mqtt import (
     BridgeConfig,
     ChairMqttBridge,
     ConfigRequest,
@@ -28,10 +25,11 @@ from chair_mqtt import (  # noqa: E402
     MovementBatch,
     StateSync,
 )
-from chair_mqtt.backend import BackendLedger  # noqa: E402
-from chair_mqtt.contract import ContractError, validate  # noqa: E402
-from chair_mqtt.coordinator import Coordinator, Oversized  # noqa: E402
-from chair_mqtt.store import MQTT_SCHEMA_VERSION, CommandAdmissionError, MqttStore  # noqa: E402
+from chair_mqtt.backend import BackendLedger
+from chair_mqtt.contract import ContractError, validate
+from chair_mqtt.coordinator import Coordinator, Oversized
+from chair_mqtt.protocol_bridge import Bridge, Store
+from chair_mqtt.store import MQTT_SCHEMA_VERSION, CommandAdmissionError, MqttStore
 
 NODE = "chair-01"
 MAC = "02:00:00:00:00:01"
@@ -1291,3 +1289,40 @@ class ControllerLedgerTests(StoreFixture):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PackagingTests(unittest.TestCase):
+    ROOT = Path(__file__).resolve().parents[1]
+
+    def run_python(self, code, *args):
+        return subprocess.run(
+            [sys.executable, "-c", code, *args],
+            cwd=self.ROOT,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+
+    def test_package_ignores_unrelated_top_level_transport_modules(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for name in ("transport", "protocol_bridge"):
+                (Path(directory) / f"{name}.py").write_text(
+                    "raise ImportError('an unrelated distribution shadowed this')\n"
+                )
+            result = self.run_python(
+                "import sys; sys.path.insert(0, sys.argv[1]); "
+                "import chair_mqtt.facade, chair_mqtt.serial_gateway, chair_mqtt.store",
+                directory,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_bench_console_needs_only_pyserial(self):
+        result = self.run_python(
+            "import runpy, sys\n"
+            "for name in ('paho', 'pydantic', 'jsonschema'):\n"
+            "    sys.modules[name] = None\n"
+            "sys.argv = ['tools/transport.py', '--help']\n"
+            "runpy.run_path('tools/transport.py', run_name='__main__')\n"
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("usage", result.stdout)

@@ -698,7 +698,7 @@ class Bridge:
 
     def send(self, port, outgoing, *, before_write=None):
         """Recheck command deadlines after encoding and before every serial write."""
-        from transport import write_message
+        from .transport import write_message
 
         if outgoing["kind"] != "command":
             return write_message(port, outgoing)
@@ -726,7 +726,7 @@ class Bridge:
 
 def main(argv=None):
     """Run the bridge, enqueue configuration, or list command facts from the explicit database."""
-    from transport import BAUD_RATE, Lines, write_message
+    from .transport import BAUD_RATE, Lines, write_message
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=["protocol", "config", "commands"])

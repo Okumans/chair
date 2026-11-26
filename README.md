@@ -53,7 +53,8 @@ are separate; see [development checks](docs/SETUP.md#development-checks).
 | `sensor/` | C3 hardware adapter, MPU6050 sampling and deep sleep |
 | `gateway/` | S3 gateway entry point |
 | `shared/` | Wire codec, state engine, persistence and ESP-NOW/USB transport |
-| `tools/` | Python bridge/console and MAC-only firmware |
+| `chair_mqtt/` | Python protocol bridge, USB console and MQTT library |
+| `tools/` | Bench console and radio-window scripts, and MAC-only firmware |
 | `tests/` | Python integration tests, native C++ tests and hardware fakes |
 | `third_party/glaze/` | Vendored C++ JSON dependency |
 

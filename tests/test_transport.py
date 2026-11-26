@@ -1,4 +1,3 @@
-import importlib.util
 import json
 import os
 import pty
@@ -8,6 +7,8 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+
+from chair_mqtt import transport
 
 ROOT = Path(__file__).resolve().parents[1]
 ENGINE_SOURCES = [
@@ -19,9 +20,6 @@ ENGINE_SOURCES = [
         "communication_window.cpp",
     )
 ]
-spec = importlib.util.spec_from_file_location("transport", ROOT / "tools/transport.py")
-transport = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(transport)
 
 
 class TransportTests(unittest.TestCase):

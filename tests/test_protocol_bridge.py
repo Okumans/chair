@@ -12,10 +12,10 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from chair_mqtt import protocol_bridge as protocol
+from chair_mqtt import transport
+
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "tools"))
-import protocol_bridge as protocol  # noqa: E402
-import transport  # noqa: E402
 
 MAPPING = {"chair-01": "02:00:00:00:00:01"}
 COMMAND_ID = "11111111-1111-4111-8111-111111111111"

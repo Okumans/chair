@@ -12,7 +12,6 @@ import uuid
 from concurrent.futures import Future
 
 import paho.mqtt.client as mqtt
-from protocol_bridge import Bridge
 from pydantic import BaseModel
 
 from .contract import MAX_PAYLOAD
@@ -24,6 +23,7 @@ from .models import (
     ConfigRequest,
     PublishResult,
 )
+from .protocol_bridge import Bridge
 from .store import UNFINISHED, MqttStore, compact
 
 LOG = logging.getLogger(__name__)
