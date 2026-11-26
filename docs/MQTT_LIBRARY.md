@@ -80,9 +80,11 @@ The application must create its own tables before receiving events. The callback
 and all application database writes must use the transaction supplied by the
 connector, with no independent commits or external side effects. Awaiting
 another storage-backed `ChairClient` method, such as `set_config` or
-`get_command`, inside the callback raises `RuntimeError` instead of waiting for
-the callback's own transaction; start a task with `asyncio.create_task` so the
-call runs after the callback returns.
+`get_command`, directly in the callback raises `RuntimeError` instead of waiting
+for the callback's own transaction. Awaiting one through a helper task, such as
+`asyncio.gather` or Python 3.11's `asyncio.wait_for`, is not detected and blocks
+the client. Start a task with `asyncio.create_task` and do not await it in the
+callback; it runs after the callback returns.
 An exception rolls back the fact, application writes, and pending receipt and
 leaves the broker delivery unacknowledged. Duplicate facts do not invoke the
 callback again. Movement is best effort and has no transaction or receipt.
