@@ -81,18 +81,18 @@ lsp: compiledb
 
 format:
 	clang-format -i $(CPP_FILES)
-	ruff format tools tests
+	ruff format chair_mqtt tools tests
 
 format-check:
 	clang-format --dry-run --Werror $(CPP_FILES)
-	ruff format --check tools tests
+	ruff format --check chair_mqtt tools tests
 
 lint:
 	sh -n .githooks/pre-commit
-	ruff check tools tests
+	ruff check chair_mqtt tools tests
 
 test:
-	uv run --no-project --with pyserial==3.5 python -m unittest discover -s tests -v
+	uv run --locked python -m unittest discover -s tests -v
 
 check: format-check lint test
 
