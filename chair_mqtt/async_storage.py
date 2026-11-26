@@ -106,10 +106,21 @@ class SQLiteStorage:
         )
         self._db = self._backend = self._controller = None
         self._loop = None
+        self._callback_task = None
 
     async def _run(self, fn, *args, **kwargs):
         import functools
 
+        if (
+            self._callback_task is not None
+            and asyncio.current_task() is self._callback_task
+        ):
+            # The worker thread is waiting for this callback, so the call would
+            # queue behind it forever.
+            raise RuntimeError(
+                "storage cannot be used from inside its own transaction callback; "
+                "use the supplied transaction, or start a task that runs after it"
+            )
         return await asyncio.get_running_loop().run_in_executor(
             self._executor, functools.partial(fn, *args, **kwargs)
         )
@@ -144,9 +155,11 @@ class SQLiteStorage:
                 tx = SQLiteTransaction(db)
 
                 async def invoke():
+                    self._callback_task = asyncio.current_task()
                     try:
                         await on_fact(route, value, tx)
                     finally:
+                        self._callback_task = None
                         tx._active = False
 
                 future = asyncio.run_coroutine_threadsafe(invoke(), self._loop)

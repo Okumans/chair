@@ -446,8 +446,12 @@ async def event_received(event, transaction):
   A document store or key-value database needs an equivalent conditional write
   or lock.
 - **The callback runs inside the transaction.** Keep it short; it holds a pooled
-  connection and row locks until it returns. Do not call other connector or
-  `ChairClient` storage methods from inside it, because the pool may deadlock.
+  connection and row locks until it returns. A connector method awaited from
+  inside the callback would wait for those locks or for a free pool connection,
+  so detect that case and raise, as `SQLiteStorage` does by remembering the
+  callback's task: store `asyncio.current_task()` before awaiting `on_fact` and
+  raise `RuntimeError` in your methods when the current task is that one.
+  Tasks started by the callback are separate and can run after it returns.
 - **Commit before the receipt can leave.** The receipt row is written in the
   same transaction as the fact and the application writes, and the client reads
   it only through `pending_receipts()`. A crash at any point either keeps all
