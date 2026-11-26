@@ -170,6 +170,7 @@ class ControllerLedger:
         return False
 
     def get(self, command_id):
+        """Return admission, outcome and latest report for an ID, or None if unknown."""
         row = self.db.execute(
             "SELECT admitted,outcome,latest_seq,latest_report FROM chair_mqtt_controller_commands WHERE id=?",
             (command_id,),

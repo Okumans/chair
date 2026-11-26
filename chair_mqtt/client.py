@@ -30,6 +30,8 @@ LOG = logging.getLogger(__name__)
 
 
 class SensorEvent(BaseModel):
+    """A reliable sensor publication; ``message`` contains its typed ESP data."""
+
     model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
     schema_version: Literal[1]
     bridge_id: str
@@ -41,11 +43,15 @@ class SensorEvent(BaseModel):
 
 
 class SensorState(SensorEvent):
+    """Last known sensor state; its publication ID is always ``None``."""
+
     publication_id: None
     boot_generation: str
 
 
 class BridgeStatus(BaseModel):
+    """Bridge availability and optional health details reported over MQTT."""
+
     model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
     schema_version: Literal[1]
     type: Literal["BRIDGE_STATUS"]
@@ -65,6 +71,8 @@ class BridgeStatus(BaseModel):
 
 
 class CommandError(BaseModel):
+    """A bridge admission error, optionally associated with a command ID."""
+
     model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
     schema_version: Literal[1]
     bridge_id: str
@@ -76,6 +84,8 @@ class CommandError(BaseModel):
 
 
 class CommandUpdate(BaseModel):
+    """A bridge command report, including any late sensor result."""
+
     model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
     schema_version: Literal[1]
     type: Literal["COMMAND_STATUS"]
@@ -93,6 +103,8 @@ class CommandUpdate(BaseModel):
 
 
 class CommandState(BaseModel):
+    """Latest locally stored command state and, when available, its report."""
+
     model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
     command_id: str
     admitted: bool
@@ -107,10 +119,18 @@ class CommandState(BaseModel):
 
 
 class CommandHandle:
+    """A persisted submission, identified by ``command_id``."""
+
     def __init__(self, client, command_id):
         self._client, self.command_id = client, command_id
 
     async def wait(self, timeout=None):
+        """Wait for a terminal state; timeout raises TimeoutError without cancellation.
+
+        ``admission_unknown`` is terminal for this wait but may change if a
+        late report arrives. Use ``get_command`` or a callback to observe it.
+        """
+
         async def poll():
             while True:
                 current = await self._client.get_command(self.command_id)
@@ -127,7 +147,12 @@ class CommandHandle:
 
 
 class ChairClient:
-    """Attach to a caller-owned Paho v5 client from the application's event loop."""
+    """Backend/controller interface for a caller-owned Paho MQTT 5 client.
+
+    Provide ``ClientConfig`` and a ``Storage`` connector, register async
+    callbacks, then await ``attach`` before connecting the supplied client.
+    The application owns connection, network loop and recovery.
+    """
 
     def __init__(self, mqtt_client, config: ClientConfig, storage):
         if not isinstance(config, ClientConfig):
@@ -169,24 +194,31 @@ class ChairClient:
         return callback
 
     def on_event(self, callback):
+        """Register async ``callback(event: SensorEvent, transaction)`` for reliable facts."""
         return self._register("event", callback)
 
     def on_movement(self, callback):
+        """Register async ``callback(batch: MovementBatch)`` for best-effort samples."""
         return self._register("movement", callback)
 
     def on_command_update(self, callback):
+        """Register async ``callback(update: CommandUpdate)`` for status notifications."""
         return self._register("command_update", callback)
 
     def on_bridge_status(self, callback):
+        """Register async ``callback(status: BridgeStatus)`` for bridge availability."""
         return self._register("bridge_status", callback)
 
     def on_state(self, callback):
+        """Register async ``callback(state: SensorState)`` for the last known state."""
         return self._register("state", callback)
 
     def on_movement_loss(self, callback):
+        """Register async ``callback(loss: MovementLoss)`` for dropped sensor batches."""
         return self._register("movement_loss", callback)
 
     def on_command_error(self, callback):
+        """Register async ``callback(error: CommandError)`` for command admission errors."""
         return self._register("command_error", callback)
 
     async def _emit(self, name, *args):
@@ -194,6 +226,7 @@ class ChairClient:
             await callback(*args)
 
     def connect_options(self):
+        """Return required MQTT 5 options to unpack into the client's ``connect``."""
         properties = mqtt.Properties(mqtt.PacketTypes.CONNECT)
         properties.SessionExpiryInterval = 86400
         properties.ReceiveMaximum = 16
@@ -211,6 +244,7 @@ class ChairClient:
 
     @property
     def connected(self):
+        """Whether the latest MQTT connection succeeded; check ``ready`` separately."""
         return self._connected
 
     def _enqueue(self, item):
@@ -239,6 +273,11 @@ class ChairClient:
         self._installed[name] = callback
 
     async def attach(self):
+        """Initialize storage and install MQTT handlers before the client connects.
+
+        Returns this client. Call once from the event loop used for callbacks.
+        Enables manual acknowledgements for the entire supplied Paho client.
+        """
         if self._attached or self.client.is_connected():
             raise RuntimeError("attach once before connecting")
         if (
@@ -329,6 +368,11 @@ class ChairClient:
     async def set_config(
         self, configuration: ChairConfiguration, *, expires_in_seconds
     ):
+        """Persist a full configuration and return a handle without waiting for the sensor.
+
+        ``expires_in_seconds`` must be an integer from 1 through 86400. The
+        handle's ID can be stored and later passed to ``get_command``.
+        """
         if not self._attached or self._stopping:
             raise RuntimeError("client is not attached")
         if not isinstance(configuration, ChairConfiguration):
@@ -353,6 +397,7 @@ class ChairClient:
         return CommandHandle(self, command_id)
 
     async def get_command(self, command_id):
+        """Return the locally stored CommandState, or None for an unknown ID."""
         await self.storage.due_commands(int(time.time() * 1000))
         value = await self.storage.get_command(command_id)
         if value is None:
@@ -580,6 +625,12 @@ class ChairClient:
                 LOG.exception("Chair client worker failed")
 
     async def detach(self):
+        """Stop processing and remove subscriptions without disconnecting Paho.
+
+        Return True if it was safe to release handlers. On False, abort and
+        discard the MQTT client; if still connected, call detach again after
+        aborting to finish closing storage. Do not reuse this facade.
+        """
         if not self._attached:
             return False
         self._draining = True

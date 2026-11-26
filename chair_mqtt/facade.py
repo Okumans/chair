@@ -302,6 +302,7 @@ class ChairMqttBridge:
         return self._call("gateway_opened")
 
     def gateway_closed(self):
+        """Tell the protocol engine its gateway serial connection has closed."""
         self._call("gateway_closed")
 
     def gateway_received(self, envelope):
@@ -334,11 +335,13 @@ class ChairMqttBridge:
         self._serial_adapter.start()
 
     def stop_gateway(self):
+        """Stop the optional serial adapter and leave the MQTT client running."""
         if self._serial_adapter is not None:
             self._serial_adapter.stop()
             self._serial_adapter = None
 
     def health(self):
+        """Return the bridge's current connection, storage, and publication health."""
         return self._call("health")
 
     def retry_quarantined(self):
