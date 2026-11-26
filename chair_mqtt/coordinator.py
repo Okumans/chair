@@ -288,7 +288,10 @@ class Coordinator:
         info = self.client.publish(
             topic, payload=payload, qos=qos, retain=retain, properties=properties
         )
-        if info.rc != mqtt.MQTT_ERR_SUCCESS:
+        # Paho keeps a QoS>0 publish made during a disconnect race and sends it
+        # under the same MID after reconnecting, so it is already in flight.
+        queued = qos and info.rc == mqtt.MQTT_ERR_NO_CONN
+        if info.rc != mqtt.MQTT_ERR_SUCCESS and not queued:
             if qos and info.rc in {mqtt.MQTT_ERR_PAYLOAD_SIZE, mqtt.MQTT_ERR_INVAL}:
                 self._publication_failure(
                     Flight(kind, key, payload, 0), 0x95, str(info.rc)

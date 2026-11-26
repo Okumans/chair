@@ -706,6 +706,26 @@ class CoordinatorTests(StoreFixture):
         self.ready(worker, client)
         self.assertIsNone(worker.fatal)
 
+    def test_qos1_publish_queued_while_disconnected_is_not_sent_twice(self):
+        store, client, worker = self.coordinator()
+        self.ready(worker, client)
+        original = client.publish
+
+        def queued_by_paho(topic, **kwargs):
+            info = original(topic, **kwargs)
+            return SimpleNamespace(rc=mqtt.MQTT_ERR_NO_CONN, mid=info.mid)
+
+        client.publish = queued_by_paho
+        store.accept(event(), 1800000000)
+        worker.tick(1800000000)
+        worker.tick(1800000001)
+        sent = [mid for t, _, mid in client.published if t.endswith("/events")]
+        self.assertEqual(len(sent), 1)
+        worker.on_publish(sent[0], SimpleNamespace(is_failure=False))
+        self.assertEqual(
+            store.db.execute("SELECT state FROM mqtt_outbox").fetchone()[0], "waiting"
+        )
+
     def test_unrelated_client_suback_does_not_break_facade(self):
         _, client, worker = self.coordinator()
         worker.on_subscribe(999, [SimpleNamespace(is_failure=False, value=0)])

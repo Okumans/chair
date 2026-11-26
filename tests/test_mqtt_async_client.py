@@ -7,6 +7,8 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import paho.mqtt.client as mqtt
 
@@ -211,3 +213,66 @@ class AsyncClientBrokerTests(unittest.IsolatedAsyncioTestCase):
             finally:
                 client.disconnect()
                 client.loop_stop()
+
+
+def sensor_publication(directory):
+    """Return (topic, payload) of a reliable event as the Pi bridge publishes it."""
+    source = MqttStore(
+        Path(directory) / "source.db",
+        bridge_id="pi-01",
+        consumer_id="backend-01",
+        mapping={"chair-01": "02:00:00:00:00:01"},
+        clock_trusted=lambda: True,
+    )
+    try:
+        source.accept(
+            dict(
+                version=2,
+                type="STATE_SYNC",
+                node_id="chair-01",
+                boot_id="0000000000000001",
+                boot_generation="0000000000000001",
+                seq=1,
+                uptime_ms=100,
+                occupied=True,
+                battery_mv=None,
+                config_revision=0,
+                health_flags=0,
+            ),
+            1800000000,
+        )
+        row = source.db.execute("SELECT topic,payload FROM mqtt_outbox").fetchone()
+        return row[0], row[1]
+    finally:
+        source.db.close()
+
+
+class AsyncClientUnitTests(unittest.IsolatedAsyncioTestCase):
+    async def test_receipt_queued_by_paho_while_disconnected_is_tracked(self):
+        with tempfile.TemporaryDirectory() as directory:
+            topic, payload = sensor_publication(directory)
+            storage = SQLiteStorage(Path(directory) / "backend.db")
+            await storage.initialize("chair-01", "pi-01", "backend-01")
+            self.addAsyncCleanup(storage.close)
+            await storage.ingest(
+                topic, payload, qos=1, retain=False, on_fact=lambda *a: asyncio.sleep(0)
+            )
+            client = Mock()
+            client.publish.return_value = SimpleNamespace(
+                rc=mqtt.MQTT_ERR_NO_CONN, mid=7
+            )
+            chair = ChairClient(
+                client,
+                ClientConfig(
+                    node_id="chair-01", bridge_id="pi-01", consumer_id="backend-01"
+                ),
+                storage,
+            )
+            chair._connected = chair._ready = True
+            await chair._tick()
+            await chair._tick()
+            self.assertEqual(client.publish.call_count, 1)
+            self.assertEqual(
+                chair._flights[7][:2],
+                ("receipt", (await storage.pending_receipts())[0][0]),
+            )
