@@ -8,12 +8,17 @@ import argparse
 import json
 import math
 import sqlite3
+import sys
 import time
 import uuid
 from pathlib import Path
 
 import serial
-from protocol_bridge import (
+
+# Run from a checkout with only pyserial installed.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from chair_mqtt.protocol_bridge import (  # noqa: E402
     SERIAL_POLL_S,
     SERIAL_WRITE_TIMEOUT_S,
     Bridge,
@@ -22,7 +27,7 @@ from protocol_bridge import (
     mapping_file,
     validate,
 )
-from transport import BAUD_RATE, Lines, write_message
+from chair_mqtt.transport import BAUD_RATE, Lines, write_message  # noqa: E402
 
 
 def envelope_line(line):

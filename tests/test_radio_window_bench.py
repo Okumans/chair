@@ -5,8 +5,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from chair_mqtt import protocol_bridge as protocol
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
-import protocol_bridge as protocol  # noqa: E402
 import radio_window_bench as bench  # noqa: E402
 from test_protocol_bridge import CONFIG, MAPPING, envelope, event  # noqa: E402
 

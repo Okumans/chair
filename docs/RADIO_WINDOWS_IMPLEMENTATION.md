@@ -86,7 +86,7 @@ acknowledgment-before-removal. They also:
 
 ### Pi bridge
 
-`tools/protocol_bridge.py`:
+`chair_mqtt/protocol_bridge.py`:
 
 - Validates v2 messages and complete radio configuration; exposes radio settings in the
   configuration CLI.

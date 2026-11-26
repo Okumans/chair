@@ -7,9 +7,9 @@ import threading
 import time
 
 import serial
-from transport import BAUD_RATE, Lines, write_message
 
 from .contract import _unique_object
+from .transport import BAUD_RATE, Lines, write_message
 
 LOG = logging.getLogger(__name__)
 

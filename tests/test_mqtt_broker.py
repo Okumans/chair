@@ -7,7 +7,6 @@ import shutil
 import socket
 import sqlite3
 import subprocess
-import sys
 import tempfile
 import threading
 import time
@@ -17,9 +16,7 @@ from pathlib import Path
 
 import paho.mqtt.client as mqtt
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
-
-from chair_mqtt import BridgeConfig, ChairMqttBridge  # noqa: E402
+from chair_mqtt import BridgeConfig, ChairMqttBridge
 
 BROKER = shutil.which("mosquitto")
 NODE = "chair-01"

@@ -232,7 +232,7 @@ class Coordinator:
                                     isinstance(message, dict)
                                     and message.get("type") == "CONFIG_SET"
                                 ):
-                                    from protocol_bridge import configuration
+                                    from .protocol_bridge import configuration
 
                                     keys = {
                                         "revision",
@@ -249,7 +249,7 @@ class Coordinator:
                                     ):
                                         reason = "invalid_config"
                             candidate = value.get("message", {}).get("command_id")
-                            from protocol_bridge import canonical_uuid
+                            from .protocol_bridge import canonical_uuid
 
                             command_id = canonical_uuid(candidate)
                         except ContractError:

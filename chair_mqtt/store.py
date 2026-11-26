@@ -11,9 +11,8 @@ import uuid
 from collections import deque
 from pathlib import Path
 
-from protocol_bridge import RELIABLE, SCHEMA_VERSION, Store, configuration
-
 from .contract import IDENTIFIER, NODE, SCHEMA, validate
+from .protocol_bridge import RELIABLE, SCHEMA_VERSION, Store, configuration
 
 MQTT_SCHEMA_VERSION = 3
 MAX_OUTBOX_ROWS = 10_000
