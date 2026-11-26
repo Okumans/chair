@@ -77,6 +77,20 @@ class AsyncClientLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 self.assertFalse(chair.connected)
             self.assertLess(time.monotonic() - started, 3)
 
+    async def test_recovery_drops_the_connection_at_most_every_30_seconds(self):
+        with tempfile.TemporaryDirectory() as directory:
+            chair = ChairClient(
+                CONFIG, SQLiteStorage(Path(directory) / "backend.db"), loopback(1)
+            )
+            chair._mqtt = Mock()
+            chair._connected = chair.reconnect_required = True
+            with self.assertLogs("chair_mqtt.client", level="WARNING"):
+                chair._recover()
+            chair._recover()  # Still required, but within the recovery interval.
+            chair._mqtt.socket.return_value.shutdown.assert_called_once_with(
+                socket.SHUT_RDWR
+            )
+
     @unittest.skipUnless(MOSQUITTO, "private Mosquitto broker unavailable")
     async def test_failed_event_handler_is_redelivered_after_the_client_reconnects(
         self,
