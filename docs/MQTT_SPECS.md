@@ -397,11 +397,12 @@ their first late-result evidence and record subsequent facts without reschedulin
 
 Every meaningful report change increments persisted `report_seq` in
 `1..9007199254740991`. Exhaustion fails closed. Publish each change on `/updates`
-with a stable publication ID; publish the latest report on `/status` with
-`publication_id: null`. The retained projection follows the per-topic ordering
-rule in the retained-state section. Clients order reports by node ID, command UUID
-and report_seq, not MQTT arrival order. Republishing the same status after
-duplicate admission does not increment report_seq.
+with a stable publication ID; publish the latest retained `/status` with
+`publication_id: null` while that status remains eligible under the retention
+policy below. The retained projection follows the per-topic ordering rule in the
+retained-state section. Clients order reports by node ID, command UUID and
+report_seq, not MQTT arrival order. Republishing the same status after duplicate
+admission does not increment report_seq.
 
 An applied report looks like:
 
@@ -446,6 +447,54 @@ does not gain a new `revision` field.
 An unknown command's authentic COMMAND_RESULT is still a reliable sensor fact
 and must be stored/forwarded/ACKed. Record `unmatched_command_result` locally;
 do not invent an accepted request, deadline or canonical command-status row.
+
+### Retained command-status cleanup
+
+The Pi MQTT service manages cleanup as part of its own work; no separate scheduled
+job is required. The following defaults apply to `N/commands/<command_id>/status`:
+
+- Retain statuses for active (`queued` or `delivered`) commands until they become
+  terminal. Active statuses are not evicted to make room for completed statuses.
+- After the first transition to `applied`, `rejected`, or `expired`, retain the
+  terminal status for at most **7 days**, subject to the capacity limit below.
+  Duplicate commands, retries and late results do not restart this period.
+- Keep at most **256 retained terminal statuses**. If a new terminal status would
+  exceed that limit, remove the oldest retained terminal status first. Eviction
+  can therefore remove a status sooner than 7 days. The cap applies to the
+  broker's retained terminal statuses, not just pending projection work.
+
+Persist the first terminal time, the retention deadline and cleanup work with the
+terminal report. Check for due cleanup on service startup and periodically while
+running. If the terminal time was recorded while UTC was untrusted, start the
+7-day period from the first later trusted observation; do not guess an earlier
+deadline. When UTC is untrusted, do not perform time-based expiry. The capacity
+limit still applies; use persisted terminal-transition order to select the oldest
+eligible status, and stop publishing new terminal projections if no slot is safe.
+
+For expiry or capacity eviction, the service queues a **zero-byte retained QoS 1
+publication** on the exact status topic. Persist this deletion until a successful
+broker PUBACK and retry it after restart or reconnection. Count the old retained
+status against the limit until that acknowledgement; do not publish the replacement
+terminal projection while doing so would exceed the cap. This may temporarily leave
+an older status visible while cleanup is pending. If the broker is unavailable,
+cleanup can occur later than 7 days and no immediate broker-side deletion is
+guaranteed. A successful deletion removes the broker's retained value; it does not
+delete messages already received by subscribers.
+
+Serialize status publications and deletion for each topic. Before sending a
+deletion, settle or fence older in-flight publications and discard any queued
+older projection so it cannot reappear after deletion, including after reconnect
+or restart. Once a command is selected for deletion, retries, duplicate commands,
+and late sensor results must not recreate its retained status. Continue to publish
+authentic late results through the reliable `/updates` stream, even after status
+cleanup. Cleanup must not delete unacknowledged reliable updates or alter their
+backend-receipt requirements.
+
+After cleanup, a controller subscribing late cannot obtain that retained status
+from the broker; history is available only if a backend provides it. This policy
+does not remove command history or deduplication records on the Pi or backend,
+and therefore does not by itself bound their database storage or allow command ID
+reuse. Those records require a separate retention policy.
 
 ## Reliable delivery and backend receipts
 
@@ -640,6 +689,7 @@ The following bounds apply to the bridge by default:
 | Receipt-required pending outbox | 10,000 rows or 64 MiB of payload, whichever comes first |
 | In-flight MQTT publications | 16 total, subject to broker limits |
 | Best-effort MQTT queue | 128 messages; drop oldest and increment the bridge-specific counter |
+| Retained terminal command statuses | 256, for at most 7 days when cleanup is available; see retained command-status cleanup |
 | Pending command error reports | 1,024 records and 2 MiB; each error no more than 2,048 bytes |
 | Pending retained projections | 1,024 topics and 32 MiB of desired/in-flight payload |
 | Free-disk safety threshold | 64 MiB; stop new durable admissions below it |
