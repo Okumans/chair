@@ -125,7 +125,7 @@ synchronous I/O in them.
 | `chair.error`, `chair.reconnect_required` | Most recent worker error and whether the application must recover the MQTT connection. |
 | `await chair.detach()` | Stop the worker and unsubscribe while the Paho network loop runs. Returns `True` when subscriptions were safely released, otherwise `False`. |
 | `command.command_id` | UUID of a durably queued configuration; save it to look up the command after restart. |
-| `await command.wait(timeout=None)` | Return `CommandState` on `applied`, `rejected`, `expired`, or `admission_unknown`. Timeout raises `TimeoutError` and does not cancel the command. |
+| `await command.wait(timeout=None)` | Return `CommandState` on `applied`, `rejected`, `expired`, or `admission_unknown`. Sleeps until this client records a newer report or the command expires. Timeout raises `TimeoutError` and does not cancel the command; `detach()` ends the wait with `RuntimeError`. |
 
 `ClientConfig` requires `node_id`, `bridge_id` and `consumer_id`; its optional
 `allow_local_plaintext` defaults to `False`. `ChairConfiguration` requires all

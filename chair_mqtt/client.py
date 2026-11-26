@@ -125,29 +125,49 @@ class CommandState(BaseModel):
 class CommandHandle:
     """A persisted submission, identified by ``command_id``."""
 
-    def __init__(self, client, command_id):
+    # Re-read storage at least this often in case another client sharing the
+    # same storage observed the report.
+    _FALLBACK_RECHECK_S = 5.0
+
+    def __init__(self, client, command_id, expires_at_ms=None):
         self._client, self.command_id = client, command_id
+        self._expires_at_ms = expires_at_ms
 
     async def wait(self, timeout=None):
         """Wait for a terminal state; timeout raises TimeoutError without cancellation.
 
         ``admission_unknown`` is terminal for this wait but may change if a
         late report arrives. Use ``get_command`` or a callback to observe it.
+        The wait sleeps until this client records a newer report for the
+        command or the command expires; ``detach()`` ends it with RuntimeError.
         """
 
-        async def poll():
+        async def until_terminal():
             while True:
-                current = await self._client.get_command(self.command_id)
-                if current and current.status in {
-                    "applied",
-                    "rejected",
-                    "expired",
-                    "admission_unknown",
-                }:
-                    return current
-                await asyncio.sleep(0.2)
+                # Register before reading, so a report between the two is not missed.
+                change = self._client._watch_command(self.command_id)
+                try:
+                    current = await self._client.get_command(self.command_id)
+                    if current and current.status in {
+                        "applied",
+                        "rejected",
+                        "expired",
+                        "admission_unknown",
+                    }:
+                        return current
+                    delay = self._FALLBACK_RECHECK_S
+                    if self._expires_at_ms is not None:
+                        remaining = self._expires_at_ms / 1000 - time.time()
+                        if remaining > 0:
+                            delay = min(delay, remaining + 0.05)
+                    try:
+                        await asyncio.wait_for(change, delay)
+                    except TimeoutError:
+                        pass
+                finally:
+                    self._client._unwatch_command(self.command_id, change)
 
-        return await asyncio.wait_for(poll(), timeout)
+        return await asyncio.wait_for(until_terminal(), timeout)
 
 
 class ChairClient:
@@ -188,8 +208,31 @@ class ChairClient:
         self._flights = {}
         self._inflight_receipts = set()
         self._previous_manual_ack = None
+        self._command_waiters = {}
         self.error = None
         self.reconnect_required = False
+
+    def _watch_command(self, command_id):
+        """Return a future resolved when this client sees the command advance."""
+        if not self._attached:
+            raise RuntimeError("client is not attached")
+        change = asyncio.get_running_loop().create_future()
+        self._command_waiters.setdefault(command_id, set()).add(change)
+        return change
+
+    def _unwatch_command(self, command_id, change):
+        waiters = self._command_waiters.get(command_id)
+        if waiters is not None:
+            waiters.discard(change)
+            if not waiters:
+                del self._command_waiters[command_id]
+
+    def _wake_commands(self, command_id=None):
+        ids = list(self._command_waiters) if command_id is None else [command_id]
+        for key in ids:
+            for change in self._command_waiters.get(key, ()):
+                if not change.done():
+                    change.set_result(None)
 
     def _register(self, name, callback):
         if not inspect.iscoroutinefunction(callback):
@@ -413,7 +456,7 @@ class ChairClient:
             message=command,
         )
         await self.storage.enqueue_command(request, now)
-        return CommandHandle(self, command_id)
+        return CommandHandle(self, command_id, request.expires_at_ms)
 
     async def get_command(self, command_id):
         """Return the locally stored CommandState, or None for an unknown ID."""
@@ -474,6 +517,7 @@ class ChairClient:
                         topic, payload, qos=qos, retain=retain
                     )
                     if changed:
+                        self._wake_commands(value["command_id"])
                         await self._notify(
                             "command_update", CommandUpdate.model_validate(value)
                         )
@@ -676,4 +720,5 @@ class ChairClient:
             self.client.manual_ack_set(self._previous_manual_ack)
         self._attached = False
         await self.storage.close()
+        self._wake_commands()  # Pending waits re-check and raise RuntimeError.
         return released

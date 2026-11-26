@@ -319,3 +319,132 @@ class AsyncClientUnitTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(chair.reconnect_required)
             self.assertEqual(seen, ["online"])
             client.ack.assert_called_once_with(42, 1)
+
+    async def command_client(self, directory):
+        storage = SQLiteStorage(Path(directory) / "backend.db")
+        calls = []
+        original = storage.get_command
+
+        async def counted(command_id):
+            calls.append(command_id)
+            return await original(command_id)
+
+        storage.get_command = counted
+        client = Mock()
+        client.is_connected.return_value = False
+        client.callback_api_version = mqtt.CallbackAPIVersion.VERSION2
+        client._protocol = mqtt.MQTTv5
+        client._manual_ack = False
+        client.ack.return_value = mqtt.MQTT_ERR_SUCCESS
+        chair = ChairClient(
+            client,
+            ClientConfig(
+                node_id="chair-01", bridge_id="pi-01", consumer_id="backend-01"
+            ),
+            storage,
+        )
+        await chair.attach()
+        chair._connected = True
+        chair._generation = chair._network_generation = 1
+        return chair, storage, calls
+
+    async def test_command_wait_sleeps_until_its_report_advances(self):
+        with tempfile.TemporaryDirectory() as directory:
+            chair, storage, calls = await self.command_client(directory)
+            self.addAsyncCleanup(chair.detach)
+            command = await chair.set_config(
+                ChairConfiguration(
+                    revision=1,
+                    heartbeat_s=900,
+                    movement_batch_s=3,
+                    movement_enabled=True,
+                    radio_windows_enabled=True,
+                    radio_interval_s=30,
+                    radio_open_s=5,
+                    radio_motion_tail_s=10,
+                ),
+                expires_in_seconds=60,
+            )
+            waiter = asyncio.create_task(command.wait(timeout=10))
+            await asyncio.sleep(1.0)
+            self.assertFalse(waiter.done())
+            self.assertLessEqual(calls.count(command.command_id), 2)
+
+            # The bridge admits the command and the sensor applies it.
+            now = time.time()
+            ((_, topic, payload, _),) = await storage.due_commands(int(now * 1000))
+            source = MqttStore(
+                Path(directory) / "source.db",
+                bridge_id="pi-01",
+                consumer_id="backend-01",
+                mapping={"chair-01": "02:00:00:00:00:01"},
+                clock_trusted=lambda: True,
+            )
+            self.addCleanup(source.db.close)
+            source.admit_command(topic, payload, now=now)
+            source.accept(
+                dict(
+                    version=2,
+                    type="COMMAND_RESULT",
+                    node_id="chair-01",
+                    boot_id="0000000000000001",
+                    seq=1,
+                    uptime_ms=300,
+                    occupied=True,
+                    battery_mv=None,
+                    config_revision=1,
+                    health_flags=0,
+                    command_id=command.command_id,
+                    status="applied",
+                ),
+                now,
+            )
+            update = source.db.execute(
+                "SELECT topic,payload FROM mqtt_outbox WHERE topic LIKE '%/updates' "
+                "ORDER BY rowid DESC LIMIT 1"
+            ).fetchone()
+            await chair._incoming(1, 9, 1, False, update[0], update[1])
+            result = await asyncio.wait_for(waiter, 1)
+            self.assertEqual(result.status, "applied")
+
+    async def test_command_wait_reports_unknown_admission_at_expiry(self):
+        with tempfile.TemporaryDirectory() as directory:
+            chair, _, _ = await self.command_client(directory)
+            self.addAsyncCleanup(chair.detach)
+            command = await chair.set_config(
+                ChairConfiguration(
+                    revision=1,
+                    heartbeat_s=900,
+                    movement_batch_s=3,
+                    movement_enabled=True,
+                    radio_windows_enabled=True,
+                    radio_interval_s=30,
+                    radio_open_s=5,
+                    radio_motion_tail_s=10,
+                ),
+                expires_in_seconds=1,
+            )
+            result = await command.wait(timeout=3)
+            self.assertEqual(result.status, "admission_unknown")
+
+    async def test_detach_releases_an_unbounded_command_wait(self):
+        with tempfile.TemporaryDirectory() as directory:
+            chair, _, _ = await self.command_client(directory)
+            command = await chair.set_config(
+                ChairConfiguration(
+                    revision=1,
+                    heartbeat_s=900,
+                    movement_batch_s=3,
+                    movement_enabled=True,
+                    radio_windows_enabled=True,
+                    radio_interval_s=30,
+                    radio_open_s=5,
+                    radio_motion_tail_s=10,
+                ),
+                expires_in_seconds=60,
+            )
+            waiter = asyncio.create_task(command.wait())
+            await asyncio.sleep(0.1)
+            self.assertTrue(await chair.detach())
+            with self.assertRaises(RuntimeError):
+                await asyncio.wait_for(waiter, 2)
