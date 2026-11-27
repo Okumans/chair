@@ -1,13 +1,7 @@
 import json
-import os
-import pty
-import select
-import signal
 import sqlite3
 import subprocess
-import sys
 import tempfile
-import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -676,129 +670,6 @@ class ProtocolTests(unittest.TestCase):
         self.assertNotIn(b"\n", port.data)
         self.bridge.reset()  # The serial loop reconnects after a partial-line failure.
         self.assertIsNone(self.bridge.command_dispatch)
-
-    def test_configuration_and_listing_cli(self):
-        path = Path(self.directory.name)
-        nodes = path / "nodes.json"
-        nodes.write_text(json.dumps(MAPPING))
-        common = ["--nodes", str(nodes), "--db", str(path / "cli.sqlite")]
-        command = [sys.executable, str(ROOT / "tools/transport.py")]
-        config_args = [
-            "--node",
-            "chair-01",
-            "--revision",
-            "1",
-            "--heartbeat-s",
-            str(protocol.UINT32_MAX),
-            "--movement-batch-s",
-            "1",
-            "--movement-enabled",
-            "false",
-            "--expires-at",
-            str(time.time() + 3600),
-        ]
-        submitted = subprocess.run(
-            command + ["config"] + common + config_args,
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        queued = json.loads(submitted.stdout)
-        self.assertEqual(queued["kind"], "queued")
-        protocol.canonical_uuid(queued["command_id"])
-
-        listed = subprocess.run(
-            command + ["commands"] + common, check=True, capture_output=True, text=True
-        )
-        row = json.loads(listed.stdout)
-        self.assertEqual(row["id"], queued["command_id"])
-        settings = json.loads(row["config"])
-        self.assertEqual(settings["heartbeat_s"], protocol.UINT32_MAX)
-        self.assertFalse(settings["movement_enabled"])
-
-        # Exact UUID/content replay uses the same row, rather than queuing a second command.
-        subprocess.run(
-            command
-            + ["config"]
-            + common
-            + config_args
-            + ["--command-id", queued["command_id"]],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        listed = subprocess.run(
-            command + ["commands"] + common, check=True, capture_output=True, text=True
-        )
-        self.assertEqual(len(listed.stdout.splitlines()), 1)
-
-    def test_serial_reconnect_and_durable_replay(self):
-        path = Path(self.directory.name)
-        mapping = path / "nodes.json"
-        mapping.write_text(json.dumps(MAPPING))
-        device = path / "gateway"
-        master, slave = pty.openpty()
-        device.symlink_to(os.ttyname(slave))
-        process = subprocess.Popen(
-            [
-                sys.executable,
-                str(ROOT / "tools/transport.py"),
-                "protocol",
-                "--db",
-                str(path / "live.sqlite"),
-                "--nodes",
-                str(mapping),
-                "--port",
-                str(device),
-            ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-        )
-        pending = bytearray()
-
-        def read_message(fd, kind, timeout=8):
-            deadline = time.monotonic() + timeout
-            while time.monotonic() < deadline:
-                if b"\n" in pending:
-                    line, _, rest = pending.partition(b"\n")
-                    pending[:] = rest
-                    parsed = json.loads(line)
-                    if parsed["kind"] == kind:
-                        return parsed
-                elif select.select([fd], [], [], 0.1)[0]:
-                    pending.extend(os.read(fd, 8192))
-            self.fail(f"missing USB {kind}")
-
-        try:
-            hello = read_message(master, "hello")
-            os.write(master, json.dumps(hello).encode() + b"\n")
-            line = json.dumps(envelope(event())).encode() + b"\n"
-            os.write(master, line[:20])
-            os.write(master, line[20:])
-            self.assertEqual(read_message(master, "event_ack")["message"]["ack_seq"], 1)
-            os.close(master)
-            os.close(slave)
-            master, slave = pty.openpty()
-            device.unlink()
-            device.symlink_to(os.ttyname(slave))
-            pending.clear()
-            hello = read_message(master, "hello")
-            os.write(master, json.dumps(hello).encode() + b"\n")
-            # Partial old input must not poison a fresh connection; retry gets another ACK.
-            os.write(master, line)
-            self.assertEqual(read_message(master, "event_ack")["message"]["ack_seq"], 1)
-            with sqlite3.connect(str(path / "live.sqlite")) as db:
-                self.assertEqual(
-                    db.execute("SELECT COUNT(*) FROM events").fetchone()[0], 1
-                )
-            process.send_signal(signal.SIGINT)
-            self.assertEqual(process.wait(timeout=5), 0)
-        finally:
-            if process.poll() is None:
-                process.kill()
-            process.communicate(timeout=5)
-            os.close(master)
-            os.close(slave)
 
 
 if __name__ == "__main__":

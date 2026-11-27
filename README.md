@@ -1,10 +1,11 @@
 # Smart Chair
 
 Smart Chair reports seat occupancy and raw MPU6050 movement to a computer or Raspberry Pi.
-The computer stores reliable events in SQLite and owns logical sessions.
+The Pi bridge stores reliable events in SQLite and publishes them over MQTT 5 to a backend,
+which owns logical sessions.
 
 ```text
-ESP32-C3 chair → encrypted ESP-NOW → ESP32-S3 gateway → USB JSON → Python/SQLite
+ESP32-C3 chair → encrypted ESP-NOW → ESP32-S3 gateway → USB JSON → Pi bridge (SQLite) → MQTT 5
 ```
 
 The chair samples movement at 25 Hz, persists reliable events before sending them, and
@@ -18,16 +19,19 @@ while vacant it can deep sleep and wake from the seat switch or heartbeat timer.
    and configure the shared, ignored pairing file.
 3. For a v1-to-v2 upgrade, follow the [explicit test reset procedure](docs/TRANSPORT.md#explicit-v2-test-reset).
    Build and upload the normal sensor and gateway firmware using explicit serial ports.
-4. Run the bridge with the gateway port, node mapping, and SQLite path:
+4. Copy `deploy/bridge.example.toml` to `bridge.toml`, set `sensor_mac` to your sensor's
+   MAC, the gateway's serial port, a new `database_path` and the broker, then run the bridge:
 
    ```sh
-   uv run tools/transport.py protocol \
-     --port /dev/serial/by-id/YOUR_GATEWAY \
-     --nodes ./nodes.json --db ./chair.sqlite
+   uv run python -m chair_mqtt.service --config ./bridge.toml
    ```
 
-Only one bridge may own the gateway's serial port. The protocol-only bridge does not
-require an MQTT broker or background service. Update the checked-in `nodes.json` to match your own sensor MAC.
+The bridge acknowledges and stores sensor facts even while the broker is unreachable, and
+publishes them once it connects. For development against a local Mosquitto, set
+`host = "localhost"`, `port = 1883` and `plaintext = true` under `[mqtt]` and remove
+`ca_file`. A backend receives the data with `ChairClient`; see the
+[library guide](docs/MQTT_LIBRARY.md) and the [bridge service](docs/MQTT_BRIDGE_SERVICE.md).
+Only one program may own the gateway's serial port.
 
 ## Development
 

@@ -112,10 +112,11 @@ On Debian, Ubuntu or Raspberry Pi OS, install `python3`, `python3-venv`, `curl` 
 `ca-certificates` with apt, then install uv using the standalone installer above.
 The compiler, formatter, Ruff, clangd and PlatformIO are unnecessary for bridge-only use.
 
-Install Python 3 and uv, then run `uv run tools/transport.py --list` to resolve pyserial
-and list serial devices. If you manage your own virtual environment instead, install
-`pyserial==3.5` there and use `python tools/transport.py ...`. Do not install packages
-into the system Python just to run the bridge.
+Run `uv sync` from the repository root to install the bridge with its MQTT dependencies
+(Paho, Pydantic). The bench console alone needs only pyserial: `uv run tools/transport.py
+--list` lists serial devices, or install `pyserial==3.5` in your own virtual environment
+and use `python tools/transport.py ...`. Do not install packages into the system Python
+just to run the bridge.
 
 ## Provision the boards
 
@@ -134,8 +135,9 @@ into the system Python just to run the bridge.
    `python3 -c 'import secrets; print(secrets.token_hex(16))'` separately for each key.
    Both builds use this same header. Keep it private; Git ignores it. Preserve an
    existing local file instead of overwriting its pairing keys.
-4. Update `nodes.json` to map `chair-01` to your **C3 sensor's** STA MAC. The tracked
-   mapping belongs to the development pair and is not a universal default.
+4. Set `sensor_mac` in the bridge configuration (see below) to your **C3 sensor's** STA
+   MAC. The tracked `nodes.json`, used only by the radio-window bench tool, maps `chair-01`
+   for the development pair and is not a universal default.
 
 The seat contact connects GPIO5 to ground with an internal pull-up. The MPU6050 uses
 I2C address `0x68`, SDA GPIO6 and SCL GPIO7. Confirm wiring against
@@ -149,9 +151,11 @@ make build ENV=gateway
 pio device list
 pio run -e sensor -t upload --upload-port /dev/serial/by-id/YOUR_C3
 pio run -e gateway -t upload --upload-port /dev/serial/by-id/YOUR_S3
-uv run tools/transport.py protocol \
-  --port /dev/serial/by-id/YOUR_S3 --nodes ./nodes.json --db ./chair.sqlite
+uv run python -m chair_mqtt.service --config ./bridge.toml
 ```
+
+Create `bridge.toml` from `deploy/bridge.example.toml`; [the bridge service
+guide](MQTT_BRIDGE_SERVICE.md) describes its keys and a local plaintext broker.
 
 Replace serial placeholders with actual device paths. The commands above pass
 `--upload-port` directly to PlatformIO; `make upload`, `make flash`, `make monitor`
@@ -166,8 +170,8 @@ program should read/write its serial port at a time. On permission errors, inspe
 `ls -l /dev/ttyACM*` and your distribution's serial-device group or udev rules; reconnect
 and log in again after changing permissions. Run the bridge as your normal user.
 
-See [Transport and Pi bridge](TRANSPORT.md#submit-and-inspect-configuration) to queue
-configuration commands. No additional service is needed for command submission.
+A backend sends configuration commands with `ChairClient.set_config`; see the
+[library guide](MQTT_LIBRARY.md) and the [configuration rules](TRANSPORT.md#configuration).
 
 ## Development checks
 

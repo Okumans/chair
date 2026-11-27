@@ -1,7 +1,7 @@
 # Smart Chair transport and Pi bridge
 
-Chair → encrypted ESP-NOW v2 → ESP32-S3 gateway → USB JSON → SQLite/Pi application.
-The Pi owns logical sessions. Firmware reports physical state and raw MPU6050 movement.
+Chair → encrypted ESP-NOW v2 → ESP32-S3 gateway → USB JSON → Pi bridge (SQLite) → MQTT 5.
+The backend owns logical sessions. Firmware reports physical state and raw MPU6050 movement.
 Start with [Setup and dependencies](SETUP.md) for tool installation and development checks.
 The wire contract and limitations are in [PROTOCOL_SPEC.md](PROTOCOL_SPEC.md).
 
@@ -60,10 +60,12 @@ The same local file supplies the MACs and encryption keys to both firmware build
 #define LINK_GATEWAY_MAC "S3_STA_MAC_YOU_RECORDED"
 ```
 
-Also map the chair's node ID to the **C3 sensor's MAC** in the Pi's `nodes.json`:
+Also set the chair's node ID and the **C3 sensor's MAC** in the Pi bridge configuration:
 
-```json
-{"chair-01":"C3_STA_MAC_YOU_RECORDED"}
+```toml
+[bridge]
+node_id = "chair-01"
+sensor_mac = "C3_STA_MAC_YOU_RECORDED"
 ```
 
 Installing the MAC utility replaces the board's application. Restore normal ESP-NOW
@@ -119,67 +121,45 @@ for dependencies, commands and the separate firmware/LSP checks.
 
 ## Run the Pi bridge
 
-The Python tool needs pyserial 3.5. `uv run tools/transport.py ...` installs the script's
-pinned dependency in an isolated environment, or use an existing Python with pyserial.
-Do not run two serial owners or two bridge processes for the same gateway.
-
-Create an explicit node mapping JSON file, using the sensor station MAC from USB hello:
-
-```json
-{"chair-01":"02:00:00:00:00:01"}
-```
-
-Use the actual MAC, not the example address. The serial path, mapping file and SQLite
-path are mandatory. Prefer a stable by-id serial path and a local durable filesystem.
+The Pi runs the MQTT bridge service described in [MQTT_BRIDGE_SERVICE.md](MQTT_BRIDGE_SERVICE.md):
 
 ```sh
-uv run tools/transport.py --list
-uv run tools/transport.py protocol \
-  --port /dev/serial/by-id/YOUR_GATEWAY \
-  --nodes ./nodes.json --db ./chair.sqlite
+uv run python -m chair_mqtt.service --config ./bridge.toml
 ```
+
+Its `[bridge]` table names the sensor and the durable SQLite path, and `[gateway]` the
+serial port. Prefer a stable by-id serial path and a local durable filesystem. Do not
+run two serial owners or two bridge processes for the same gateway.
 
 The bridge reconnects after serial loss. It discards partial input on reconnect. SQLite
 uses WAL and synchronous FULL. Each reliable event commits before an exact EVENT_ACK
 is queued. Retransmissions are stored once and ACKed again. A failed commit produces an
-error without an ACK. JSON output is structured for a future MQTT adapter.
-
-Bridge output includes `accepted` (with duplicate flag and reception time), `hello`,
-`tx_result`, `error` and `disconnected`. `mac_delivered` reports MAC delivery only.
-Reliable events remain in SQLite; movement and READY are streamed. READY is never stored
+error without an ACK. Reliable events remain in SQLite and are published over MQTT;
+movement is published best effort. READY is never stored
 as an event or retained as availability across reconnect. The bridge waits for a matching
 request-ID hello response after reconnect, and the gateway discards earlier queued READY
 packets. Lease timing uses the Pi's monotonic clock. The current-state row tracks the chair's durable boot-generation counter and increasing
 sequence numbers. Only STATE_SYNC establishes a previously unseen boot. Even an unseen
 older boot cannot roll current state back. Generations are 16-character hex strings in
 JSON and exact signed SQLite integers internally. A boot cannot change its generation
-or reuse another boot's generation. The v2 bridge rejects older databases without modifying
-their contents; choose a new database or explicitly reset disposable test data.
+or reuse another boot's generation. The bridge rejects older databases, including those of the retired protocol-only
+bridge, without modifying their contents; choose a new database or explicitly reset
+disposable test data.
 
-## Submit and inspect configuration
+## Configuration
 
-Configuration is a complete transaction. Heartbeat and movement intervals accept 1..4294967295 seconds;
-zero is invalid. Values do not have to fit within the heartbeat interval. Recommended
-movement interval: 1–3 s; a 75-sample buffer flushes earlier regardless of the setting.
-Use a larger revision for changed settings. Revision zero contains the firmware defaults.
+A backend submits a complete `ChairConfiguration` with `ChairClient.set_config`; see
+[MQTT_LIBRARY.md](MQTT_LIBRARY.md). Every field is required. Heartbeat and movement
+intervals accept 1..4294967295 seconds; zero is invalid. Values do not have to fit within
+the heartbeat interval. Recommended movement interval: 1–3 s; a 75-sample buffer flushes
+earlier regardless of the setting. Use a larger revision for changed settings. Revision
+zero contains the firmware defaults. The radio fields are `radio_windows_enabled`,
+`radio_interval_s`, `radio_open_s` and `radio_motion_tail_s`; the firmware defaults are
+`true`, 30, 5 and 10. All values are validated even when windows are disabled; open time
+cannot exceed interval.
 
-Radio fields are `--radio-windows-enabled true|false`, `--radio-interval-s`,
-`--radio-open-s`, and `--radio-motion-tail-s`. They default to `true`, 30, 5, and 10.
-All values are validated even when windows are disabled; open time cannot exceed interval.
-
-The configuration command runs independently of the serial-owning bridge and adds a
-row to the same SQLite database. `--expires-at` is UTC Unix time in seconds. This example
-expires one hour after submission:
-
-```sh
-uv run tools/transport.py config --nodes ./nodes.json --db ./chair.sqlite \
-  --node chair-01 --revision 1 --heartbeat-s 900 --movement-batch-s 3 \
-  --movement-enabled true --expires-at "$(date -d '+1 hour' +%s)"
-uv run tools/transport.py commands --nodes ./nodes.json --db ./chair.sqlite
-```
-
-An optional `--command-id` accepts a canonical nonzero UUID. Reusing a UUID with different
-content or expiry is rejected. Commands wait for fresh occupied READY availability and
+Each command has a canonical nonzero UUID. Reusing a UUID with different content or
+expiry is rejected. Commands wait for fresh occupied READY availability and
 retry one at a time per node. A future timed READY bounds dispatch to its remaining
 listen duration. Expired commands never dispatch again. A late reliable result remains
 a durable fact in `events` and the command's `result`; an expired status stays expired.
@@ -250,7 +230,7 @@ maximum-size input, bus reset, partial output, and receive-buffer allocation fai
 An `invalid_json` error now includes `parse_error` (Glaze's error name), `byte_offset`
 (where parsing stopped), and `line_bytes` (received line length). It does not echo raw
 commands. These details distinguish malformed or truncated input without exposing its
-contents. No MQTT broker or background service is needed for this serial/SQLite bridge.
+contents.
 
 Each message contains only fields relevant to its type; unrelated fields are omitted.
 Unavailable battery voltage remains `battery_mv: null` in telemetry, and indefinitely
@@ -302,8 +282,8 @@ Both firmware targets must build and clangd must report zero source errors.
 
 Physical acceptance remains required for encrypted 1108-byte delivery, actual sample
 timing, sensor calibration, configuration round trips, reset durability, seat/timer wake,
-and power/radio measurements. MQTT, systemd, battery hardware, actual occupied light
-sleep are deferred. Validate the test schedule, radio restart, discovery after resets and
+and power/radio measurements. MQTT and systemd deployment, battery hardware, actual
+occupied light sleep are deferred. Validate the test schedule, radio restart, discovery after resets and
 missed windows, movement loss reporting, and power consumption on the actual boards.
 
 Before sending a command, the bridge challenges the sensor and bounds the lease from the
