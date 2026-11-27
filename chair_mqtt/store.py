@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import logging
 import math
 import re
 import shutil
@@ -23,6 +24,7 @@ MAX_COMMANDS = 64
 MAX_REPORT_SIZE = 16384
 MIN_FREE_DISK = 64 * 1024 * 1024
 MAX_REJECTIONS = 1024
+LOG = logging.getLogger(__name__)
 MAX_PROJECTION_ROWS = 1024
 MAX_PROJECTION_BYTES = 32 * 1024 * 1024
 TERMINAL = {"applied", "rejected", "expired"}
@@ -142,6 +144,7 @@ class MqttStore(Store):
         self.best_effort = deque()
         self.best_effort_dropped = 0
         self._command_deadlines = {}
+        self._warned_foreign_receipt = False
         if _written_by_protocol_bridge(path):
             raise ValueError(
                 "this database was written by the retired protocol-only bridge, "
@@ -599,23 +602,47 @@ class MqttStore(Store):
                     "(SELECT rowid FROM mqtt_rejections ORDER BY rowid LIMIT ?)",
                     (excess,),
                 )
-            self.db.execute(
-                "INSERT INTO mqtt_rejection_counts VALUES ('invalid',1) "
-                "ON CONFLICT(kind) DO UPDATE SET total=total+1"
-            )
+            self._count_rejection("invalid")
+
+    def _count_rejection(self, kind):
+        self.db.execute(
+            "INSERT INTO mqtt_rejection_counts VALUES (?,1) "
+            "ON CONFLICT(kind) DO UPDATE SET total=total+1",
+            (kind,),
+        )
+
+    def rejection_count(self, kind):
+        """Return how many deliveries of ``kind`` were rejected over the database's life."""
+        row = self.db.execute(
+            "SELECT total FROM mqtt_rejection_counts WHERE kind=?", (kind,)
+        ).fetchone()
+        return row[0] if row else 0
 
     def accept_receipt(self, topic, payload, *, qos=1, retain=False):
-        """Commit a matching backend receipt; duplicates and unknown IDs are harmless."""
+        """Commit a matching backend receipt; duplicates and unknown IDs are harmless.
+
+        A well-formed receipt from another consumer, such as a second backend
+        or a dashboard that should not send receipts, is only counted. Logging
+        each one would flush the rejection journal with a routine
+        misconfiguration.
+        """
         target, value = validate(
-            topic,
-            payload,
-            qos=qos,
-            retain=retain,
-            expected_bridge=self.bridge_id,
-            expected_consumer=self.consumer_id,
+            topic, payload, qos=qos, retain=retain, expected_bridge=self.bridge_id
         )
         if target.kind != "receipt":
             raise ValueError("expected backend receipt")
+        if value["consumer_id"] != self.consumer_id:
+            with self.db:
+                self._count_rejection("foreign_consumer")
+            if not self._warned_foreign_receipt:
+                self._warned_foreign_receipt = True
+                LOG.warning(
+                    "Ignoring receipts from consumer %r; only %r completes "
+                    "publications. Stop the other client sending receipts.",
+                    value["consumer_id"],
+                    self.consumer_id,
+                )
+            return False
         with self.db:
             result = self.db.execute(
                 "UPDATE mqtt_outbox SET state='completed' WHERE publication_id=? AND consumer_id=? AND state!='completed'",

@@ -400,6 +400,7 @@ class ChairBridge:
                 quarantined_publications=quarantined,
                 mqtt_best_effort_dropped=self._store.best_effort_dropped,
                 notifications_dropped=self._notification_drops,
+                foreign_receipts=self._store.rejection_count("foreign_consumer"),
                 reconnect_required=self._coordinator.reconnect_required,
                 fatal=self._coordinator.fatal,
             )

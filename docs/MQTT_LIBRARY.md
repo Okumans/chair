@@ -245,7 +245,8 @@ transport other than the gateway and returns a `PublishResult`: `status` is
 including a retransmitted duplicate, carries the `EventAck` the caller must
 deliver to the sensor. Data passed to `publish` is never acknowledged over the
 gateway radio. `receive(timeout=None)` returns a command notice, not sensor data. `health()`
-returns `BridgeHealth`, and `retry_quarantined()` retries previously quarantined
+returns `BridgeHealth`; its `foreign_receipts` counts receipts sent by a client with
+another `consumer_id`, which the bridge acknowledges and ignores. `retry_quarantined()` retries previously quarantined
 publications after their cause is corrected. A `fatal` health value or failed
 storage cannot be fixed by reconnecting; the standalone service exits so that
 systemd restarts it.

@@ -413,5 +413,6 @@ class BridgeHealth(StrictModel):
     quarantined_publications: int
     mqtt_best_effort_dropped: int
     notifications_dropped: int
+    foreign_receipts: int
     reconnect_required: bool
     fatal: str | None
