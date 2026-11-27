@@ -446,51 +446,11 @@ class MqttStoreTests(StoreFixture):
         )
         self.assertEqual(len(bridge.acks), 0)
 
-    def test_upgrade_backfills_events_and_protocol_only_binary_refuses_new_database(
-        self,
-    ):
+    def test_database_from_the_retired_protocol_bridge_is_refused_unchanged(self):
         old = Store(self.path)
         old.accept(event(), 1800000000)
         old.db.close()
-        store = self.store()
-        self.assertEqual(
-            store.db.execute("PRAGMA user_version").fetchone()[0], MQTT_SCHEMA_VERSION
-        )
-        self.assertEqual(
-            store.db.execute("SELECT count(*) FROM mqtt_outbox").fetchone()[0], 1
-        )
-        self.assertEqual(
-            store.db.execute("SELECT count(*) FROM events").fetchone()[0], 1
-        )
-        with self.assertRaises(ValueError):
-            Store(self.path)
-
-    def test_migration_omits_unrelated_legacy_nulls_but_keeps_battery_null(self):
-        old = Store(self.path)
-        legacy = event(ack_seq=None, reason=None)
-        old.accept(legacy, 1800000000)
-        old.db.close()
-        store = self.store()
-        published = json.loads(
-            store.db.execute("SELECT payload FROM mqtt_outbox").fetchone()[0]
-        )
-        self.assertNotIn("ack_seq", published["message"])
-        self.assertNotIn("reason", published["message"])
-        self.assertIn("battery_mv", published["message"])
-        self.assertIsNone(published["message"]["battery_mv"])
-        self.assertIsNone(
-            json.loads(
-                store.db.execute(
-                    "SELECT desired FROM mqtt_projection WHERE topic LIKE '%/state'"
-                ).fetchone()[0]
-            )["message"]["battery_mv"]
-        )
-
-    def test_failed_upgrade_preserves_old_database_and_version(self):
-        old = Store(self.path)
-        old.accept(event(node_id="other-node"), 1800000000)
-        old.db.close()
-        with self.assertRaises(ValueError):
+        with self.assertRaisesRegex(ValueError, "new database"):
             self.store()
         db = sqlite3.connect(self.path)
         self.addCleanup(db.close)
@@ -498,8 +458,25 @@ class MqttStoreTests(StoreFixture):
         self.assertEqual(db.execute("SELECT count(*) FROM events").fetchone()[0], 1)
         self.assertIsNone(
             db.execute(
-                "SELECT name FROM sqlite_master WHERE name='mqtt_outbox'"
+                "SELECT name FROM sqlite_master WHERE name LIKE 'mqtt_%'"
             ).fetchone()
+        )
+
+    def test_fresh_database_is_created_at_the_mqtt_schema(self):
+        store = self.store()
+        self.assertEqual(
+            store.db.execute("PRAGMA user_version").fetchone()[0], MQTT_SCHEMA_VERSION
+        )
+        store.db.close()
+        # The engine on its own, as the bench tool uses it, refuses an MQTT database.
+        with self.assertRaises(ValueError):
+            Store(self.path)
+
+    def test_empty_schema_2_file_from_an_interrupted_start_is_used(self):
+        Store(self.path).db.close()
+        store = self.store()
+        self.assertEqual(
+            store.db.execute("PRAGMA user_version").fetchone()[0], MQTT_SCHEMA_VERSION
         )
 
     def test_untrusted_first_receipt_time_stays_unknown_after_boot_is_known(self):

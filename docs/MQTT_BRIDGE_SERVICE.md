@@ -30,7 +30,7 @@ Systemd restarts the service only after a fatal protocol error or a storage
 failure, which a reconnect cannot fix. On stop the service publishes an offline
 status and disconnects once the broker acknowledges it, or aborts the
 connection so the broker publishes the Will. A restarted service starts a clean
-broker session and republishes its durable publications. Back up any
-existing bridge database before upgrading; the MQTT schema upgrade prevents the
-older protocol-only bridge from opening it. Deployment and hardware acceptance
+broker session and republishes its durable publications. A database holding data
+from the retired protocol-only bridge (`transport.py protocol`) is refused at
+startup without being changed; point `database_path` at a new file. Deployment and hardware acceptance
 have not yet been performed.
