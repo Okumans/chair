@@ -22,6 +22,7 @@ MAX_BEST_EFFORT = 128
 MAX_COMMANDS = 64
 MAX_REPORT_SIZE = 16384
 MIN_FREE_DISK = 64 * 1024 * 1024
+MAX_REJECTIONS = 1024
 MAX_PROJECTION_ROWS = 1024
 MAX_PROJECTION_BYTES = 32 * 1024 * 1024
 TERMINAL = {"applied", "rejected", "expired"}
@@ -197,6 +198,9 @@ class MqttStore(Store):
             )""")
             self.db.execute("""CREATE TABLE IF NOT EXISTS mqtt_rejections (
                 digest TEXT PRIMARY KEY, topic TEXT NOT NULL, reason TEXT NOT NULL
+            )""")
+            self.db.execute("""CREATE TABLE IF NOT EXISTS mqtt_rejection_counts (
+                kind TEXT PRIMARY KEY, total INTEGER NOT NULL
             )""")
             self.db.execute("""CREATE TABLE IF NOT EXISTS mqtt_failures (
                 kind TEXT NOT NULL, item_key TEXT NOT NULL, code INTEGER NOT NULL,
@@ -579,17 +583,25 @@ class MqttStore(Store):
         topic_bytes = topic.encode("utf-8")
         prefix = topic_bytes[:256].decode("utf-8", errors="ignore")
         with self.db:
-            exists = self.db.execute(
-                "SELECT 1 FROM mqtt_rejections WHERE digest=?", (digest,)
-            ).fetchone()
-            count = self.db.execute("SELECT count(*) FROM mqtt_rejections").fetchone()[
-                0
-            ]
-            if not exists and count >= 1024:
-                raise sqlite3.OperationalError("MQTT rejection journal is full")
             self.db.execute(
                 "INSERT OR IGNORE INTO mqtt_rejections VALUES (?,?,?)",
                 (digest, prefix, reason[:128]),
+            )
+            # A full journal drops its oldest entry instead of refusing the new
+            # one, so a stream of bad messages cannot stop acknowledgements.
+            excess = (
+                self.db.execute("SELECT count(*) FROM mqtt_rejections").fetchone()[0]
+                - MAX_REJECTIONS
+            )
+            if excess > 0:
+                self.db.execute(
+                    "DELETE FROM mqtt_rejections WHERE rowid IN "
+                    "(SELECT rowid FROM mqtt_rejections ORDER BY rowid LIMIT ?)",
+                    (excess,),
+                )
+            self.db.execute(
+                "INSERT INTO mqtt_rejection_counts VALUES ('invalid',1) "
+                "ON CONFLICT(kind) DO UPDATE SET total=total+1"
             )
 
     def accept_receipt(self, topic, payload, *, qos=1, retain=False):

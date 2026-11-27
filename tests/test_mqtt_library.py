@@ -860,6 +860,30 @@ class CoordinatorTests(StoreFixture):
         self.assertEqual(client.acks, [])
         self.assertTrue(worker.reconnect_required)
 
+    def test_full_rejection_journal_evicts_its_oldest_entry_and_still_acks(self):
+        store, client, worker = self.coordinator()
+        self.ready(worker, client)
+        with store.db:
+            store.db.executemany(
+                "INSERT INTO mqtt_rejections VALUES (?,?,?)",
+                [(f"{i:064x}", "old", "old") for i in range(1024)],
+            )
+        worker.on_message(
+            1, 25, 1, False, "smartchair/v1/bridges/pi-01/receipts", b"bad", 1800000000
+        )
+        self.assertEqual(client.acks, [(25, 1)])
+        self.assertTrue(worker.storage_ok)
+        rows = store.db.execute("SELECT digest,reason FROM mqtt_rejections").fetchall()
+        self.assertEqual(len(rows), 1024)
+        self.assertNotIn(f"{0:064x}", {row[0] for row in rows})
+        self.assertIn("invalid receipt", {row[1] for row in rows})
+        self.assertEqual(
+            store.db.execute(
+                "SELECT total FROM mqtt_rejection_counts WHERE kind='invalid'"
+            ).fetchone()[0],
+            1,
+        )
+
 
 OFFLINE = BrokerConfig(
     host="127.0.0.1", port=1, client_id="smartchair-pi-01", plaintext=True
@@ -1128,6 +1152,33 @@ class BackendLedgerTests(StoreFixture):
         self.assertEqual(len(rows), 2)
         self.assertTrue(all(len(row[1].encode()) <= 256 for row in rows))
         self.assertNotEqual(rows[0][0], rows[1][0])
+
+    def test_full_backend_rejection_journal_evicts_its_oldest_entry(self):
+        db = sqlite3.connect(Path(self.tmp.name) / "backend.sqlite")
+        self.addCleanup(db.close)
+        ledger = BackendLedger(
+            db, node_id=NODE, bridge_id="pi-01", consumer_id="backend-01"
+        )
+        with db:
+            db.executemany(
+                "INSERT INTO chair_mqtt_backend_rejections VALUES (?,?,?)",
+                [(f"{i:064x}", "old", "old") for i in range(1024)],
+            )
+        ledger.reject("smartchair/v1/nodes/chair-01/events", b"bad", "invalid")
+        ledger.reject("smartchair/v1/nodes/chair-01/events", b"bad", "invalid")
+        rows = db.execute(
+            "SELECT digest,reason FROM chair_mqtt_backend_rejections"
+        ).fetchall()
+        self.assertEqual(len(rows), 1024)
+        self.assertNotIn(f"{0:064x}", {row[0] for row in rows})
+        self.assertIn("invalid", {row[1] for row in rows})
+        # Every rejection is counted, including a redelivered duplicate.
+        self.assertEqual(
+            db.execute(
+                "SELECT total FROM chair_mqtt_backend_rejection_counts WHERE kind='invalid'"
+            ).fetchone()[0],
+            2,
+        )
 
 
 class SerialAdapterTests(StoreFixture):

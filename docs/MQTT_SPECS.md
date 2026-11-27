@@ -632,7 +632,9 @@ designated backend account; the subscriber cannot infer a publisher's authentica
 identity from MQTT payload fields alone. Validate the exact receipt field set,
 version/type, canonical UUID, configured consumer, QoS and non-retained delivery.
 Invalid receipts are durably diagnosed and MQTT-ACKed without changing outbox or
-radio state; they are not executed as ESP controls.
+radio state; they are not executed as ESP controls. The diagnosis journal keeps the
+most recent entries and a durable total; when full it evicts its oldest entry rather
+than withholding the ACK. Only a failed commit withholds the ACK.
 
 The backend re-sends a receipt for duplicate publications, including after a crash
 between its database commit and receipt publication. It must not repeat business
@@ -733,6 +735,7 @@ The following bounds apply to the bridge by default:
 | Retained terminal command statuses | 256, for at most 7 days when cleanup is available; see retained command-status cleanup |
 | Pending command error reports | 1,024 records and 2 MiB; each error no more than 2,048 bytes |
 | Pending retained projections | 1,024 topics and 32 MiB of desired/in-flight payload |
+| Invalid-delivery diagnoses | 1,024 most recent entries per journal (bridge receipts, backend deliveries) plus a durable total; evict the oldest |
 | Free-disk safety threshold | 64 MiB; stop new durable admissions below it |
 
 Do not acknowledge new reliable sensor facts until their required forwarding work
