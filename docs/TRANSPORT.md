@@ -1,6 +1,6 @@
 # Smart Chair transport and Pi bridge
 
-Chair → encrypted ESP-NOW v2 → ESP32-S3 gateway → USB JSON → Pi bridge (SQLite) → MQTT 5.
+Chair → encrypted ESP-NOW v2 → ESP32-S3 gateway → UART JSON → Pi bridge (SQLite) → MQTT 5.
 The backend owns logical sessions. Firmware reports physical state and raw MPU6050 movement.
 Start with [Setup and dependencies](SETUP.md) for tool installation and development checks.
 The wire contract and limitations are in [PROTOCOL_SPEC.md](PROTOCOL_SPEC.md).
@@ -77,7 +77,7 @@ pio run -e gateway -t upload --upload-port /dev/serial/by-id/YOUR_S3
 ```
 
 The MAC utility does not write NVS, so stored chair configuration and events remain
-intact. On the restored gateway, USB `hello.mac` should match the S3 address and
+intact. On the restored gateway, `hello.mac` on the Pi's gateway UART should match the S3 address and
 `hello.peer_mac` the C3 address. Then run the Pi bridge as described below.
 
 ## Provision and build
@@ -128,8 +128,30 @@ uv run python -m chair_mqtt.service --config ./bridge.toml
 ```
 
 Its `[bridge]` table names the sensor and the durable SQLite path, and `[gateway]` the
-serial port. Prefer a stable by-id serial path and a local durable filesystem. Do not
-run two serial owners or two bridge processes for the same gateway.
+serial port, `/dev/ttyAMA0` on a Pi 5 (see below). Use a local durable filesystem. Do not run two serial owners
+or two bridge processes for the same gateway.
+
+### Gateway UART wiring
+
+The gateway application speaks JSON on UART1 at 115200 baud, not native USB. The pins
+are `CHAIR_UART_TX_PIN` and `CHAIR_UART_RX_PIN` in `platformio.ini`. Native USB still
+flashes it, and the `mac-gateway` tool still prints there.
+
+| Pi | ESP32-S3 |
+|---|---|
+| GPIO14 TXD (pin 8) | GPIO18 RX |
+| GPIO15 RXD (pin 10) | GPIO17 TX |
+| GND (pin 6) | GND |
+
+Both sides are 3.3 V. On a Pi 5, GPIO14/15 is UART0, `/dev/ttyAMA0`, and is off by
+default: add `dtparam=uart0=on` to `/boot/firmware/config.txt` and reboot. There
+`/dev/serial0` is the separate debug connector (`ttyAMA10`), not these pins. On a Pi 3, 4
+or Zero W, use `/dev/serial0`: enable the serial hardware and disable the serial login
+console (`raspi-config` → Interface Options → Serial Port), and add
+`dtoverlay=disable-bt` to move it from the mini UART to the PL011. The port's user needs
+the `dialout` group. The boot ROM and ESP-IDF logs stay on UART0 (GPIO43/44), so they
+never reach the Pi. A UART cannot signal a gateway reboot, so unlike USB the bridge's
+port stays open across one.
 
 The bridge reconnects after serial loss. It discards partial input on reconnect. SQLite
 uses WAL and synchronous FULL. Each reliable event commits before an exact EVENT_ACK
@@ -226,6 +248,9 @@ drop bytes during bursts. A transient false USB readiness indication preserves p
 input/output; only the hardware bus-reset event clears framing and starts a new USB
 session. Native tests exercise 1,000 real bridge ACKs split across readiness changes,
 maximum-size input, bus reset, partial output, and receive-buffer allocation failure.
+The gateway build uses UART1 instead (`CHAIR_UART_TX_PIN`/`CHAIR_UART_RX_PIN`): the
+same line limits and receive buffer apply, and there is no bus-reset event. The sensor
+keeps hardware USB CDC.
 
 An `invalid_json` error now includes `parse_error` (Glaze's error name), `byte_offset`
 (where parsing stopped), and `line_bytes` (received line length). It does not echo raw
@@ -245,7 +270,7 @@ MAC/node mapping. Corrupt or unauthorized frames never reach the state engine.
 The bench console remains available for raw outbound diagnostic payloads:
 
 ```sh
-uv run tools/transport.py /dev/serial/by-id/YOUR_GATEWAY
+uv run tools/transport.py /dev/ttyAMA0
 ```
 
 Type text, `/hex 00ff010a`, or `/quit`. The input permits 1–1470 arbitrary bytes, but the

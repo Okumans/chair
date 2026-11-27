@@ -5,7 +5,7 @@ The Pi bridge stores reliable events in SQLite and publishes them over MQTT 5 to
 which owns logical sessions.
 
 ```text
-ESP32-C3 chair → encrypted ESP-NOW → ESP32-S3 gateway → USB JSON → Pi bridge (SQLite) → MQTT 5
+ESP32-C3 chair → encrypted ESP-NOW → ESP32-S3 gateway → UART JSON → Pi bridge (SQLite) → MQTT 5
 ```
 
 The chair samples movement at 25 Hz, persists reliable events before sending them, and

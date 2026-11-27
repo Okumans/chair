@@ -56,7 +56,14 @@ namespace Transport {
     uint64_t helloBarrier = 0;
     bool hasHelloBarrier  = false;
 
+#ifdef CHAIR_UART_TX_PIN
+    // A dedicated UART carries the JSON link; UART0 stays the ROM and ESP-IDF console.
+    HardwareSerial& hostSerial = Serial1;
+#else
+    auto& hostSerial = Serial;
+
     void usbResetCallback(void*, esp_event_base_t, int32_t, void*) { usbBusReset.store(true); }
+#endif
 
     void hello(std::optional<uint32_t> requestId = std::nullopt) {
       // Never enter Wi-Fi from the loop while a stalled lifecycle task may own its locks.
@@ -209,10 +216,15 @@ namespace Transport {
   }  // namespace
 
   void begin(const char* role, const char* ownMac, const char* peerMac) {
-    nodeRole                 = role;
-    const bool rxBufferReady = Serial.setRxBufferSize(USB_RX_BUFFER_BYTES) == USB_RX_BUFFER_BYTES;
-    Serial.onEvent(ARDUINO_HW_CDC_BUS_RESET_EVENT, usbResetCallback);
-    Serial.begin(BAUD_RATE);
+    nodeRole = role;
+    const bool rxBufferReady =
+        hostSerial.setRxBufferSize(USB_RX_BUFFER_BYTES) == USB_RX_BUFFER_BYTES;
+#ifdef CHAIR_UART_TX_PIN
+    hostSerial.begin(BAUD_RATE, SERIAL_8N1, CHAIR_UART_RX_PIN, CHAIR_UART_TX_PIN);
+#else
+    hostSerial.onEvent(ARDUINO_HW_CDC_BUS_RESET_EVENT, usbResetCallback);
+    hostSerial.begin(BAUD_RATE);
+#endif
     uint8_t actualMac[MAC_BYTES]{};
     if (esp_read_mac(actualMac, ESP_MAC_WIFI_STA) != ESP_OK) {
       error(ErrorCode::STATION_MAC_FAILED);
@@ -355,8 +367,9 @@ namespace Transport {
   }
 
   void poll() {
-    const bool connected = static_cast<bool>(Serial);
+    const bool connected = static_cast<bool>(hostSerial);
     // HWCDC's connection boolean can flap during a healthy link; only a bus reset loses framing.
+    // A UART has neither signal: it is ready once begun and keeps framing for its lifetime.
     if (usbBusReset.exchange(false)) {
       reader.reset();
       usbOutput.reset();
@@ -368,15 +381,15 @@ namespace Transport {
     }
 
     // Bound USB work so continuous input cannot starve radio queue draining.
-    for (size_t i = 0; i < USB_POLL_BYTES && Serial.available(); ++i) {
-      const int value = Serial.read();
+    for (size_t i = 0; i < USB_POLL_BYTES && hostSerial.available(); ++i) {
+      const int value = hostSerial.read();
       if (value < 0) break;
       if (reader.push(static_cast<char>(value))) handleLine(reader.line());
     }
 
     if (connected)
-      usbOutput.drain(Serial.availableForWrite(), [](const char* data, size_t size) {
-        return Serial.write(reinterpret_cast<const uint8_t*>(data), size);
+      usbOutput.drain(hostSerial.availableForWrite(), [](const char* data, size_t size) {
+        return hostSerial.write(reinterpret_cast<const uint8_t*>(data), size);
       });
     for (size_t i = 0; i < CALLBACK_SLOTS; ++i) {
       const auto completion = completions[i].load();

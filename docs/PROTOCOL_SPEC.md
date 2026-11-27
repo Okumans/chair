@@ -4,7 +4,7 @@ Revision 3, wire version 2. This is the implementation contract; [radio-window p
 
 ## Ownership and defaults
 
-Chair → encrypted unicast ESP-NOW → gateway → USB JSON → Pi SQLite.
+Chair → encrypted unicast ESP-NOW → gateway → UART JSON → Pi SQLite.
 The Pi owns logical sessions. The chair owns physical occupancy, sensing, configuration and power. MQTT, systemd, battery measurement and actual occupied light sleep are deferred.
 
 Seat GPIO5 is active low with 50 ms debounce. MPU6050 uses SDA6/SCL7; INT21 is optional and unused by the polling adapter. Poll at 25 Hz, ±2 g and ±250 degrees/s. Preserve raw readings. Local classification uses acceleration magnitude deviation from 1 g and maximum absolute gyro axis: start above 0.15 g or 15 degrees/s; quiet below 0.08 g and 8 degrees/s; 100 ms debounce on start and stop. Initial gravity is the calibration reference; thresholds require physical tuning.

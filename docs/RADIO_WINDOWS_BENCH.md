@@ -99,12 +99,12 @@ not deliberately change settings or increment revisions.
 
 ```sh
 uv run tools/radio_window_bench.py delayed-ready \
-  --port /dev/serial/by-id/GATEWAY --nodes nodes.json --node chair-01 \
+  --port /dev/ttyAMA0 --nodes nodes.json --node chair-01 \
   --db /tmp/chair-delayed-ready.sqlite --config /tmp/current-chair-config.json \
   --duration 120 | tee delayed-ready.jsonl
 
 uv run tools/radio_window_bench.py lost-ack \
-  --port /dev/serial/by-id/GATEWAY --nodes nodes.json --node chair-01 \
+  --port /dev/ttyAMA0 --nodes nodes.json --node chair-01 \
   --db /tmp/chair-lost-ack.sqlite --config /tmp/current-chair-config.json \
   --duration 120 | tee lost-ack.jsonl
 ```
