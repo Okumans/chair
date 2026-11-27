@@ -9,6 +9,7 @@ import sqlite3
 import time
 import uuid
 from collections import deque
+from contextlib import closing
 from pathlib import Path
 
 from .contract import IDENTIFIER, NODE, SCHEMA, validate
@@ -66,11 +67,33 @@ def compact_sensor_event(value):
 UNFINISHED = "('pending','inflight','waiting','quarantined')"
 
 
+def _written_by_protocol_bridge(path):
+    """Whether ``path`` holds facts or commands from the retired protocol-only bridge.
+
+    A schema-2 file without data is only an interrupted new database and is used.
+    """
+    if not Path(path).exists():
+        return False
+    with closing(sqlite3.connect(path)) as db:
+        if db.execute("PRAGMA user_version").fetchone()[0] != SCHEMA_VERSION:
+            return False
+        tables = {
+            row[0]
+            for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        return any(
+            db.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone()
+            for table in ("events", "boots", "current_state", "commands")
+            if table in tables
+        )
+
+
 class MqttStore(Store):
     """Extend sensor acceptance and MQTT outbox insertion in one transaction.
 
-    An existing version-2 protocol database is upgraded and its retained events
-    are backfilled transactionally. A protocol-only Store refuses version 3.
+    A new database is created at the MQTT schema. A database holding data from
+    the retired protocol-only bridge is refused unchanged, and the bare protocol
+    ``Store`` used by the bench tools refuses an MQTT database.
     """
 
     def __init__(
@@ -118,6 +141,11 @@ class MqttStore(Store):
         self.best_effort = deque()
         self.best_effort_dropped = 0
         self._command_deadlines = {}
+        if _written_by_protocol_bridge(path):
+            raise ValueError(
+                "this database was written by the retired protocol-only bridge, "
+                "which the MQTT bridge does not upgrade; use a new database path"
+            )
         super().__init__(path, _additional_versions=(MQTT_SCHEMA_VERSION,))
         try:
             self._migrate()
@@ -196,30 +224,6 @@ class MqttStore(Store):
                 (self.bridge_id, self.consumer_id, node, mac),
             )
             if version == SCHEMA_VERSION:
-                cursor = self.db.execute(
-                    "SELECT payload,received_at FROM events ORDER BY rowid"
-                )
-                while rows := cursor.fetchmany(128):
-                    for row in rows:
-                        message = json.loads(row["payload"])
-                        if message["node_id"] != node:
-                            raise ValueError(
-                                "existing events do not match the configured sensor"
-                            )
-                        message = compact_sensor_event(message)
-                        # The bridge assumes the Pi's system clock is trustworthy.
-                        # A store configured with an untrusted clock preserves null.
-                        self.db.execute(
-                            "INSERT OR IGNORE INTO mqtt_fact_meta VALUES (?,?,?,?)",
-                            (
-                                node,
-                                message["boot_id"],
-                                message["seq"],
-                                self._millis(row["received_at"]),
-                            ),
-                        )
-                        self._queue_event(message, row["received_at"])
-                self._refresh_state(node)
                 self.db.execute(f"PRAGMA user_version={MQTT_SCHEMA_VERSION}")
 
     def _millis(self, seconds):
