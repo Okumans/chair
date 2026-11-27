@@ -9,7 +9,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
-class MakeMacTests(unittest.TestCase):
+class PioStubTestCase(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
@@ -28,6 +28,8 @@ class MakeMacTests(unittest.TestCase):
         self.environment["PATH"] = str(path) + os.pathsep + self.environment["PATH"]
         self.environment["MAC_TEST_PIO_LOG"] = str(self.log)
 
+
+class MakeMacTests(PioStubTestCase):
     def run_make(self, environment, port):
         return subprocess.run(
             [
@@ -75,6 +77,44 @@ class MakeMacTests(unittest.TestCase):
         result = self.run_make("gateway", "/dev/ttyACM1")
         self.assertNotEqual(result.returncode, 0)
         self.assertTrue(self.log.exists())
+
+
+class MakeUploadPortTests(PioStubTestCase):
+    def run_target(self, target, *variables):
+        return subprocess.run(
+            ["make", "--no-print-directory", target, *variables],
+            cwd=ROOT,
+            env=self.environment,
+            capture_output=True,
+            text=True,
+        )
+
+    def test_targets_pass_selected_port(self):
+        cases = {
+            "upload": ["run", "-e", "gateway", "-t", "upload"],
+            "flash": ["run", "-e", "gateway", "-t", "upload", "-t", "monitor"],
+            "monitor": ["device", "monitor"],
+        }
+        for target, expected in cases.items():
+            with self.subTest(target=target):
+                result = self.run_target(target, "ENV=gateway", "PORT=/tmp/board port")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(
+                    json.loads(self.log.read_text()),
+                    [*expected, "--port", "/tmp/board port"],
+                )
+
+    def test_targets_auto_detect_without_port(self):
+        cases = {
+            "upload": ["run", "-e", "sensor", "-t", "upload"],
+            "flash": ["run", "-e", "sensor", "-t", "upload", "-t", "monitor"],
+            "monitor": ["device", "monitor"],
+        }
+        for target, expected in cases.items():
+            with self.subTest(target=target):
+                result = self.run_target(target, "PORT=")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(json.loads(self.log.read_text()), expected)
 
 
 if __name__ == "__main__":

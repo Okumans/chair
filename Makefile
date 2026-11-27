@@ -3,6 +3,8 @@
 # Target environment: `sensor` (ESP32-C3 SuperMini) or `gateway` (ESP32-S3 DevKit)
 ENV ?= sensor
 PORT ?=
+# Optional serial device for upload/flash/monitor; empty lets PlatformIO auto-detect
+PORT_ARG = $(if $(strip $(PORT)),--port "$(PORT)")
 
 CPP_FILES := $(shell find sensor gateway shared tests tools -name '*.cpp' -o -name '*.h' 2>/dev/null)
 
@@ -15,10 +17,10 @@ help:
 	@echo -e "  (Toggle with \033[36mENV=sensor\033[0m [default] or \033[36mENV=gateway\033[0m)"
 	@echo -e ""
 	@echo -e "  \033[36mmake build\033[0m   [ENV=...]   Build firmware"
-	@echo -e "  \033[36mmake upload\033[0m  [ENV=...]   Upload firmware"
-	@echo -e "  \033[36mmake flash\033[0m   [ENV=...]   Upload and open serial monitor"
+	@echo -e "  \033[36mmake upload\033[0m  [ENV=...] [PORT=...]   Upload firmware"
+	@echo -e "  \033[36mmake flash\033[0m   [ENV=...] [PORT=...]   Upload and open serial monitor"
 	@echo -e "  \033[36mmake mac\033[0m     ENV=sensor|gateway PORT=...   Upload MAC-only firmware & monitor"
-	@echo -e "  \033[36mmake monitor\033[0m             Open serial monitor (115200 baud)"
+	@echo -e "  \033[36mmake monitor\033[0m [PORT=...]           Open serial monitor (115200 baud)"
 	@echo -e "  \033[36mmake lsp\033[0m     [ENV=...]   Regenerate compile_commands.json for Neovim"
 	@echo -e "  \033[36mmake format\033[0m              Format C/C++ and Python files"
 	@echo -e "  \033[36mmake check\033[0m               Check formatting, Python lint and native tests"
@@ -29,6 +31,7 @@ help:
 	@echo -e "    make build                 # Builds sensor node (default)"
 	@echo -e "    make build ENV=gateway     # Builds desk gateway"
 	@echo -e "    make flash ENV=gateway     # Flashes gateway & opens monitor"
+	@echo -e "    make upload ENV=sensor PORT=/dev/ttyACM0  # Upload to a specific port"
 	@echo -e "    make mac ENV=sensor PORT=/dev/ttyACM0  # MAC-only firmware for C3"
 	@echo -e "    make mac ENV=gateway PORT=/dev/ttyACM1 # MAC-only firmware for S3"
 	@echo -e "    make lsp                   # Updates LSP database for sensor"
@@ -39,10 +42,10 @@ build:
 	pio run -e $(ENV)
 
 upload:
-	pio run -e $(ENV) -t upload
+	pio run -e $(ENV) -t upload $(PORT_ARG)
 
 flash:
-	pio run -e $(ENV) -t upload -t monitor
+	pio run -e $(ENV) -t upload -t monitor $(PORT_ARG)
 
 mac:
 	@case "$(ENV)" in \
@@ -53,7 +56,7 @@ mac:
 	pio run -e "mac-$(ENV)" -t upload -t monitor --port "$(PORT)"
 
 monitor:
-	pio device monitor
+	pio device monitor $(PORT_ARG)
 
 compiledb:
 	@python3 -c "import json, pathlib, subprocess; \
