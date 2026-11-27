@@ -32,6 +32,7 @@ from chair_mqtt import (
 from chair_mqtt.backend import BackendLedger
 from chair_mqtt.contract import ContractError, validate
 from chair_mqtt.coordinator import Coordinator, Oversized
+from chair_mqtt.gateway import HELLO_RETRY_S
 from chair_mqtt.protocol_bridge import Bridge, Store
 from chair_mqtt.store import MQTT_SCHEMA_VERSION, CommandAdmissionError, MqttStore
 
@@ -1164,6 +1165,65 @@ class SerialAdapterTests(StoreFixture):
             self.assertEqual(
                 db.execute("SELECT count(*) FROM mqtt_outbox").fetchone()[0], 1
             )
+
+    def test_serial_reconnect_discards_partial_input_and_reacks_a_retry(self):
+        device = Path(self.tmp.name) / "gateway"
+        ptys = [pty.openpty()]
+        device.symlink_to(os.ttyname(ptys[0][1]))
+
+        def close_ptys():
+            for master, slave in ptys:
+                for fd in (master, slave):
+                    try:
+                        os.close(fd)
+                    except OSError:
+                        pass
+
+        self.addCleanup(close_ptys)
+        bridge = offline_bridge(self.path, gateway=SerialTransport(str(device))).start()
+        self.addCleanup(bridge.stop)
+        pending = bytearray()
+
+        def read_message(kind):
+            master = ptys[-1][0]
+            deadline = time.monotonic() + 8
+            while time.monotonic() < deadline:
+                if b"\n" in pending:
+                    line, _, rest = pending.partition(b"\n")
+                    pending[:] = rest
+                    value = json.loads(line)
+                    if value["kind"] == kind:
+                        return value
+                elif select.select([master], [], [], 0.1)[0]:
+                    pending.extend(os.read(master, 8192))
+            self.fail(f"missing {kind}")
+
+        line = json.dumps(envelope(event())).encode() + b"\n"
+        os.write(ptys[-1][0], json.dumps(read_message("hello")).encode() + b"\n")
+        os.write(ptys[-1][0], line)
+        self.assertEqual(read_message("event_ack")["message"]["ack_seq"], 1)
+        # Leave half a line behind, then pull the gateway and plug in a new one.
+        os.write(ptys[-1][0], line[:20])
+        time.sleep(0.3)  # Let the bridge read it; it polls every 20 ms.
+        for fd in ptys[-1]:
+            os.close(fd)
+        ptys[-1] = (-1, -1)
+        ptys.append(pty.openpty())
+        device.unlink()
+        device.symlink_to(os.ttyname(ptys[-1][1]))
+        pending.clear()
+        os.write(ptys[-1][0], json.dumps(read_message("hello")).encode() + b"\n")
+        # The old partial line must not poison the new connection: the first
+        # hello reply completes the handshake, so hello is not sent again.
+        deadline = time.monotonic() + HELLO_RETRY_S * 1.5
+        while not bridge.health().gateway_ready and time.monotonic() < deadline:
+            time.sleep(0.02)
+        self.assertTrue(bridge.health().gateway_ready)
+        # The retry is stored once and acknowledged again.
+        os.write(ptys[-1][0], line)
+        self.assertEqual(read_message("event_ack")["message"]["ack_seq"], 1)
+        with closing(sqlite3.connect(self.path)) as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM events").fetchone()[0], 1)
 
     def test_firmware_hello_with_fractional_tx_power_completes_handshake(self):
         master, slave = pty.openpty()

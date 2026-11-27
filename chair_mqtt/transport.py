@@ -101,11 +101,7 @@ def write_message(port, message, *, before_write=None):
 
 
 def main():
-    """Run the bench console or route explicit protocol, config and command-list operations."""
-    if len(sys.argv) > 1 and sys.argv[1] in {"protocol", "config", "commands"}:
-        from .protocol_bridge import main as protocol_main
-
-        return protocol_main(sys.argv[1:])
+    """Run the bench console on an explicit serial port, or list serial devices."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "port", nargs="?", help="USB serial path, preferably /dev/serial/by-id/…"

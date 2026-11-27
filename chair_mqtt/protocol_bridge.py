@@ -1,6 +1,8 @@
-"""Durable protocol bridge. Sessions and MQTT belong to the consuming application."""
+"""The gateway protocol engine: durable sensor facts, command lifecycle and radio leases.
 
-import argparse
+The MQTT bridge and the radio-window bench tool build on it; it needs only pyserial.
+"""
+
 import json
 import math
 import re
@@ -11,8 +13,6 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
-import serial
-
 UINT32_MAX = 0xFFFFFFFF
 MAX_BOOT_GENERATION = 0x7FFFFFFFFFFFFFFF
 SCHEMA_VERSION = 2
@@ -21,7 +21,6 @@ RADIO_TIMEOUT_S = 1
 PROBE_LEASE_CAP_S = 5
 PROBE_RETRY_S = 5
 COMMAND_RETRY_S = 0.75
-RETRY_DELAY_S = 1
 SERIAL_POLL_S = 0.02
 SERIAL_WRITE_TIMEOUT_S = 1
 RELIABLE = {
@@ -722,122 +721,3 @@ class Bridge:
             self.last_command.pop(dispatch.command_id, None)
         self.command_dispatch = None
         return sent
-
-
-def main(argv=None):
-    """Run the bridge, enqueue configuration, or list command facts from the explicit database."""
-    from .transport import BAUD_RATE, Lines, write_message
-
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=["protocol", "config", "commands"])
-    parser.add_argument("--db", required=True)
-    parser.add_argument(
-        "--nodes", required=True, help="JSON file mapping node IDs to station MACs"
-    )
-    parser.add_argument("--port")
-    parser.add_argument("--node")
-    parser.add_argument("--command-id")
-    parser.add_argument("--revision", type=int)
-    parser.add_argument("--heartbeat-s", type=int, default=900)
-    parser.add_argument("--movement-batch-s", type=int, default=3)
-    parser.add_argument("--movement-enabled", choices=["true", "false"], default="true")
-    parser.add_argument(
-        "--radio-windows-enabled", choices=["true", "false"], default="true"
-    )
-    parser.add_argument("--radio-interval-s", type=int, default=30)
-    parser.add_argument("--radio-open-s", type=int, default=5)
-    parser.add_argument("--radio-motion-tail-s", type=int, default=10)
-    parser.add_argument("--expires-at", type=float, help="UTC Unix seconds")
-    args = parser.parse_args(argv)
-    try:
-        mapping = mapping_file(args.nodes)
-        store = Store(args.db)
-        if args.action == "commands":
-            for row in store.listing(time.time()):
-                print(json.dumps(row), flush=True)
-            return 0
-        if args.action == "config":
-            if (
-                args.node not in mapping
-                or args.revision is None
-                or args.expires_at is None
-            ):
-                parser.error(
-                    "config requires mapped --node, --revision and --expires-at"
-                )
-            config = dict(
-                revision=args.revision,
-                heartbeat_s=args.heartbeat_s,
-                movement_batch_s=args.movement_batch_s,
-                movement_enabled=args.movement_enabled == "true",
-                radio_windows_enabled=args.radio_windows_enabled == "true",
-                radio_interval_s=args.radio_interval_s,
-                radio_open_s=args.radio_open_s,
-                radio_motion_tail_s=args.radio_motion_tail_s,
-            )
-            command_id = args.command_id or str(uuid.uuid4())
-            store.queue(args.node, command_id, config, args.expires_at, time.time())
-            print(json.dumps(dict(kind="queued", command_id=command_id)), flush=True)
-            return 0
-        if not args.port:
-            parser.error("protocol requires an explicit --port")
-        bridge = Bridge(store, mapping)
-        while True:
-            hello = bridge.reset()
-            lines = Lines()
-            try:
-                with serial.Serial(
-                    args.port,
-                    BAUD_RATE,
-                    timeout=SERIAL_POLL_S,
-                    write_timeout=SERIAL_WRITE_TIMEOUT_S,
-                    exclusive=True,
-                ) as port:
-                    write_message(port, hello)
-                    hello_at = time.monotonic()
-                    while True:
-                        chunk = port.read(min(8192, max(1, port.in_waiting)))
-                        for line in lines.feed(chunk):
-                            try:
-                                result = bridge.receive(
-                                    json.loads(line), time.time(), time.monotonic()
-                                )
-                                print(json.dumps(result, ensure_ascii=True), flush=True)
-                            except (
-                                ValueError,
-                                TypeError,
-                                AttributeError,
-                                sqlite3.Error,
-                            ) as error:
-                                print(
-                                    json.dumps(dict(kind="error", reason=str(error))),
-                                    flush=True,
-                                )
-                        try:
-                            outgoing = bridge.next()
-                        except sqlite3.Error as error:
-                            print(
-                                json.dumps(
-                                    {"kind": "storage_error", "reason": str(error)}
-                                ),
-                                flush=True,
-                            )
-                            time.sleep(RETRY_DELAY_S)
-                            continue
-                        if (
-                            bridge.hello_request is not None
-                            and time.monotonic() - hello_at >= 1
-                        ):
-                            write_message(port, hello)
-                            hello_at = time.monotonic()
-                        if outgoing:
-                            bridge.send(port, outgoing)
-            except (serial.SerialException, OSError) as error:
-                print(
-                    json.dumps(dict(kind="disconnected", reason=str(error))), flush=True
-                )
-                time.sleep(RETRY_DELAY_S)
-    except KeyboardInterrupt:
-        return 0
-    except (ValueError, OSError, sqlite3.Error) as error:
-        parser.error(str(error))
