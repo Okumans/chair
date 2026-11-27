@@ -251,7 +251,7 @@ publications after their cause is corrected. A `fatal` health value or failed
 storage cannot be fixed by reconnecting; the standalone service exits so that
 systemd restarts it.
 
-`SerialTransport` is the USB link to the gateway firmware. Another link
+`SerialTransport` is the serial (UART) link to the gateway firmware. Another link
 implements `GatewayTransport`: its `open()` returns a `GatewayStream` whose
 `read()` returns the bytes that arrived, waiting at most about 20 ms,
 `write(data)` writes a prefix of `data` within about a second and returns its

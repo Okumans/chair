@@ -1,4 +1,4 @@
-"""The gateway's USB serial connection as a GatewayTransport."""
+"""The gateway's UART serial connection as a GatewayTransport."""
 
 import serial
 
@@ -6,7 +6,7 @@ from .transport import BAUD_RATE
 
 
 class SerialTransport:
-    """Reach the gateway firmware over its USB serial port."""
+    """Reach the gateway firmware over its serial port."""
 
     def __init__(self, port):
         if not isinstance(port, str) or not port:
