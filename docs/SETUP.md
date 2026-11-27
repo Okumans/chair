@@ -153,8 +153,10 @@ uv run tools/transport.py protocol \
   --port /dev/serial/by-id/YOUR_S3 --nodes ./nodes.json --db ./chair.sqlite
 ```
 
-Replace serial placeholders with actual device paths. `PORT` is used by `make mac`;
-normal upload commands above pass `--upload-port` directly to PlatformIO. The firmware
+Replace serial placeholders with actual device paths. The commands above pass
+`--upload-port` directly to PlatformIO; `make upload`, `make flash`, `make monitor`
+and `make mac` accept the same device as `PORT=...`
+(for example `make upload ENV=sensor PORT=/dev/serial/by-id/YOUR_C3`). The firmware
 can build without pairing values, but the normal radio link will not become ready
 until valid matching settings are supplied.
 
