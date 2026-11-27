@@ -6,7 +6,7 @@ import sqlite3
 from contextlib import contextmanager
 
 from .contract import IDENTIFIER, NODE, ContractError, validate
-from .store import compact
+from .store import MAX_REJECTIONS, compact
 
 
 class BackendLedger:
@@ -60,6 +60,9 @@ class BackendLedger:
             )
             self.db.execute(
                 "CREATE TABLE IF NOT EXISTS chair_mqtt_backend_rejections (digest TEXT PRIMARY KEY, topic TEXT NOT NULL, reason TEXT NOT NULL)"
+            )
+            self.db.execute(
+                "CREATE TABLE IF NOT EXISTS chair_mqtt_backend_rejection_counts (kind TEXT PRIMARY KEY, total INTEGER NOT NULL)"
             )
             previous = self.db.execute(
                 "SELECT node,bridge,consumer FROM chair_mqtt_backend_config WHERE singleton=1"
@@ -184,17 +187,28 @@ class BackendLedger:
             raise ValueError("invalid rejection reason")
         prefix = topic.encode("utf-8")[:256].decode("utf-8", errors="ignore")
         with self._transaction():
-            exists = self.db.execute(
-                "SELECT 1 FROM chair_mqtt_backend_rejections WHERE digest=?", (digest,)
-            ).fetchone()
-            count = self.db.execute(
-                "SELECT count(*) FROM chair_mqtt_backend_rejections"
-            ).fetchone()[0]
-            if not exists and count >= 1024:
-                raise sqlite3.OperationalError("backend rejection journal is full")
             self.db.execute(
                 "INSERT OR IGNORE INTO chair_mqtt_backend_rejections VALUES (?,?,?)",
                 (digest, prefix, reason[:128]),
+            )
+            # A full journal drops its oldest entry instead of refusing the new
+            # one, so a stream of bad messages cannot stop acknowledgements.
+            excess = (
+                self.db.execute(
+                    "SELECT count(*) FROM chair_mqtt_backend_rejections"
+                ).fetchone()[0]
+                - MAX_REJECTIONS
+            )
+            if excess > 0:
+                self.db.execute(
+                    "DELETE FROM chair_mqtt_backend_rejections WHERE rowid IN "
+                    "(SELECT rowid FROM chair_mqtt_backend_rejections "
+                    "ORDER BY rowid LIMIT ?)",
+                    (excess,),
+                )
+            self.db.execute(
+                "INSERT INTO chair_mqtt_backend_rejection_counts VALUES ('invalid',1) "
+                "ON CONFLICT(kind) DO UPDATE SET total=total+1"
             )
 
     def confirmed(self, publication_id):
