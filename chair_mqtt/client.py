@@ -140,7 +140,7 @@ class CommandHandle:
         ``admission_unknown`` is terminal for this wait but may change if a
         late report arrives. Use ``get_command`` or a callback to observe it.
         The wait sleeps until this client records a newer report for the
-        command or the command expires; ``detach()`` ends it with RuntimeError.
+        command or the command expires; ``stop()`` ends it with RuntimeError.
         """
 
         async def until_terminal():
@@ -238,7 +238,7 @@ class ChairClient:
     def _watch_command(self, command_id):
         """Return a future resolved when this client sees the command advance."""
         if not self._attached:
-            raise RuntimeError("client is not attached")
+            raise RuntimeError("client is not running")
         change = asyncio.get_running_loop().create_future()
         self._command_waiters.setdefault(command_id, set()).add(change)
         return change
@@ -415,7 +415,7 @@ class ChairClient:
         handle's ID can be stored and later passed to ``get_command``.
         """
         if not self._attached or self._stopping:
-            raise RuntimeError("client is not attached")
+            raise RuntimeError("client is not running")
         if not isinstance(configuration, ChairConfiguration):
             raise TypeError("configuration must be ChairConfiguration")
         if type(expires_in_seconds) is not int or not 1 <= expires_in_seconds <= 86400:

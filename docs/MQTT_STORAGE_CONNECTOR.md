@@ -50,8 +50,9 @@ What you raise matters:
   ID or fact identity reused with different content.
 - **Any other exception**, such as a lost database connection, a timeout, or the
   application callback failing, leaves the message **unacknowledged** and sets
-  `chair.reconnect_required`. After the application reconnects, the broker
-  redelivers the message. Never wrap infrastructure errors in `ContractError`;
+  `chair.reconnect_required`. The client then drops the connection itself, at
+  most once every 30 seconds, and the broker redelivers the message after the
+  automatic reconnect. Never wrap infrastructure errors in `ContractError`;
   that silently drops data.
 
 ## Reusable helpers
