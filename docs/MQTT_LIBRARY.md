@@ -84,7 +84,10 @@ Additional async decorators are `on_state`, `on_movement_loss`,
 `client_id`, and optional `ca_file`, `username` and `password`. TLS checks the
 broker certificate against `ca_file`, or the system trust store when it is
 omitted, and checks the host name during the handshake, so neither MQTT data
-nor credentials reach an unverified broker. For local testing only,
+nor credentials reach an unverified broker. The client reconnects with Paho's
+exponential 1–30 second backoff, which has no jitter; the MQTT specification
+asks for jitter, so many clients restarting together retry in step. For local
+testing only,
 `plaintext=True` disables TLS; it is accepted only for `localhost`,
 `127.0.0.1` or `::1`. The connection belongs to the client; an application
 that needs MQTT for other topics uses its own, separate Paho client.
@@ -105,7 +108,7 @@ synchronous I/O in them.
 | --- | --- |
 | `ChairClient(config, storage, broker)` | Construct with `ClientConfig`, a `Storage` connector and `BrokerConfig`. Nothing is opened until the client starts. |
 | `async with chair:` or `await chair.start()` | Initialize storage and start connecting in the background; returns `chair` without waiting for the broker. Call once, on the event loop that will run callbacks. |
-| `await chair.stop()` | Disconnect, stop the worker and close storage; leaving `async with` calls it. The client cannot be started again. |
+| `await chair.stop()` | Disconnect, stop the worker and close storage; leaving `async with` calls it. The client cannot be started again. The next client process starts a clean broker session, so publications the broker queued for this one are discarded; the bridge republishes each reliable publication until its receipt arrives. |
 | `chair.on_event(handler)` | Call `handler(event, transaction)` for each new reliable fact. `event` is a `SensorEvent`; use the supplied transaction for application writes. |
 | `chair.on_movement(handler)` | Call `handler(batch)` with a best-effort `MovementBatch`. |
 | `chair.on_movement_loss(handler)` | Call `handler(loss)` with a `MovementLoss`; `loss.dropped_batches` is the sensor's reported loss count. |
@@ -228,10 +231,12 @@ For an application that deliberately embeds the Pi bridge, construct
 `ChairMqttBridge(BridgeConfig(...), BrokerConfig(...), gateway=SerialTransport(port))`
 and use it in a `with` block, or call `start()` and `stop()`. Like `ChairClient`, it owns its MQTT
 connection: `start()` returns without waiting for the broker, and the bridge
-reconnects and recovers unacknowledged deliveries itself. `stop()` publishes an
+reconnects and recovers unacknowledged deliveries itself. Start it once; it
+cannot be started again after `stop()`. `stop()` publishes an
 offline status and waits up to two seconds for the broker to acknowledge it
 before disconnecting; without that confirmation it aborts the connection so the
-broker publishes the bridge's Will, and returns `False`. The bridge opens the
+broker publishes the bridge's Will, and returns `False` (`True` when the offline
+status was confirmed). The bridge opens the
 gateway transport on `start()`, reopens it a second after it disconnects, and
 closes it on `stop()`; without `gateway` it runs MQTT only.
 `publish(message, source_mac=...)` accepts a sensor message that arrived over a
