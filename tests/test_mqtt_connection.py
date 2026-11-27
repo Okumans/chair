@@ -16,8 +16,8 @@ from pydantic import ValidationError
 from chair_mqtt import (
     BridgeConfig,
     BrokerConfig,
+    ChairBridge,
     ChairClient,
-    ChairMqttBridge,
     ClientConfig,
     SQLiteStorage,
 )
@@ -133,7 +133,7 @@ class BridgeVerifiedTlsTests(unittest.TestCase):
         self.addCleanup(self.server.close)
 
     def attempt(self, **broker):
-        bridge = ChairMqttBridge(
+        bridge = ChairBridge(
             BridgeConfig(
                 node_id="chair-01",
                 sensor_mac="02:00:00:00:00:01",

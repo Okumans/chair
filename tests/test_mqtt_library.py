@@ -22,7 +22,7 @@ from gateway_fake import FakeGateway
 from chair_mqtt import (
     BridgeConfig,
     BrokerConfig,
-    ChairMqttBridge,
+    ChairBridge,
     ConfigRequest,
     ControllerLedger,
     MovementBatch,
@@ -853,7 +853,7 @@ class CoordinatorTests(StoreFixture):
         small, large = steps(20), steps(4000)
         self.assertLess(large, 2 * small + 20)
 
-    def test_unrelated_client_suback_does_not_break_facade(self):
+    def test_unrelated_client_suback_does_not_break_the_bridge(self):
         _, client, worker = self.coordinator()
         worker.on_subscribe(999, [SimpleNamespace(is_failure=False, value=0)])
         self.ready(worker, client)
@@ -900,7 +900,7 @@ def bridge_config(path):
 
 def offline_bridge(path, gateway=None):
     """Return an unstarted bridge whose own Paho client never opens a socket."""
-    bridge = ChairMqttBridge(bridge_config(path), OFFLINE, gateway=gateway)
+    bridge = ChairBridge(bridge_config(path), OFFLINE, gateway=gateway)
     client = bridge._client
     mids = itertools.count(200)
     client.connect_async = Mock()
@@ -935,7 +935,7 @@ def wait_until(predicate, timeout=2):
     return True
 
 
-class FacadeTests(StoreFixture):
+class BridgeTests(StoreFixture):
     def test_bridge_owns_its_client_and_connects_in_the_background(self):
         bridge = offline_bridge(self.path)
         client = bridge._client
@@ -1042,7 +1042,7 @@ class FacadeTests(StoreFixture):
         broker = BrokerConfig(
             host="127.0.0.1", port=port, client_id="smartchair-pi-01", plaintext=True
         )
-        bridge = ChairMqttBridge(bridge_config(self.path), broker)
+        bridge = ChairBridge(bridge_config(self.path), broker)
         started = time.monotonic()
         bridge.start()
         time.sleep(0.3)
@@ -1056,7 +1056,7 @@ class FacadeTests(StoreFixture):
         bridge._client.socket = Mock()
         shutdown = bridge._client.socket.return_value.shutdown
         simulate_connack(bridge)
-        with self.assertLogs("chair_mqtt.facade", level="WARNING"):
+        with self.assertLogs("chair_mqtt.bridge", level="WARNING"):
             bridge._coordinator.reconnect_required = True
             self.assertTrue(wait_until(lambda: shutdown.called))
         time.sleep(0.5)  # Still required, but within the recovery interval.
@@ -1324,7 +1324,7 @@ class PackagingTests(unittest.TestCase):
                 )
             result = self.run_python(
                 "import sys; sys.path.insert(0, sys.argv[1]); "
-                "import chair_mqtt.facade, chair_mqtt.serial_gateway, chair_mqtt.store",
+                "import chair_mqtt.bridge, chair_mqtt.serial_gateway, chair_mqtt.store",
                 directory,
             )
         self.assertEqual(result.returncode, 0, result.stderr)

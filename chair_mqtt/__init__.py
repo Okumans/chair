@@ -1,4 +1,4 @@
-"""High-level MQTT facade for Smart Chair.
+"""High-level MQTT library for Smart Chair.
 
 Exports load on first access, so the serial tools can import
 ``chair_mqtt.transport`` and ``chair_mqtt.protocol_bridge`` with only pyserial
@@ -21,7 +21,7 @@ _EXPORTS = {
     "SensorEvent": ".client",
     "SensorState": ".client",
     "ControllerLedger": ".controller",
-    "ChairMqttBridge": ".facade",
+    "ChairBridge": ".bridge",
     "GatewayStream": ".gateway",
     "GatewayTransport": ".gateway",
     "SerialTransport": ".serial_gateway",
@@ -53,7 +53,7 @@ __all__ = [
     "BrokerConfig",
     "ChairClient",
     "ChairConfiguration",
-    "ChairMqttBridge",
+    "ChairBridge",
     "ClientConfig",
     "CommandError",
     "CommandHandle",
@@ -99,6 +99,7 @@ def __dir__():
 if TYPE_CHECKING:
     from .async_storage import SQLiteStorage, Storage
     from .backend import BackendLedger
+    from .bridge import ChairBridge
     from .client import (
         BridgeStatus,
         ChairClient,
@@ -110,7 +111,6 @@ if TYPE_CHECKING:
         SensorState,
     )
     from .controller import ControllerLedger
-    from .facade import ChairMqttBridge
     from .gateway import GatewayStream, GatewayTransport
     from .models import (
         BridgeConfig,

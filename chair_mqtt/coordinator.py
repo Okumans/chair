@@ -83,7 +83,7 @@ class Coordinator:
         if self.fatal:
             return  # Reconnecting cannot clear it, so leave chair topics unsubscribed.
         if self.first_connection and flags.session_present:
-            self.fatal = "new facade unexpectedly resumed an MQTT session"
+            self.fatal = "new bridge unexpectedly resumed an MQTT session"
             self.reconnect_required = True
             return
         self.first_connection = False
