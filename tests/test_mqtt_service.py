@@ -35,6 +35,7 @@ def health(**changes):
         quarantined_publications=0,
         mqtt_best_effort_dropped=0,
         notifications_dropped=0,
+        foreign_receipts=0,
         reconnect_required=False,
         fatal=None,
     )

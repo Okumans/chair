@@ -634,7 +634,10 @@ version/type, canonical UUID, configured consumer, QoS and non-retained delivery
 Invalid receipts are durably diagnosed and MQTT-ACKed without changing outbox or
 radio state; they are not executed as ESP controls. The diagnosis journal keeps the
 most recent entries and a durable total; when full it evicts its oldest entry rather
-than withholding the ACK. Only a failed commit withholds the ACK.
+than withholding the ACK. Only a failed commit withholds the ACK. A well-formed receipt
+naming another consumer is a deployment error rather than corrupt input: count it
+durably without a journal entry, MQTT-ACK it, and surface the count in local bridge
+health.
 
 The backend re-sends a receipt for duplicate publications, including after a crash
 between its database commit and receipt publication. It must not repeat business

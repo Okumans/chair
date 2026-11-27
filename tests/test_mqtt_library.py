@@ -11,6 +11,7 @@ import sys
 import tempfile
 import time
 import unittest
+import uuid
 from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
@@ -860,6 +861,34 @@ class CoordinatorTests(StoreFixture):
         self.assertEqual(client.acks, [])
         self.assertTrue(worker.reconnect_required)
 
+    def test_another_consumers_receipt_is_counted_and_acked_not_journaled(self):
+        store, client, worker = self.coordinator()
+        self.ready(worker, client)
+        topic = "smartchair/v1/bridges/pi-01/receipts"
+        with self.assertLogs("chair_mqtt.store", level="WARNING") as logs:
+            for mid, publication in ((50, uuid.uuid4()), (51, uuid.uuid4())):
+                receipt = {
+                    "schema_version": 1,
+                    "type": "MQTT_ACK",
+                    "consumer_id": "dashboard-01",
+                    "publication_id": str(publication),
+                }
+                worker.on_message(
+                    1, mid, 1, False, topic, json.dumps(receipt).encode(), 1800000000
+                )
+        self.assertEqual(len(logs.records), 1)  # Warn once, not per receipt.
+        self.assertEqual(client.acks, [(50, 1), (51, 1)])
+        self.assertTrue(worker.storage_ok)
+        self.assertEqual(
+            store.db.execute("SELECT count(*) FROM mqtt_rejections").fetchone()[0], 0
+        )
+        self.assertEqual(
+            store.db.execute(
+                "SELECT total FROM mqtt_rejection_counts WHERE kind='foreign_consumer'"
+            ).fetchone()[0],
+            2,
+        )
+
     def test_full_rejection_journal_evicts_its_oldest_entry_and_still_acks(self):
         store, client, worker = self.coordinator()
         self.ready(worker, client)
@@ -1036,6 +1065,16 @@ class BridgeTests(StoreFixture):
         gateway.send(hello)
         # Nothing stale waits for the radio once the gateway is ready.
         self.assertNotIn("event_ack", gateway.kinds_written(0.5))
+
+    def test_health_reports_receipts_from_another_consumer(self):
+        bridge = offline_bridge(self.path).start()
+        self.addCleanup(bridge.stop)
+        self.assertEqual(bridge.health().foreign_receipts, 0)
+        with closing(sqlite3.connect(self.path)) as db, db:
+            db.execute(
+                "INSERT INTO mqtt_rejection_counts VALUES ('foreign_consumer',3)"
+            )
+        self.assertEqual(bridge.health().foreign_receipts, 3)
 
     def test_stop_returns_promptly_when_the_broker_is_unreachable(self):
         with socket.socket() as reserved:
