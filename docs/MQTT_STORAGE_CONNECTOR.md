@@ -76,7 +76,7 @@ You do not need to reimplement the wire protocol:
 | Facts | semantic key | Event: `["event", node, boot_id, seq]`. Report: `["report", node, command_id, report_seq]`. Stores a content hash so reuse with different content is detected. |
 | Deliveries | `publication_id` | Topic and payload hash; the same publication ID with different bytes is a contract error. |
 | Receipts | `publication_id` | Outbox of receipt topic and payload, returned in insertion order until confirmed. |
-| Rejections | digest | Bounded diagnosis: SHA-256 of topic, `\0` and payload, a topic prefix of at most 256 bytes, and a reason of at most 128 characters. Cap the table (SQLite uses 1024 rows). |
+| Rejections | digest | Bounded diagnosis: SHA-256 of topic, `\0` and payload, a topic prefix of at most 256 bytes, and a reason of at most 128 characters. Keep only the newest entries (SQLite keeps 1024) and a running total. |
 | Commands | `command_id` | Exact topic and payload bytes, expiry, next attempt, admitted flag, outcome, latest report sequence and report. |
 | Reports | `(command_id, report_seq)` | Content hash for report deduplication. |
 
@@ -102,7 +102,11 @@ All times are UTC Unix milliseconds as `int`.
   only for a new fact. A duplicate still gets its receipt (the bridge may have
   missed the first one) but does not run the callback. If the callback raises,
   roll everything back and re-raise.
-- **`reject`** stores the bounded diagnosis described above.
+- **`reject`** stores the bounded diagnosis described above. When the table is
+  full, delete its oldest entry; never raise because it is full. Raising leaves
+  the delivery unacknowledged, so the broker redelivers it, the client
+  reconnects every 30 seconds, and after 16 such messages the broker stops
+  delivering anything. Raise only when the write itself fails.
 - **`pending_receipts`** returns up to 16 `(publication_id, topic, payload)`
   tuples, oldest first, with `payload` as `bytes`. **`confirm_receipt`** deletes
   one.
@@ -158,7 +162,10 @@ CREATE TABLE IF NOT EXISTS chair_deliveries (
 CREATE TABLE IF NOT EXISTS chair_receipts (
     position BIGSERIAL, id TEXT PRIMARY KEY, topic TEXT NOT NULL, payload BYTEA NOT NULL);
 CREATE TABLE IF NOT EXISTS chair_rejections (
-    digest TEXT PRIMARY KEY, topic TEXT NOT NULL, reason TEXT NOT NULL);
+    position BIGSERIAL, digest TEXT PRIMARY KEY, topic TEXT NOT NULL,
+    reason TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS chair_rejection_counts (
+    kind TEXT PRIMARY KEY, total BIGINT NOT NULL);
 CREATE TABLE IF NOT EXISTS chair_commands (
     id TEXT PRIMARY KEY, topic TEXT NOT NULL, payload BYTEA NOT NULL,
     expires_ms BIGINT NOT NULL, next_attempt_ms BIGINT NOT NULL,
@@ -314,14 +321,18 @@ class PostgresStorage:
         prefix = topic.encode()[:256].decode(errors="ignore")
         async with self._pool.acquire() as db, db.transaction():
             await db.execute("LOCK TABLE chair_rejections IN EXCLUSIVE MODE")
-            exists = await db.fetchval(
-                "SELECT TRUE FROM chair_rejections WHERE digest = $1", digest)
-            count = await db.fetchval("SELECT count(*) FROM chair_rejections")
-            if not exists and count >= 1024:
-                raise RuntimeError("rejection journal is full")
             await db.execute(
-                "INSERT INTO chair_rejections VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
+                "INSERT INTO chair_rejections (digest, topic, reason) "
+                "VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
                 digest, prefix, reason[:128])
+            # Keep the newest 1024: a full journal must not stop acknowledgements.
+            await db.execute(
+                "DELETE FROM chair_rejections WHERE position IN (SELECT position "
+                "FROM chair_rejections ORDER BY position DESC OFFSET 1024)")
+            await db.execute(
+                "INSERT INTO chair_rejection_counts VALUES ('invalid', 1) "
+                "ON CONFLICT (kind) DO UPDATE "
+                "SET total = chair_rejection_counts.total + 1")
 
     async def pending_receipts(self):
         self._not_in_callback()
