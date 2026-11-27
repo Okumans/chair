@@ -1,4 +1,4 @@
-"""Strict public configuration and protocol models for the MQTT facade."""
+"""Strict public configuration and protocol models for the MQTT library."""
 
 import re
 import uuid
@@ -388,7 +388,7 @@ class EventAck(StrictModel):
 
 
 class PublishResult(StrictModel):
-    """Outcome of ``ChairMqttBridge.publish`` for one sensor message.
+    """Outcome of ``ChairBridge.publish`` for one sensor message.
 
     ``accepted`` and ``duplicate`` messages are durably stored. A reliable
     event, including a retransmitted duplicate, carries the ``ack`` the caller

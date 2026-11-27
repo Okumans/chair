@@ -16,7 +16,7 @@ from pathlib import Path
 import paho.mqtt.client as mqtt
 from gateway_fake import FakeGateway
 
-from chair_mqtt import BridgeConfig, BrokerConfig, ChairMqttBridge
+from chair_mqtt import BridgeConfig, BrokerConfig, ChairBridge
 
 BROKER = shutil.which("mosquitto")
 NODE = "chair-01"
@@ -130,7 +130,7 @@ class PrivateBrokerTests(unittest.TestCase):
                         plaintext=True,
                     )
                     gateway = FakeGateway()
-                    bridge = ChairMqttBridge(
+                    bridge = ChairBridge(
                         settings, broker_settings, gateway=gateway
                     ).start()
                     end = time.monotonic() + 5

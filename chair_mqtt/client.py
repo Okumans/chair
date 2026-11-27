@@ -1,4 +1,4 @@
-"""Async application facade for the chair MQTT protocol."""
+"""Async application client for the chair MQTT protocol."""
 
 import asyncio
 import inspect

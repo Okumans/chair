@@ -8,7 +8,7 @@ import threading
 import tomllib
 from pathlib import Path
 
-from .facade import ChairMqttBridge
+from .bridge import ChairBridge
 from .models import BridgeConfig, BrokerConfig
 from .serial_gateway import SerialTransport
 
@@ -45,7 +45,7 @@ def main(argv=None):
     # The bridge connects in the background and reconnects by itself, so sensor
     # facts are acknowledged and stored durably while the broker is unreachable.
     gateway = SerialTransport(settings["gateway"]["port"])
-    with ChairMqttBridge(config, broker, gateway=gateway) as bridge:
+    with ChairBridge(config, broker, gateway=gateway) as bridge:
         while not stopping.wait(1):
             health = bridge.health()
             if health.fatal or not health.storage_ok:

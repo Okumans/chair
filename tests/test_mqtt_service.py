@@ -66,7 +66,7 @@ class ServiceTests(unittest.TestCase):
             event = Mock()
             event.wait.return_value = states is None
             with (
-                patch.object(service, "ChairMqttBridge", return_value=bridge) as cls,
+                patch.object(service, "ChairBridge", return_value=bridge) as cls,
                 patch.object(service.threading, "Event", return_value=event),
                 patch.object(service.signal, "signal"),
                 patch.dict(service.os.environ, environ or {}, clear=True),
@@ -77,7 +77,7 @@ class ServiceTests(unittest.TestCase):
     def test_remote_plaintext_is_rejected_before_a_bridge_exists(self):
         plaintext = '[mqtt]\nclient_id="x"\nhost="broker.example"\nplaintext=true\n'
         with (
-            patch.object(service, "ChairMqttBridge") as cls,
+            patch.object(service, "ChairBridge") as cls,
             self.assertRaisesRegex(ValidationError, "loopback"),
         ):
             self.run_service(plaintext)

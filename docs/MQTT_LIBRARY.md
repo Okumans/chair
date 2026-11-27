@@ -216,9 +216,9 @@ defines its own transaction object's methods. Its implementation must support
 concurrent callers and the same deduplication and transactional guarantees.
 
 The package also exports `BackendLedger`, `ControllerLedger`, `BridgeConfig`,
-`BridgeHealth`, `CommandNotice`, and `ChairMqttBridge` for lower-level and
+`BridgeHealth`, `CommandNotice`, and `ChairBridge` for lower-level and
 bridge-side integrations. Normal backend/controller applications should use
-`ChairClient`; the Pi service uses `ChairMqttBridge`. The synchronous
+`ChairClient`; the Pi service uses `ChairBridge`. The synchronous
 `BackendLedger` exposes `ingest`, `reject`, `reject_digest`, `pending_receipts`,
 and `confirmed` on a caller-owned SQLite connection. `ControllerLedger` exposes
 `enqueue`, `due`, `submitted`, `observe`, and `get`; its caller must wire MQTT
@@ -228,7 +228,7 @@ transaction requirements. ESP data classes such as `StateSync`, `SeatEvent`,
 validated protocol fields and are not connection managers.
 
 For an application that deliberately embeds the Pi bridge, construct
-`ChairMqttBridge(BridgeConfig(...), BrokerConfig(...), gateway=SerialTransport(port))`
+`ChairBridge(BridgeConfig(...), BrokerConfig(...), gateway=SerialTransport(port))`
 and use it in a `with` block, or call `start()` and `stop()`. Like `ChairClient`, it owns its MQTT
 connection: `start()` returns without waiting for the broker, and the bridge
 reconnects and recovers unacknowledged deliveries itself. Start it once; it

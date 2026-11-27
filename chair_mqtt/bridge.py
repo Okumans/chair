@@ -31,7 +31,7 @@ from .store import UNFINISHED, MqttStore, compact
 LOG = logging.getLogger(__name__)
 
 
-class ChairMqttBridge:
+class ChairBridge:
     """Run the Pi bridge between the gateway and an MQTT 5 broker it connects to.
 
     ``start`` (or ``with``) opens the durable database, connects in the
@@ -414,7 +414,7 @@ class ChairMqttBridge:
                 self._store.db.execute("DELETE FROM mqtt_quarantine")
                 self._store.db.execute("DELETE FROM mqtt_failures")
             return count
-        raise ValueError("unknown facade operation")
+        raise ValueError("unknown bridge operation")
 
     def _run(self):
         try:

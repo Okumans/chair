@@ -207,7 +207,7 @@ class MqttStore(Store):
                                 "existing events do not match the configured sensor"
                             )
                         message = compact_sensor_event(message)
-                        # The facade assumes the Pi's system clock is trustworthy.
+                        # The bridge assumes the Pi's system clock is trustworthy.
                         # A store configured with an untrusted clock preserves null.
                         self.db.execute(
                             "INSERT OR IGNORE INTO mqtt_fact_meta VALUES (?,?,?,?)",
