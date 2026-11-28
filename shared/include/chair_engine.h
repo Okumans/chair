@@ -37,6 +37,8 @@ namespace SmartChair {
     Window communication;
     Delivery delivery = Delivery::IDLE;
     bool occupied = false, imuAvailable = false, storageFailed = false;
+    /// BATTERY_LOW already sent for this discharge; the adapter carries it across deep sleep.
+    bool batteryLow            = false;
     uint32_t occupied_sleep_ms = 0;
     Header identity;
 
@@ -79,6 +81,11 @@ namespace SmartChair {
 
     /// Mark the IMU unavailable and postpone the next attempt without processing a reading.
     void sampleFailed(uint64_t now);
+
+    /// Record the latest cell voltage in millivolts; UINT16_MAX means unavailable.
+    void battery(uint16_t mv) { batteryMv_ = mv; }
+
+    uint16_t batteryMv() const { return batteryMv_; }
 
     /// Retry failed state persistence, queue heartbeats and advance bounded vacant sleep.
     void tick(uint64_t now, bool radioBusy = false);
@@ -157,6 +164,7 @@ namespace SmartChair {
     uint64_t motionTailUntil_ = 0;
     uint64_t nextSchedule_ = 0, lifecycleRetry_ = 0, readyRefresh_ = 0;
     Save save_;
+    uint16_t batteryMv_   = UINT16_MAX;
     bool statePending_    = false;
     bool newBoot_         = false;
     Reason openingReason_ = Reason::scheduled;

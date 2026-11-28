@@ -88,6 +88,7 @@ class TransportTests(unittest.TestCase):
                 if source.name in {
                     "protocol_engine_test.cpp",
                     "protocol_v2_engine_test.cpp",
+                    "protocol_battery_test.cpp",
                 }:
                     sources.extend(ENGINE_SOURCES)
 
