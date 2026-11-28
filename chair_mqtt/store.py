@@ -4,16 +4,27 @@ import hashlib
 import json
 import logging
 import math
+import os
 import re
 import shutil
 import sqlite3
 import time
 import uuid
 from collections import deque
+from collections.abc import Callable
 from contextlib import closing
 from pathlib import Path
 
-from .contract import IDENTIFIER, NODE, SCHEMA, validate
+from .contract import (
+    IDENTIFIER,
+    NODE,
+    SCHEMA,
+    known_int,
+    known_object,
+    known_str,
+    validate,
+)
+from .models import JsonObject
 from .protocol_bridge import RELIABLE, SCHEMA_VERSION, Store, configuration
 
 MQTT_SCHEMA_VERSION = 3
@@ -28,7 +39,8 @@ LOG = logging.getLogger(__name__)
 MAX_PROJECTION_ROWS = 1024
 MAX_PROJECTION_BYTES = 32 * 1024 * 1024
 TERMINAL = {"applied", "rejected", "expired"}
-RELIABLE_SCHEMAS = {
+# Keyed by object: lookups use a decoded JSON value, which need not be a string.
+RELIABLE_SCHEMAS: dict[object, str] = {
     "OCCUPIED": "esp_occupied",
     "VACATED": "esp_vacated",
     "HEARTBEAT": "esp_heartbeat",
@@ -41,24 +53,24 @@ RELIABLE_SCHEMAS = {
 class CommandAdmissionError(ValueError):
     """A structurally valid command cannot be admitted."""
 
-    def __init__(self, reason, *, retryable=False):
+    def __init__(self, reason: str, *, retryable: bool = False) -> None:
         super().__init__(reason)
         self.reason, self.retryable = reason, retryable
 
 
-def compact(value):
+def compact(value: object) -> bytes:
     return json.dumps(
         value, sort_keys=True, separators=(",", ":"), allow_nan=False
     ).encode()
 
 
-def compact_sensor_event(value):
+def compact_sensor_event(value: JsonObject) -> JsonObject:
     """Remove unrelated legacy nulls without hiding unknown non-null data."""
     schema_name = RELIABLE_SCHEMAS.get(value.get("type"))
     if schema_name is None:
         raise ValueError("event has an unsupported type")
     result = dict(value)
-    allowed = SCHEMA["$defs"][schema_name]["properties"]
+    allowed: JsonObject = SCHEMA["$defs"][schema_name]["properties"]
     for key in set(result) - set(allowed):
         if result[key] is not None:
             raise ValueError("event contains an unknown field")
@@ -70,7 +82,7 @@ def compact_sensor_event(value):
 UNFINISHED = "('pending','inflight','waiting','quarantined')"
 
 
-def _written_by_protocol_bridge(path):
+def _written_by_protocol_bridge(path: str | os.PathLike[str]) -> bool:
     """Whether ``path`` holds facts or commands from the retired protocol-only bridge.
 
     A schema-2 file without data is only an interrupted new database and is used.
@@ -101,18 +113,18 @@ class MqttStore(Store):
 
     def __init__(
         self,
-        path,
+        path: str | os.PathLike[str],
         *,
-        bridge_id,
-        consumer_id,
-        mapping,
-        clock_trusted,
-        monotonic_clock=time.monotonic,
-        wall_clock=None,
-    ):
-        if not isinstance(bridge_id, str) or not IDENTIFIER.fullmatch(bridge_id):
+        bridge_id: str,
+        consumer_id: str,
+        mapping: dict[str, str],
+        clock_trusted: Callable[[], bool],
+        monotonic_clock: Callable[[], float] = time.monotonic,
+        wall_clock: Callable[[], float] | None = None,
+    ) -> None:
+        if not isinstance(bridge_id, str) or not IDENTIFIER.fullmatch(bridge_id):  # pyright: ignore[reportUnnecessaryIsInstance]  # runtime guard for untyped callers
             raise ValueError("invalid bridge ID")
-        if not isinstance(consumer_id, str) or not IDENTIFIER.fullmatch(consumer_id):
+        if not isinstance(consumer_id, str) or not IDENTIFIER.fullmatch(consumer_id):  # pyright: ignore[reportUnnecessaryIsInstance]  # runtime guard for untyped callers
             raise ValueError("invalid consumer ID")
         if (
             not callable(clock_trusted)
@@ -120,12 +132,12 @@ class MqttStore(Store):
             or (wall_clock is not None and not callable(wall_clock))
         ):
             raise ValueError("clock callbacks must be callable")
-        if not isinstance(mapping, dict) or len(mapping) != 1:
+        if not isinstance(mapping, dict) or len(mapping) != 1:  # pyright: ignore[reportUnnecessaryIsInstance]  # runtime guard for untyped callers
             raise ValueError("exactly one provisioned sensor is required")
         for node, mac in mapping.items():
-            if not isinstance(node, str) or not NODE.fullmatch(node):
+            if not isinstance(node, str) or not NODE.fullmatch(node):  # pyright: ignore[reportUnnecessaryIsInstance]  # runtime guard for untyped callers
                 raise ValueError("invalid node ID")
-            if not isinstance(mac, str) or not re.fullmatch(
+            if not isinstance(mac, str) or not re.fullmatch(  # pyright: ignore[reportUnnecessaryIsInstance]  # runtime guard for untyped callers
                 r"(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}", mac
             ):
                 raise ValueError("invalid sensor MAC")
@@ -141,9 +153,9 @@ class MqttStore(Store):
         self.clock_trusted = clock_trusted
         self.monotonic_clock = monotonic_clock
         self.wall_clock = wall_clock
-        self.best_effort = deque()
+        self.best_effort: deque[tuple[str, bytes]] = deque()
         self.best_effort_dropped = 0
-        self._command_deadlines = {}
+        self._command_deadlines: dict[str, float] = {}
         self._warned_foreign_receipt = False
         if _written_by_protocol_bridge(path):
             raise ValueError(
@@ -157,7 +169,7 @@ class MqttStore(Store):
             self.db.close()
             raise
 
-    def _migrate(self):
+    def _migrate(self) -> None:
         version = self.db.execute("PRAGMA user_version").fetchone()[0]
         self.db.execute("BEGIN IMMEDIATE")
         with self.db:
@@ -233,7 +245,7 @@ class MqttStore(Store):
             if version == SCHEMA_VERSION:
                 self.db.execute(f"PRAGMA user_version={MQTT_SCHEMA_VERSION}")
 
-    def _millis(self, seconds):
+    def _millis(self, seconds: object) -> int | None:
         if not self.clock_trusted():
             return None
         if not isinstance(seconds, (int, float)) or not math.isfinite(seconds):
@@ -243,7 +255,9 @@ class MqttStore(Store):
             raise ValueError("receipt timestamp outside range")
         return result
 
-    def _envelope(self, message, received_at, publication_id):
+    def _envelope(
+        self, message: JsonObject, received_at: object, publication_id: str | None
+    ) -> JsonObject:
         node, boot = message["node_id"], message["boot_id"]
         row = self.db.execute(
             "SELECT generation FROM boots WHERE node=? AND boot=?", (node, boot)
@@ -256,7 +270,7 @@ class MqttStore(Store):
             "schema_version": 1,
             "bridge_id": self.bridge_id,
             "publication_id": publication_id,
-            "source_mac": self.mapping[node],
+            "source_mac": self.mapping[known_str(node)],
             "received_at_ms": metadata[0]
             if metadata is not None
             else self._millis(received_at),
@@ -264,7 +278,14 @@ class MqttStore(Store):
             "message": message,
         }
 
-    def _insert_outbox(self, logical_key, topic, value, *, reserved_command=None):
+    def _insert_outbox(
+        self,
+        logical_key: str,
+        topic: str,
+        value: JsonObject,
+        *,
+        reserved_command: object = None,
+    ) -> None:
         if self.db.execute(
             "SELECT 1 FROM mqtt_outbox WHERE logical_key=?", (logical_key,)
         ).fetchone():
@@ -300,7 +321,7 @@ class MqttStore(Store):
             (publication_id, logical_key, topic, payload, self.consumer_id),
         )
 
-    def _queue_event(self, message, received_at):
+    def _queue_event(self, message: JsonObject, received_at: object) -> None:
         message = compact_sensor_event(message)
         node, boot, seq = message["node_id"], message["boot_id"], message["seq"]
         topic = f"smartchair/v1/nodes/{node}/events"
@@ -313,7 +334,7 @@ class MqttStore(Store):
             else None,
         )
 
-    def _refresh_state(self, node):
+    def _refresh_state(self, node: str) -> None:
         row = self.db.execute(
             """SELECT e.payload,e.received_at FROM events e
             JOIN boots b ON b.node=e.node AND b.boot=e.boot WHERE e.node=?
@@ -328,7 +349,9 @@ class MqttStore(Store):
         validate(topic, payload, qos=1, retain=True, expected_node=node)
         self._queue_projection(topic, payload)
 
-    def _queue_projection(self, topic, payload, *, force=False):
+    def _queue_projection(
+        self, topic: str, payload: bytes, *, force: bool = False
+    ) -> None:
         """Queue or coalesce a projection without exceeding its separate pool."""
         existing = self.db.execute(
             "SELECT desired,inflight,dirty FROM mqtt_projection WHERE topic=?", (topic,)
@@ -378,7 +401,15 @@ class MqttStore(Store):
             (topic, payload),
         )
 
-    def _report(self, command_id, status, now, *, message=None, late_result=False):
+    def _report(
+        self,
+        command_id: str,
+        status: str,
+        now: float,
+        *,
+        message: JsonObject | None = None,
+        late_result: bool = False,
+    ) -> None:
         if message is not None:
             message = compact_sensor_event(message)
         row = self.db.execute(
@@ -440,7 +471,15 @@ class MqttStore(Store):
                 "UPDATE mqtt_commands SET reserved=0 WHERE id=?", (command_id,)
             )
 
-    def admit_command(self, topic, payload, *, now, qos=1, retain=False):
+    def admit_command(
+        self,
+        topic: str,
+        payload: bytes,
+        *,
+        now: float,
+        qos: int = 1,
+        retain: bool = False,
+    ) -> str:
         try:
             return self._admit_command(topic, payload, now=now, qos=qos, retain=retain)
         except sqlite3.OperationalError as error:
@@ -451,7 +490,15 @@ class MqttStore(Store):
                 raise CommandAdmissionError("queue_full", retryable=True) from error
             raise
 
-    def _admit_command(self, topic, payload, *, now, qos=1, retain=False):
+    def _admit_command(
+        self,
+        topic: str,
+        payload: bytes,
+        *,
+        now: float,
+        qos: int = 1,
+        retain: bool = False,
+    ) -> str:
         """Durably admit one MQTT configuration command or an identical retry."""
         node = next(iter(self.mapping))
         target, value = validate(
@@ -459,10 +506,14 @@ class MqttStore(Store):
         )
         if target.kind != "command":
             raise CommandAdmissionError("invalid_schema")
-        command = value["message"]
-        command_id, expires = command["command_id"], value["expires_at_ms"]
+        # The command schema requires these shapes; validate() has checked them.
+        command = known_object(value["message"])
+        command_id, expires = (
+            known_str(command["command_id"]),
+            known_int(value["expires_at_ms"]),
+        )
         fingerprint = hashlib.sha256(compact(value)).hexdigest()
-        config = {
+        config: JsonObject = {
             key: command[key]
             for key in (
                 "revision",
@@ -546,7 +597,14 @@ class MqttStore(Store):
             )
         return status
 
-    def reject_command(self, reason, *, command_id=None, now, retryable=False):
+    def reject_command(
+        self,
+        reason: str,
+        *,
+        command_id: str | None = None,
+        now: float,
+        retryable: bool = False,
+    ) -> None:
         """Commit a bounded error response before acknowledging bad command input."""
         node = next(iter(self.mapping))
         topic = f"smartchair/v1/nodes/{node}/command_errors"
@@ -572,7 +630,7 @@ class MqttStore(Store):
                 "INSERT INTO mqtt_errors VALUES (?,?,?)", (error_id, topic, payload)
             )
 
-    def reject_receipt(self, topic, payload, reason):
+    def reject_receipt(self, topic: str, payload: bytes, reason: str) -> None:
         """Commit a bounded diagnostic with a digest over the complete bad input."""
         topic_bytes = topic.encode("utf-8")
         hasher = hashlib.sha256()
@@ -581,7 +639,7 @@ class MqttStore(Store):
         hasher.update(payload)
         self.reject_receipt_digest(topic, hasher.hexdigest(), reason)
 
-    def reject_receipt_digest(self, topic, digest, reason):
+    def reject_receipt_digest(self, topic: str, digest: str, reason: str) -> None:
         """Record a diagnostic without retaining an oversized payload."""
         topic_bytes = topic.encode("utf-8")
         prefix = topic_bytes[:256].decode("utf-8", errors="ignore")
@@ -604,21 +662,23 @@ class MqttStore(Store):
                 )
             self._count_rejection("invalid")
 
-    def _count_rejection(self, kind):
+    def _count_rejection(self, kind: str) -> None:
         self.db.execute(
             "INSERT INTO mqtt_rejection_counts VALUES (?,1) "
             "ON CONFLICT(kind) DO UPDATE SET total=total+1",
             (kind,),
         )
 
-    def rejection_count(self, kind):
+    def rejection_count(self, kind: str) -> int:
         """Return how many deliveries of ``kind`` were rejected over the database's life."""
         row = self.db.execute(
             "SELECT total FROM mqtt_rejection_counts WHERE kind=?", (kind,)
         ).fetchone()
         return row[0] if row else 0
 
-    def accept_receipt(self, topic, payload, *, qos=1, retain=False):
+    def accept_receipt(
+        self, topic: str, payload: bytes, *, qos: int = 1, retain: bool = False
+    ) -> bool:
         """Commit a matching backend receipt; duplicates and unknown IDs are harmless.
 
         A well-formed receipt from another consumer, such as a second backend
@@ -650,7 +710,7 @@ class MqttStore(Store):
             )
         return result.rowcount == 1
 
-    def schedule_retention(self, now):
+    def schedule_retention(self, now: float) -> int:
         """Persist expiry and capacity cleanup without removing broker state early."""
         now_ms = self._millis(now)
         with self.db:
@@ -683,17 +743,17 @@ class MqttStore(Store):
                 self._queue_projection(topic, b"")
         return len(due)
 
-    def _after_expire(self, commands, now):
+    def _after_expire(self, commands: list[sqlite3.Row], now: float) -> None:
         for command in commands:
             self._report(command["id"], "expired", now)
 
-    def pending(self, now, monotonic=None):
+    def pending(self, now: float, monotonic: float | None = None) -> list[sqlite3.Row]:
         """Fence dispatch without trusted UTC and apply exact/monotonic deadlines."""
         now_ms = self._millis(now)
         if now_ms is None:
             return []
         monotonic = self.monotonic_clock() if monotonic is None else monotonic
-        if not isinstance(monotonic, (int, float)) or not math.isfinite(monotonic):
+        if not isinstance(monotonic, (int, float)) or not math.isfinite(monotonic):  # pyright: ignore[reportUnnecessaryIsInstance]  # runtime guard for untyped callers
             raise ValueError("invalid monotonic time")
         with self.db:
             rows = self.db.execute(
@@ -701,7 +761,7 @@ class MqttStore(Store):
                    LEFT JOIN mqtt_commands m ON m.id=c.id
                    WHERE c.status IN ('queued','delivered') ORDER BY c.rowid"""
             ).fetchall()
-            expired = []
+            expired: list[sqlite3.Row] = []
             for row in rows:
                 expiry = row["expires_ms"]
                 if expiry is None:
@@ -724,7 +784,15 @@ class MqttStore(Store):
                       AND status IN ('queued','delivered')) ORDER BY rowid"""
         ).fetchall()
 
-    def _after_accept(self, message, *, prior, received_at, generation, now):
+    def _after_accept(
+        self,
+        message: JsonObject,
+        *,
+        prior: sqlite3.Row | None,
+        received_at: float,
+        generation: int | None,
+        now: float,
+    ) -> None:
         if message["type"] in RELIABLE:
             if prior is None:
                 self.db.execute(
@@ -738,7 +806,8 @@ class MqttStore(Store):
                 )
                 self._queue_event(message, received_at)
             if generation is not None:
-                self._refresh_state(message["node_id"])
+                # Accepted messages passed protocol validation: node_id is a mapped string.
+                self._refresh_state(known_str(message["node_id"]))
         if message["type"] in {"COMMAND_RECEIPT", "COMMAND_RESULT"}:
             row = self.db.execute(
                 "SELECT report FROM mqtt_commands WHERE id=?", (message["command_id"],)
@@ -749,7 +818,7 @@ class MqttStore(Store):
             status = report["status"]
             if message["type"] == "COMMAND_RECEIPT":
                 if message["status"] == "received" and status == "queued":
-                    self._report(message["command_id"], "delivered", now)
+                    self._report(known_str(message["command_id"]), "delivered", now)
             elif prior is None:
                 if status in {"queued", "delivered"}:
                     final = (
@@ -757,17 +826,19 @@ class MqttStore(Store):
                         if message["status"] in {"applied", "already_applied"}
                         else "rejected"
                     )
-                    self._report(message["command_id"], final, now, message=message)
+                    self._report(
+                        known_str(message["command_id"]), final, now, message=message
+                    )
                 elif status == "expired" and not report["late_result"]:
                     self._report(
-                        message["command_id"],
+                        known_str(message["command_id"]),
                         "expired",
                         now,
                         message=message,
                         late_result=True,
                     )
 
-    def accept(self, message, now):
+    def accept(self, message: JsonObject, now: float) -> tuple[bool, float]:
         # Advance deadlines before interpreting a newly arrived command result.
         # Otherwise a result received after expiry can incorrectly become an
         # on-time applied/rejected status between two periodic dispatch checks.
@@ -783,7 +854,11 @@ class MqttStore(Store):
                 topic += "/loss"
             payload = compact(self._envelope(message, now, None))
             validate(
-                topic, payload, qos=0, retain=False, expected_node=message["node_id"]
+                topic,
+                payload,
+                qos=0,
+                retain=False,
+                expected_node=known_str(message["node_id"]),
             )
             if len(self.best_effort) >= MAX_BEST_EFFORT:
                 self.best_effort.popleft()

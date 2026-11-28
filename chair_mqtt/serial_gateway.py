@@ -8,12 +8,12 @@ from .transport import BAUD_RATE
 class SerialTransport:
     """Reach the gateway firmware over its serial port."""
 
-    def __init__(self, port):
-        if not isinstance(port, str) or not port:
+    def __init__(self, port: str) -> None:
+        if not isinstance(port, str) or not port:  # pyright: ignore[reportUnnecessaryIsInstance]  # runtime guard for untyped callers
             raise ValueError("an explicit serial port is required")
         self.port = port
 
-    def open(self):
+    def open(self) -> "_SerialStream":
         return _SerialStream(
             serial.Serial(
                 self.port, BAUD_RATE, timeout=0.02, write_timeout=1, exclusive=True
@@ -22,15 +22,15 @@ class SerialTransport:
 
 
 class _SerialStream:
-    def __init__(self, port):
+    def __init__(self, port: serial.Serial) -> None:
         self._port = port
 
-    def read(self):
+    def read(self) -> bytes:
         # Read what is buffered, or wait up to the 20 ms timeout for one byte.
         return self._port.read(min(8192, max(1, self._port.in_waiting)))
 
-    def write(self, data):
+    def write(self, data: bytes) -> int | None:
         return self._port.write(data)
 
-    def close(self):
+    def close(self) -> None:
         self._port.close()

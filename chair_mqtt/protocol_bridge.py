@@ -361,10 +361,10 @@ class Store:
     def _after_expire(self, commands: list[sqlite3.Row], now: float) -> None:
         """Optional transactional integration hook for newly expired commands."""
 
-    def accept(self, m: JsonObject, now: float) -> tuple[bool, float]:
+    def accept(self, message: JsonObject, now: float) -> tuple[bool, float]:
         """Commit before returning (fresh, first_received_at); only then may the caller ACK."""
-        node, boot, seq = m["node_id"], m["boot_id"], m["seq"]
-        payload = json.dumps(m, sort_keys=True, separators=(",", ":"))
+        node, boot, seq = message["node_id"], message["boot_id"], message["seq"]
+        payload = json.dumps(message, sort_keys=True, separators=(",", ":"))
         with self.db:
             prior = self.db.execute(
                 "SELECT payload,received_at FROM events WHERE node=? AND boot=? AND seq=?",
@@ -372,15 +372,15 @@ class Store:
             ).fetchone()
             if prior and self._identity_payload(
                 json.loads(prior[0])
-            ) != self._identity_payload(m):
+            ) != self._identity_payload(message):
                 raise ValueError("event identity reused with different content")
-            if m["type"] in RELIABLE:
+            if message["type"] in RELIABLE:
                 self.db.execute(
                     "INSERT OR IGNORE INTO events VALUES (?,?,?,?,?)",
                     (node, boot, seq, payload, now),
                 )
-            generation = self._generation(m)
-            if generation and m["type"] not in {
+            generation = self._generation(message)
+            if generation and message["type"] not in {
                 "COMMAND_RECEIPT",
                 "READY",
                 "READY_PROOF",
@@ -392,10 +392,10 @@ class Store:
                     (excluded.generation=current_state.generation AND excluded.seq>current_state.seq)""",
                     (node, generation, seq, payload),
                 )
-            if m["type"] == "COMMAND_RESULT":
+            if message["type"] == "COMMAND_RESULT":
                 status = (
                     "applied"
-                    if m["status"] in {"applied", "already_applied"}
+                    if message["status"] in {"applied", "already_applied"}
                     else "rejected"
                 )
                 self.db.execute(
@@ -404,15 +404,15 @@ class Store:
                     (status='expired' AND result IS NOT NULL) THEN result ELSE ? END,
                     status=CASE WHEN status IN
                     ('expired','applied','rejected') THEN status ELSE ? END WHERE id=? AND node=?""",
-                    (payload, status, m["command_id"], node),
+                    (payload, status, message["command_id"], node),
                 )
-            if m["type"] == "COMMAND_RECEIPT" and m["status"] == "received":
+            if message["type"] == "COMMAND_RECEIPT" and message["status"] == "received":
                 self.db.execute(
                     "UPDATE commands SET status='delivered' WHERE id=? AND node=? AND status='queued'",
-                    (m["command_id"], node),
+                    (message["command_id"], node),
                 )
             self._after_accept(
-                m,
+                message,
                 prior=prior,
                 received_at=prior["received_at"] if prior else now,
                 generation=generation,

@@ -5,26 +5,48 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, Literal, NoReturn, cast
 
-from jsonschema import Draft202012Validator
+from jsonschema import Draft202012Validator, TypeChecker
 from jsonschema.exceptions import ValidationError
-from jsonschema.validators import extend
+from jsonschema.protocols import Validator
+from jsonschema.validators import extend  # pyright: ignore[reportUnknownVariableType]  # types-jsonschema leaves extend() unannotated
 from pydantic import ValidationError as ModelValidationError
 
-from .models import BackendReceipt, ConfigRequest, MovementSample
+from .models import BackendReceipt, ConfigRequest, JsonObject, MovementSample
 
 MAX_PAYLOAD = 16384
 IDENTIFIER = re.compile(r"[A-Za-z0-9_-]{1,32}")
 NODE = re.compile(r"[A-Za-z0-9_-]{1,15}")
 UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
-SCHEMA = json.loads(Path(__file__).with_name("mqtt.schema.json").read_text())
-Draft202012Validator.check_schema(SCHEMA)
-StrictValidator = extend(
-    Draft202012Validator,
-    type_checker=Draft202012Validator.TYPE_CHECKER.redefine(
-        "integer", lambda checker, value: type(value) is int
-    ),
+# The packaged JSON Schema document; check_schema() below verifies its shape.
+SCHEMA: dict[str, Any] = json.loads(
+    Path(__file__).with_name("mqtt.schema.json").read_text()
 )
+Draft202012Validator.check_schema(SCHEMA)
+
+
+def _is_integer(checker: TypeChecker, value: object) -> bool:
+    return type(value) is int
+
+
+StrictValidator: type[Validator] = extend(  # pyright: ignore[reportUnknownVariableType]  # types-jsonschema leaves extend() unannotated; it returns a validator class
+    Draft202012Validator,
+    type_checker=Draft202012Validator.TYPE_CHECKER.redefine("integer", _is_integer),
+)
+
+RouteKind = Literal[
+    "bridge_status",
+    "receipt",
+    "event",
+    "state",
+    "movement",
+    "movement_loss",
+    "command",
+    "command_error",
+    "report_status",
+    "report_update",
+]
 
 
 class ContractError(ValueError):
@@ -33,7 +55,7 @@ class ContractError(ValueError):
 
 @dataclass(frozen=True)
 class Route:
-    kind: str
+    kind: RouteKind
     qos: int
     retain: bool
     node: str | None = None
@@ -41,7 +63,7 @@ class Route:
     command: str | None = None
 
 
-def route(topic):
+def route(topic: object) -> Route:
     """Resolve an exact topic; wildcards and unknown suffixes are not messages."""
     if not isinstance(topic, str) or len(topic.encode("utf-8")) > 256:
         raise ContractError("invalid topic")
@@ -60,7 +82,7 @@ def route(topic):
             )
     if branch != "nodes" or not NODE.fullmatch(target):
         raise ContractError("invalid topic target")
-    simple = {
+    simple: dict[tuple[str, ...], tuple[RouteKind, int, bool]] = {
         ("events",): ("event", 1, False),
         ("state",): ("state", 1, True),
         ("movement",): ("movement", 0, False),
@@ -91,8 +113,8 @@ def route(topic):
     raise ContractError("unsupported topic")
 
 
-def _unique_object(pairs):
-    value = {}
+def _unique_object(pairs: list[tuple[str, object]]) -> JsonObject:
+    value: JsonObject = {}
     for key, item in pairs:
         if key in value:
             raise ContractError("duplicate JSON key")
@@ -100,11 +122,11 @@ def _unique_object(pairs):
     return value
 
 
-def _non_integer(_):
+def _non_integer(_: str) -> NoReturn:
     raise ContractError("JSON numeric fields require integer syntax")
 
 
-def decode(payload):
+def decode(payload: object) -> JsonObject:
     """Reject ambiguous JSON before schema validation, including integral floats."""
     if not isinstance(payload, bytes) or len(payload) > MAX_PAYLOAD:
         raise ContractError("invalid payload size/type")
@@ -119,19 +141,49 @@ def decode(payload):
         raise ContractError("invalid or ambiguous JSON") from error
     if not isinstance(value, dict):
         raise ContractError("expected JSON object")
+    return cast(JsonObject, value)
+
+
+# Narrow a JSON value whose type validation has already guaranteed. The
+# assertion restates that invariant; it never fails for validated input.
+def _object_or_none(value: object) -> JsonObject | None:
+    return cast(JsonObject, value) if isinstance(value, dict) else None
+
+
+def known_object(value: object) -> JsonObject:
+    """Return a value that validation already proved is a JSON object."""
+    assert isinstance(value, dict), "validated JSON object expected"
+    return cast(JsonObject, value)
+
+
+def known_list(value: object) -> list[object]:
+    """Return a value that validation already proved is a JSON array."""
+    assert isinstance(value, list), "validated JSON array expected"
+    return cast(list[object], value)
+
+
+def known_str(value: object) -> str:
+    """Return a value that validation already proved is a JSON string."""
+    assert isinstance(value, str), "validated JSON string expected"
+    return value
+
+
+def known_int(value: object) -> int:
+    """Return a value that validation already proved is a JSON integer."""
+    assert isinstance(value, int), "validated JSON integer expected"
     return value
 
 
 def validate(
-    topic,
-    payload,
+    topic: object,
+    payload: bytes,
     *,
-    qos,
-    retain,
-    expected_bridge=None,
-    expected_node=None,
-    expected_consumer=None,
-):
+    qos: int,
+    retain: bool,
+    expected_bridge: str | None = None,
+    expected_node: str | None = None,
+    expected_consumer: str | None = None,
+) -> tuple[Route, JsonObject]:
     """Validate producer flags and data; persistent admission/clock checks are separate."""
     target = route(topic)
     if (
@@ -158,7 +210,7 @@ def validate(
         {"$ref": "#/$defs/" + target.kind, "$defs": SCHEMA["$defs"]}
     )
     try:
-        validator.validate(value)
+        validator.validate(value)  # pyright: ignore[reportArgumentType]  # decoded JSON; the stub's recursive JSON alias rejects dict[str, object]
     except ValidationError as error:
         raise ContractError(
             "payload does not match " + target.kind + " schema"
@@ -169,7 +221,7 @@ def validate(
         elif target.kind == "receipt":
             BackendReceipt.model_validate(value)
         elif target.kind == "movement":
-            for sample in value["message"]["samples"]:
+            for sample in known_list(known_object(value["message"])["samples"]):
                 MovementSample.model_validate(sample)
     except ModelValidationError as error:
         raise ContractError("payload fails strict message validation") from error
@@ -185,37 +237,41 @@ def validate(
         if value["consumer_id"] != expected_consumer:
             raise ContractError("unexpected receipt consumer")
     packet = value.get("message")
-    if isinstance(packet, dict) and packet.get("node_id") != target.node:
+    message = _object_or_none(packet)
+    if message is not None and message.get("node_id") != target.node:
         raise ContractError("topic/body node mismatch")
     if "source_mac" in value:
-        mac = bytes.fromhex(value["source_mac"].replace(":", ""))
+        mac = bytes.fromhex(known_str(value["source_mac"]).replace(":", ""))
         if not any(mac) or mac[0] & 1:
             raise ContractError("source MAC must be nonzero unicast")
     if target.kind == "command":
-        if packet["radio_open_s"] > packet["radio_interval_s"]:
+        command = known_object(packet)
+        if known_int(command["radio_open_s"]) > known_int(command["radio_interval_s"]):
             raise ContractError("radio opening exceeds interval")
-    if isinstance(packet, dict) and packet.get("type") == "STATE_SYNC":
-        if value.get("boot_generation") != packet["boot_generation"]:
+    if message is not None and message.get("type") == "STATE_SYNC":
+        if value.get("boot_generation") != message["boot_generation"]:
             raise ContractError("generation metadata contradicts STATE_SYNC")
     if target.kind == "movement":
+        batch = known_object(packet)
         previous = -1
-        for sample in packet["samples"]:
-            if (
-                sample["offset_ms"] <= previous
-                or sample["offset_ms"] > packet["duration_ms"]
-            ):
+        for sample in known_list(batch["samples"]):
+            offset = known_int(known_object(sample)["offset_ms"])
+            if offset <= previous or offset > known_int(batch["duration_ms"]):
                 raise ContractError("invalid acquisition offsets")
-            previous = sample["offset_ms"]
+            previous = offset
     if target.kind in {"report_status", "report_update"}:
         if value["command_id"] != target.command:
             raise ContractError("topic/body command mismatch")
-        if packet is not None and packet["command_id"] != value["command_id"]:
+        if (
+            packet is not None
+            and known_object(packet)["command_id"] != value["command_id"]
+        ):
             raise ContractError("result/report command mismatch")
         status = value["status"]
         if status in {"applied", "rejected"}:
             if packet is None or value["late_result"]:
                 raise ContractError("terminal status requires timely result evidence")
-            applied = packet["status"] in {"applied", "already_applied"}
+            applied = known_object(packet)["status"] in {"applied", "already_applied"}
             if applied != (status == "applied"):
                 raise ContractError("terminal status contradicts sensor result")
         elif status == "expired":
