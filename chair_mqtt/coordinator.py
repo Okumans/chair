@@ -122,7 +122,7 @@ class Coordinator:
                 "SELECT topic,desired FROM mqtt_projection WHERE desired IS NOT NULL"
             ).fetchall()
             for topic, desired in projections:
-                self.store._queue_projection(topic, desired, force=True)  # pyright: ignore[reportPrivateUsage]  # the store's package-internal projection hook
+                self.store.queue_projection(topic, desired, force=True)
         node = next(iter(self.store.mapping))
         for topic in (
             f"smartchair/v1/nodes/{node}/commands/config",
@@ -518,7 +518,7 @@ class Coordinator:
             "instance_id": instance_id,
             "status": "offline" if shutting_down else "online",
             "reason": "shutdown" if shutting_down else None,
-            "observed_at_ms": self.store._millis(now),  # pyright: ignore[reportPrivateUsage]  # the store's package-internal clock helper
+            "observed_at_ms": self.store.millis(now),
         }
         if not shutting_down:
             value.update(
@@ -536,7 +536,7 @@ class Coordinator:
 
         payload = compact(value)
         with self.store.db:
-            self.store._queue_projection(topic, payload)  # pyright: ignore[reportPrivateUsage]  # the store's package-internal projection hook
+            self.store.queue_projection(topic, payload)
         self._last_status = (critical, counters)
 
     def _publication_failure(self, flight: Flight, code: int, description: str) -> None:

@@ -113,7 +113,7 @@ def route(topic: object) -> Route:
     raise ContractError("unsupported topic")
 
 
-def _unique_object(pairs: list[tuple[str, object]]) -> JsonObject:
+def unique_object_hook(pairs: list[tuple[str, object]]) -> JsonObject:
     value: JsonObject = {}
     for key, item in pairs:
         if key in value:
@@ -133,7 +133,7 @@ def decode(payload: object) -> JsonObject:
     try:
         value = json.loads(
             payload.decode("utf-8"),
-            object_pairs_hook=_unique_object,
+            object_pairs_hook=unique_object_hook,
             parse_float=_non_integer,
             parse_constant=_non_integer,
         )

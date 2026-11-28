@@ -7,7 +7,7 @@ import threading
 import time
 from typing import TYPE_CHECKING, Protocol, cast
 
-from .contract import _unique_object  # pyright: ignore[reportPrivateUsage]  # package-internal JSON hook shared with the MQTT decoder
+from .contract import unique_object_hook
 from .transport import Lines, write_message
 
 if TYPE_CHECKING:
@@ -50,17 +50,15 @@ class GatewayTransport(Protocol):
 class GatewayBridge(Protocol):
     """The bridge operations a ``GatewayLink`` drives; ``ChairBridge`` provides them."""
 
-    def _gateway_opened(self) -> "JsonObject": ...
+    def gateway_opened(self) -> "JsonObject": ...
 
-    def _gateway_closed(self) -> None: ...
+    def gateway_closed(self) -> None: ...
 
-    def _gateway_received(self, envelope: "JsonObject") -> object: ...
+    def gateway_received(self, envelope: "JsonObject") -> object: ...
 
-    def _gateway_next(self) -> "JsonObject | None": ...
+    def gateway_next(self) -> "JsonObject | None": ...
 
-    def _gateway_write(
-        self, message: "JsonObject", stream: GatewayStream
-    ) -> object: ...
+    def gateway_write(self, message: "JsonObject", stream: GatewayStream) -> object: ...
 
 
 def decode_gateway_line(line: bytes | str) -> "JsonObject":
@@ -70,7 +68,7 @@ def decode_gateway_line(line: bytes | str) -> "JsonObject":
     ``tx_power_dbm`` are fractional. Telemetry fields are still type-checked
     by the protocol validator, and duplicate keys remain ambiguous.
     """
-    value = json.loads(line, object_pairs_hook=_unique_object)
+    value = json.loads(line, object_pairs_hook=unique_object_hook)
     if not isinstance(value, dict):
         raise ValueError("gateway line is not a JSON object")
     return cast("JsonObject", value)
@@ -101,7 +99,7 @@ class GatewayLink:
             opened = False
             try:
                 stream = self.transport.open()
-                hello: JsonObject | None = self.bridge._gateway_opened()  # pyright: ignore[reportPrivateUsage]  # the bridge's package-internal gateway hook
+                hello: JsonObject | None = self.bridge.gateway_opened()
                 opened = True
                 write_message(stream, hello)
                 hello_at = time.monotonic()
@@ -110,7 +108,7 @@ class GatewayLink:
                     for line in lines.feed(stream.read()):
                         try:
                             envelope = decode_gateway_line(line)
-                            self.bridge._gateway_received(envelope)  # pyright: ignore[reportPrivateUsage]  # the bridge's package-internal gateway hook
+                            self.bridge.gateway_received(envelope)
                             if (
                                 hello is not None
                                 and envelope.get("kind") == "hello"
@@ -130,9 +128,9 @@ class GatewayLink:
                     ):
                         write_message(stream, hello)
                         hello_at = time.monotonic()
-                    outgoing = self.bridge._gateway_next()  # pyright: ignore[reportPrivateUsage]  # the bridge's package-internal gateway hook
+                    outgoing = self.bridge.gateway_next()
                     if outgoing:
-                        self.bridge._gateway_write(outgoing, stream)  # pyright: ignore[reportPrivateUsage]  # the bridge's package-internal gateway hook
+                        self.bridge.gateway_write(outgoing, stream)
             except (OSError, sqlite3.Error) as error:
                 # pyserial's SerialException is an OSError.
                 if not self._stop.is_set():
@@ -145,7 +143,7 @@ class GatewayLink:
                         pass
                 if opened:
                     try:
-                        self.bridge._gateway_closed()  # pyright: ignore[reportPrivateUsage]  # the bridge's package-internal gateway hook
+                        self.bridge.gateway_closed()
                     except RuntimeError:
                         pass
             self._stop.wait(REOPEN_DELAY_S)

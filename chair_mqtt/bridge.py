@@ -236,19 +236,19 @@ class ChairBridge:
 
     # Gateway operations, run on the worker for the GatewayLink thread.
 
-    def _gateway_opened(self):
+    def gateway_opened(self):
         return self._call("gateway_opened")
 
-    def _gateway_closed(self):
+    def gateway_closed(self):
         self._call("gateway_closed")
 
-    def _gateway_received(self, envelope):
+    def gateway_received(self, envelope):
         return self._call("gateway_received", envelope)
 
-    def _gateway_next(self):
+    def gateway_next(self):
         return self._call("gateway_next")
 
-    def _gateway_write(self, message, stream):
+    def gateway_write(self, message, stream):
         # The radio lease and command deadline are checked before each write.
         return self._call("gateway_write", message, stream)
 

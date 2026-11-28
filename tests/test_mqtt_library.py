@@ -453,9 +453,9 @@ class MqttStoreTests(StoreFixture):
                 store.admit_command(topic, self.command(), now=1800000000), "queued"
             )
             store.db.execute("UPDATE mqtt_projection SET dirty=0")
-            store._queue_projection("unrelated/topic", b"value")
+            store.queue_projection("unrelated/topic", b"value")
             with self.assertRaises(sqlite3.OperationalError):
-                store._queue_projection("another/topic", b"value")
+                store.queue_projection("another/topic", b"value")
             store.pending(1800000061)
         report = store.db.execute("SELECT report FROM mqtt_commands").fetchone()[0]
         self.assertEqual(json.loads(report)["status"], "expired")
