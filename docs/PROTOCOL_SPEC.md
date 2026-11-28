@@ -5,7 +5,7 @@ Revision 3, wire version 2. This is the implementation contract; [radio-window p
 ## Ownership and defaults
 
 Chair → encrypted unicast ESP-NOW → gateway → UART JSON → Pi SQLite.
-The Pi owns logical sessions. The chair owns physical occupancy, sensing, configuration and power. Battery measurement and actual occupied light sleep are deferred.
+The Pi owns logical sessions. The chair owns physical occupancy, sensing, configuration and power, including battery measurement. Actual occupied light sleep is deferred.
 
 Seat GPIO5 is active low with 50 ms debounce. MPU6050 uses SDA6/SCL7; INT21 is optional and unused by the polling adapter. Poll at 25 Hz, ±2 g and ±250 degrees/s. Preserve raw readings. Local classification uses acceleration magnitude deviation from 1 g and maximum absolute gyro axis: start above 0.15 g or 15 degrees/s; quiet below 0.08 g and 8 degrees/s; 100 ms debounce on start and stop. Initial gravity is the calibration reference; thresholds require physical tuning.
 
@@ -19,6 +19,8 @@ Maximum ESP-NOW v2 payload: 1470 bytes. Node ID: 1–15 ASCII alphanumeric/under
 Header (32 bytes): version u8=2 at 0, type u8 at 1, payload length u16 at 2, node ID at 4, boot ID u64 at 20, sequence u32 at 28. Wire version 1 is rejected.
 
 Common telemetry (12 bytes): uptime_ms u32, occupied u8 (0/1), battery_mv u16 (65535 unavailable), config_revision u32, health_flags u8 (bit0 IMU unavailable, bit1 battery unavailable). Uptime is diagnostic and wraps at 32 bits.
+
+The chair sends BATTERY_LOW once when battery_mv drops below 3400 and not again until it has recovered to at least 3600; the latch survives deep sleep but not power-off.
 
 Types and payloads:
 

@@ -74,7 +74,7 @@ are separate; see [development checks](docs/SETUP.md#development-checks).
 
 - [Radio-window bench tools](docs/RADIO_WINDOWS_BENCH.md): recovery policy, contact traces, fault tests and current measurement.
 
-Battery measurement and actual occupied light sleep remain deferred. The MQTT bridge
+Actual occupied light sleep remains deferred. The MQTT bridge
 service and its systemd unit exist but have not yet been deployed or accepted on a Pi.
 The occupied radio uses a test schedule; physical validation is still required.
 Native tests do not establish physical radio reliability,

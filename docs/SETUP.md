@@ -142,7 +142,13 @@ just to run the bridge.
 
 The seat contact connects GPIO5 to ground with an internal pull-up. The MPU6050 uses
 I2C address `0x68`, SDA GPIO6 and SCL GPIO7. Confirm wiring against
-`sensor/include/pins.h`; the optional interrupt and battery input are currently unused.
+`sensor/include/pins.h`; the optional interrupt is unused.
+
+The battery is one 21700 Li-ion cell measured through a 100k/100k divider into GPIO0, so
+`battery_mv` is twice the ADC reading (8 samples averaged, read at every wake and every 60 s
+while awake). Below 1000 mV the cell counts as absent and `battery_mv` is null. The chair
+sends `BATTERY_LOW` once when the cell drops below 3400 mV and re-arms at 3600 mV. The
+divider draws about 20 µA continuously, including in deep sleep.
 
 ## Build, upload and run
 
@@ -220,7 +226,8 @@ workaround; the PlatformIO build remains the firmware compilation check.
 - **`ready: false`:** check the local pairing header, both MACs, keys and channel.
 - **`invalid_json`:** stop extra serial owners and inspect `parse_error`, `byte_offset`
   and `line_bytes`; see [serial diagnostics](TRANSPORT.md#usb-details-and-diagnostics).
-- **No movement:** check MPU6050 wiring and health flags; battery readings remain null.
+- **No movement:** check MPU6050 wiring and health flags.
+- **Battery null:** no cell is connected or GPIO0 reads below 500 mV; check the divider.
 - **No serial output:** check the USB cable, native USB connector and device path after
   reconnecting. Prefer `/dev/serial/by-id/` when available.
 
