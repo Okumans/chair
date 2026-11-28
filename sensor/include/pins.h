@@ -15,7 +15,7 @@ namespace Pins {
   constexpr uint8_t I2C_SDA = 6;
   constexpr uint8_t I2C_SCL = 7;
 
-  // Optional sensor interrupt & battery ADC
+  // Optional sensor interrupt; battery ADC through a 100k/100k divider
   constexpr uint8_t IMU_INT        = 21;
   constexpr uint8_t BATTERY_ADC    = 0;
 
