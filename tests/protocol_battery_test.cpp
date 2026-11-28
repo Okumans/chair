@@ -32,6 +32,19 @@ namespace {
                                  [](const Frame& f) { return f.type == Type::BATTERY_LOW; });
   }
 
+  /// Acknowledge the pending BATTERY_LOW as the Pi would.
+  void ackAlert(Engine& e, uint64_t now) {
+    const auto alert = std::ranges::find_if(
+        e.durable.outbox, [](const Frame& f) { return f.type == Type::BATTERY_LOW; });
+    assert(alert != e.durable.outbox.end());
+    Frame ack;
+    ack.id       = id();
+    ack.type     = Type::EVENT_ACK;
+    ack.ack_boot = alert->id.boot;
+    ack.ack_seq  = alert->id.seq;
+    e.receive(ack, now);
+  }
+
   void defaults() {
     auto e = started();
     auto f = e.frame(Type::HEARTBEAT, 100);
@@ -54,13 +67,17 @@ namespace {
     auto e = started();
     e.battery(3300);
     e.tick(100);
-    assert(e.batteryLow && alerts(e) == 1);
+    assert(!e.batteryLow && alerts(e) == 1);  // Pending until the Pi acknowledges it.
     const auto alert = std::ranges::find_if(
         e.durable.outbox, [](const Frame& f) { return f.type == Type::BATTERY_LOW; });
     assert(alert->common.battery == 3300);
     e.tick(200);
     e.tick(300);
     assert(alerts(e) == 1);
+    ackAlert(e, 400);
+    assert(e.batteryLow && alerts(e) == 0);
+    e.tick(500);
+    assert(alerts(e) == 0);
   }
 
   void chatter() {
@@ -79,7 +96,9 @@ namespace {
     assert(!e.batteryLow && alerts(e) == 0);
     e.battery(Battery::LOW_MV - 1);
     e.tick(200);
-    assert(e.batteryLow && alerts(e) == 1);
+    assert(alerts(e) == 1);
+    ackAlert(e, 250);
+    assert(e.batteryLow);
     e.battery(Battery::REARM_MV - 1);
     e.tick(300);
     assert(e.batteryLow);
@@ -88,7 +107,7 @@ namespace {
     assert(!e.batteryLow);
     e.battery(Battery::LOW_MV - 1);
     e.tick(500);
-    assert(e.batteryLow && alerts(e) == 2);
+    assert(alerts(e) == 1);
   }
 
   void unavailable() {
@@ -98,9 +117,10 @@ namespace {
     assert(!e.batteryLow && alerts(e) == 0);
     e.battery(3300);
     e.tick(200);
+    ackAlert(e, 250);
     e.battery(UINT16_MAX);
     e.tick(300);
-    assert(e.batteryLow && alerts(e) == 1);
+    assert(e.batteryLow && alerts(e) == 0);
   }
 
   void restoredLatch() {
@@ -111,6 +131,25 @@ namespace {
     e.seat(false, 50);
     e.tick(100);
     assert(e.batteryLow && alerts(e) == 0);
+  }
+
+  /// A long hub outage overflows the outbox; the dropped alert must be raised again.
+  void survivesOverflow() {
+    Engine e(id(), {}, save);
+    e.imuAvailable = true;
+    e.seat(true, 0);
+    e.seat(true, 50);
+    e.battery(3300);
+    e.tick(100);
+    assert(alerts(e) == 1);
+    const uint64_t heartbeat = uint64_t(e.durable.config.heartbeat_s) * 1000;
+    uint64_t now             = 100;
+    for (size_t i = 0; i < 2 * Limits::OUTBOX_CAPACITY; ++i) {
+      now += heartbeat;
+      e.tick(now);
+      assert(e.durable.outbox.size() < Limits::OUTBOX_CAPACITY);
+    }
+    assert(!e.batteryLow && alerts(e) == 1);
   }
 
   void afterStartup() {
@@ -138,5 +177,6 @@ int main() {
   boundaries();
   unavailable();
   restoredLatch();
+  survivesOverflow();
   afterStartup();
 }

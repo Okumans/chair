@@ -214,9 +214,15 @@ namespace SmartChair {
   }
 
   void Engine::acknowledge(const Frame& ack) {
-    Durable changed = durable;
-    std::erase_if(changed.outbox, [&](const auto& event) { return matchesAck(event.id, ack); });
+    Durable changed     = durable;
+    bool batteryAlerted = false;
+    std::erase_if(changed.outbox, [&](const auto& event) {
+      if (!matchesAck(event.id, ack)) return false;
+      batteryAlerted |= event.type == Type::BATTERY_LOW;
+      return true;
+    });
     if (changed.outbox.size() == durable.outbox.size() || !commit(changed)) return;
+    if (batteryAlerted) batteryLow = true;
 
     if (durable.outbox.empty()) delivery = Delivery::IDLE;
 
@@ -281,6 +287,12 @@ namespace SmartChair {
     durable       = d;
     storageFailed = statePending_;
     return true;
+  }
+
+  bool Engine::batteryAlertQueued() const {
+    const auto alert = [](const Frame& f) { return f.type == Type::BATTERY_LOW; };
+    return std::ranges::any_of(durable.outbox, alert) ||
+           std::ranges::any_of(pendingStorage_, alert);
   }
 
   void Engine::reserve(Durable& d, uint64_t now) {

@@ -187,14 +187,32 @@ namespace {
     Fake::tick(0, HIGH);
     Fake::tick(50, HIGH);
     Fake::tick(60, HIGH);
-    assert(engine->batteryLow && batteryAlerts() == 1);
+    assert(batteryAlerts() == 1);
+    // Unacknowledged: the durable outbox carries the alert across sleep without a duplicate.
+    Fake::tick(2550, HIGH);
+    assert(Fake::sleeps == 1);
+    Fake::boot(ESP_SLEEP_WAKEUP_TIMER, false);
+    Fake::tick(0, HIGH);
+    Fake::tick(50, HIGH);
+    Fake::tick(60, HIGH);
+    assert(batteryAlerts() == 1);
+    // Acknowledged: the retained latch suppresses a new alert on the next wake.
+    Frame ack;
+    ack.id           = engine->identity;
+    ack.type         = Type::EVENT_ACK;
+    const auto alert = std::ranges::find_if(
+        engine->durable.outbox, [](const Frame& f) { return f.type == Type::BATTERY_LOW; });
+    ack.ack_boot = alert->id.boot;
+    ack.ack_seq  = alert->id.seq;
+    engine->receive(ack, 70);
+    assert(engine->batteryLow && batteryAlerts() == 0);
     Fake::tick(2550, HIGH);
     assert(Fake::sleeps == 1 && retainedBatteryLow);
     Fake::boot(ESP_SLEEP_WAKEUP_TIMER, false);
     Fake::tick(0, HIGH);
     Fake::tick(50, HIGH);
     Fake::tick(60, HIGH);
-    assert(engine->batteryLow && batteryAlerts() == 1);
+    assert(engine->batteryLow && batteryAlerts() == 0);
     Fake::boot(ESP_SLEEP_WAKEUP_UNDEFINED, false);
     assert(!engine->batteryLow);  // A cold boot forgets the latch and may alert once more.
   }
