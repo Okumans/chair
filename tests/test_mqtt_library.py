@@ -388,6 +388,34 @@ class MqttStoreTests(StoreFixture):
             other.execute("SELECT count(*) FROM mqtt_outbox").fetchone()[0], 1
         )
 
+    def test_unknown_command_result_is_a_fact_without_a_command_status(self):
+        store = self.store()
+        bridge = Bridge(store, MAPPING)
+        bridge.receive(envelope(event()), 1800000000)
+        command_id = "9a1c5e1e-0d4b-4c55-8c1b-2f7f3c0c9a01"
+        result = event("COMMAND_RESULT", seq=2, command_id=command_id, status="applied")
+        bridge.receive(envelope(result), 1800000001)
+        self.assertEqual(len(bridge.acks), 2)
+        stored = store.db.execute("SELECT count(*) FROM events WHERE seq=2")
+        self.assertEqual(stored.fetchone()[0], 1)
+        published = [
+            json.loads(row["payload"])["message"]
+            for row in store.db.execute(
+                "SELECT payload FROM mqtt_outbox WHERE topic=?",
+                ("smartchair/v1/nodes/chair-01/events",),
+            )
+        ]
+        self.assertIn(result, published)
+        self.assertEqual(
+            store.db.execute("SELECT count(*) FROM mqtt_commands").fetchone()[0], 0
+        )
+        self.assertEqual(
+            store.db.execute(
+                "SELECT count(*) FROM mqtt_projection WHERE topic LIKE '%/commands/%'"
+            ).fetchone()[0],
+            0,
+        )
+
     def test_failed_outbox_write_rolls_back_fact_and_sensor_ack(self):
         store = self.store()
         store.db.executescript(
