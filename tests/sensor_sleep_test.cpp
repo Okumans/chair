@@ -149,11 +149,12 @@ namespace {
 
   void reportsBattery() {
     Fake::adcMv = 1955;
+    // 1955 mV at the pin is 3910 mV through the divider, 3954 mV after bench calibration.
     Fake::boot();
     Fake::tick(0, HIGH);
     Fake::tick(50, HIGH);
     Frame first;
-    assert(decode(Fake::sent[0], first) && first.common.battery == 3910);
+    assert(decode(Fake::sent[0], first) && first.common.battery == 3954);
     assert(!(first.common.health & Health::BATTERY_UNAVAILABLE));
   }
 
@@ -176,9 +177,9 @@ namespace {
     Fake::tick(50, LOW);
     Fake::adcMv = 1700;
     Fake::tick(59999, LOW);
-    assert(engine->batteryMv() == 3910);
+    assert(engine->batteryMv() == 3954);
     Fake::tick(60000, LOW);
-    assert(engine->batteryMv() == 3400);
+    assert(engine->batteryMv() == 3438);
   }
 
   void timerWakeKeepsLatch() {
