@@ -1,13 +1,17 @@
 """Durable controller submission and report tracking helpers."""
 
+from __future__ import annotations
+
 import hashlib
 import json
 import sqlite3
+from collections.abc import Generator
 from contextlib import contextmanager
+from typing import Any
 
-from .contract import NODE, ContractError, validate
+from .contract import NODE, ContractError, known_int, known_str, validate
 from .contract import route as parse_route
-from .models import ConfigRequest
+from .models import ConfigRequest, JsonObject
 from .store import compact
 
 
@@ -19,10 +23,10 @@ class ControllerLedger:
     caller must persist send attempts and use the same bytes and deadline on retry.
     """
 
-    def __init__(self, db: sqlite3.Connection, *, node_id):
+    def __init__(self, db: sqlite3.Connection, *, node_id: str) -> None:
         if db.in_transaction:
             raise ValueError("controller database must have no open transaction")
-        if not isinstance(node_id, str) or not NODE.fullmatch(node_id):
+        if not isinstance(node_id, str) or not NODE.fullmatch(node_id):  # pyright: ignore[reportUnnecessaryIsInstance]  # runtime guard for untyped callers
             raise ValueError("invalid node ID")
         if not db.execute("PRAGMA database_list").fetchone()[2]:
             raise ValueError("a durable SQLite database is required")
@@ -51,7 +55,7 @@ class ControllerLedger:
             )
 
     @contextmanager
-    def _transaction(self):
+    def _transaction(self) -> Generator[None, None, None]:
         if self.db.in_transaction:
             raise RuntimeError("caller must finish its transaction first")
         self.db.execute("BEGIN IMMEDIATE")
@@ -63,15 +67,15 @@ class ControllerLedger:
             raise
 
     @staticmethod
-    def _now(now_ms):
+    def _now(now_ms: object) -> int:
         if type(now_ms) is not int or not 0 <= now_ms <= 9007199254740991:
             raise ValueError("invalid UTC time")
         return now_ms
 
-    def enqueue(self, request: ConfigRequest, *, now_ms):
+    def enqueue(self, request: ConfigRequest, *, now_ms: int) -> bool:
         """Persist a complete request before any MQTT publication is attempted."""
         now_ms = self._now(now_ms)
-        if not isinstance(request, ConfigRequest):
+        if not isinstance(request, ConfigRequest):  # pyright: ignore[reportUnnecessaryIsInstance]  # runtime guard for untyped callers
             raise TypeError("request must be a ConfigRequest")
         if request.message.node_id != self.node_id:
             raise ValueError("request targets another node")
@@ -96,7 +100,7 @@ class ControllerLedger:
             )
         return True
 
-    def due(self, *, now_ms):
+    def due(self, *, now_ms: int) -> list[Any]:
         """Find submissions due for retry and record unconfirmed expired requests."""
         now_ms = self._now(now_ms)
         with self._transaction():
@@ -109,7 +113,7 @@ class ControllerLedger:
                 (now_ms, now_ms),
             ).fetchall()
 
-    def submitted(self, command_id, *, now_ms):
+    def submitted(self, command_id: str, *, now_ms: int) -> bool:
         """Schedule the next identical application retry 15 seconds later."""
         now_ms = self._now(now_ms)
         with self._transaction():
@@ -119,7 +123,9 @@ class ControllerLedger:
             )
         return result.rowcount == 1
 
-    def observe(self, topic, payload, *, qos=1, retain=False):
+    def observe(
+        self, topic: str, payload: bytes, *, qos: int = 1, retain: bool = False
+    ) -> bool:
         """Durably deduplicate status/update reports and advance current state."""
         if payload == b"":
             # A retained status tombstone is not a command report or admission.
@@ -138,7 +144,9 @@ class ControllerLedger:
         )
         if route.kind not in {"report_update", "report_status"}:
             raise ContractError("not a command report")
-        command_id, seq = value["command_id"], value["report_seq"]
+        # validate() guarantees a report's UUID and integer sequence.
+        command_id = known_str(value["command_id"])
+        seq = known_int(value["report_seq"])
         content = compact(
             {key: item for key, item in value.items() if key != "publication_id"}
         )
@@ -169,7 +177,7 @@ class ControllerLedger:
                 return True
         return False
 
-    def get(self, command_id):
+    def get(self, command_id: str) -> JsonObject | None:
         """Return admission, outcome and latest report for an ID, or None if unknown."""
         row = self.db.execute(
             "SELECT admitted,outcome,latest_seq,latest_report FROM chair_mqtt_controller_commands WHERE id=?",

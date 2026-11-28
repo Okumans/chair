@@ -4,16 +4,29 @@ All methods run on a single worker thread. Paho callbacks must be queued to that
 worker, so callbacks cannot race the registration of a publish MID.
 """
 
+from __future__ import annotations
+
 import json
 import random
 import sqlite3
 import time
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, cast
 
 import paho.mqtt.client as mqtt
+from paho.mqtt.packettypes import PacketTypes
+from paho.mqtt.properties import Properties
+from paho.mqtt.subscribeoptions import SubscribeOptions
 
 from .contract import ContractError, decode
 from .store import UNFINISHED, CommandAdmissionError
+
+if TYPE_CHECKING:
+    from paho.mqtt.reasoncodes import ReasonCode
+
+    from .models import JsonObject
+    from .store import MqttStore
 
 
 @dataclass
@@ -31,35 +44,43 @@ class Oversized:
     digest: str
 
 
+_Incoming = tuple[int, int, int, bool, str, bytes | Oversized, float]
+"""A queued MQTT message: generation, MID, QoS, retain, topic, payload, time."""
+
+
 class Coordinator:
     def __init__(
         self,
-        store,
-        client,
+        store: MqttStore,
+        client: mqtt.Client,
         *,
-        monotonic=time.monotonic,
-        wall_clock=time.time,
-        token_is_current=lambda _: True,
-        on_command=lambda *_: None,
-    ):
+        monotonic: Callable[[], float] = time.monotonic,
+        wall_clock: Callable[[], float] = time.time,
+        token_is_current: Callable[[int], bool] = lambda _: True,
+        on_command: Callable[
+            [JsonObject, str], object
+        ] = lambda _request, _disposition: None,
+    ) -> None:
         self.store, self.client, self.monotonic = store, client, monotonic
         self.wall_clock = wall_clock
         self.token_is_current, self.on_command = token_is_current, on_command
         self.connected = False
         self.ready = False
         self.draining = False
-        self.fatal = None
+        self.fatal: str | None = None
         self.reconnect_required = False
         self.generation = 0
-        self.subscriptions = set()
+        self.subscriptions: set[int | None] = set()
         self.subscription_deadline = 0.0
-        self.flights = {}
-        self.retry_until = {}
-        self.pending_incoming = []
+        self.flights: dict[int, Flight] = {}
+        self.retry_until: dict[tuple[str, str], float] = {}
+        self.pending_incoming: list[_Incoming] = []
         self.first_connection = True
         self.next_cleanup = 0.0
         self.storage_ok = True
-        self._last_status = None
+        self._last_status: (
+            tuple[tuple[bool, bool, bool, bool, bool], tuple[int, int, int, int]] | None
+        ) = None
         self._last_status_check = 0.0
         with self.store.db:
             self.store.db.execute(
@@ -70,11 +91,13 @@ class Coordinator:
                 f"UPDATE mqtt_outbox SET retry_at_ms=0 WHERE state IN {UNFINISHED} AND retry_at_ms!=0"
             )
 
-    def _retry_at(self, delay):
+    def _retry_at(self, delay: float) -> int:
         """Return the outbox due time, in monotonic milliseconds, after ``delay``."""
         return int((self.monotonic() + delay) * 1000)
 
-    def on_connect(self, flags, reason, generation):
+    def on_connect(
+        self, flags: mqtt.ConnectFlags, reason: ReasonCode, generation: int
+    ) -> None:
         if reason.is_failure:
             # The owner's network loop retries a refused CONNACK; the next
             # successful CONNACK restores normal operation.
@@ -99,15 +122,13 @@ class Coordinator:
                 "SELECT topic,desired FROM mqtt_projection WHERE desired IS NOT NULL"
             ).fetchall()
             for topic, desired in projections:
-                self.store._queue_projection(topic, desired, force=True)
+                self.store._queue_projection(topic, desired, force=True)  # pyright: ignore[reportPrivateUsage]  # the store's package-internal projection hook
         node = next(iter(self.store.mapping))
         for topic in (
             f"smartchair/v1/nodes/{node}/commands/config",
             f"smartchair/v1/bridges/{self.store.bridge_id}/receipts",
         ):
-            options = mqtt.SubscribeOptions(
-                qos=1, retainAsPublished=True, retainHandling=2
-            )
+            options = SubscribeOptions(qos=1, retainAsPublished=True, retainHandling=2)
             rc, mid = self.client.subscribe(topic, options=options)
             if rc != mqtt.MQTT_ERR_SUCCESS:
                 # Usually a disconnect race; a fresh connection resubscribes.
@@ -115,11 +136,11 @@ class Coordinator:
                 return
             self.subscriptions.add(mid)
 
-    def on_disconnect(self):
+    def on_disconnect(self) -> None:
         self.connected, self.ready = False, False
         self.pending_incoming.clear()
 
-    def on_subscribe(self, mid, reasons):
+    def on_subscribe(self, mid: int, reasons: Sequence[ReasonCode]) -> None:
         if self.fatal:
             return
         if mid not in self.subscriptions:
@@ -135,7 +156,16 @@ class Coordinator:
             for message in pending:
                 self.on_message(*message[:-1], self.wall_clock())
 
-    def on_message(self, generation, mid, qos, retain, topic, payload, now):
+    def on_message(
+        self,
+        generation: int,
+        mid: int,
+        qos: int,
+        retain: bool,
+        topic: str,
+        payload: bytes | Oversized,
+        now: float,
+    ) -> None:
         if (
             not self.connected
             or self.draining
@@ -178,25 +208,30 @@ class Coordinator:
                         if isinstance(error, CommandAdmissionError)
                         else False
                     )
-                    command_id = None
+                    command_id: str | None = None
                     if not isinstance(payload, Oversized):
                         try:
                             value = decode(payload)
                             if not isinstance(error, CommandAdmissionError):
                                 message = value.get("message")
+                                message_object = (
+                                    cast("JsonObject", message)
+                                    if isinstance(message, dict)
+                                    else None
+                                )
                                 if value.get("schema_version") != 1 or (
-                                    isinstance(message, dict)
-                                    and message.get("version") != 2
+                                    message_object is not None
+                                    and message_object.get("version") != 2
                                 ):
                                     reason = "unsupported_version"
                                 elif (
-                                    isinstance(message, dict)
-                                    and message.get("node_id") != node
+                                    message_object is not None
+                                    and message_object.get("node_id") != node
                                 ):
                                     reason = "node_mismatch"
                                 elif (
-                                    isinstance(message, dict)
-                                    and message.get("type") == "CONFIG_SET"
+                                    message_object is not None
+                                    and message_object.get("type") == "CONFIG_SET"
                                 ):
                                     from .protocol_bridge import configuration
 
@@ -210,14 +245,22 @@ class Coordinator:
                                         "radio_open_s",
                                         "radio_motion_tail_s",
                                     }
-                                    if keys.issubset(message) and not configuration(
-                                        {key: message[key] for key in keys}
+                                    if keys.issubset(
+                                        message_object
+                                    ) and not configuration(
+                                        {key: message_object[key] for key in keys}
                                     ):
                                         reason = "invalid_config"
-                            candidate = value.get("message", {}).get("command_id")
-                            from .protocol_bridge import canonical_uuid
+                            # A non-object message has no .get(); the original
+                            # AttributeError was swallowed, leaving command_id None.
+                            command_message = value.get("message", {})
+                            if isinstance(command_message, dict):
+                                candidate = cast("JsonObject", command_message).get(
+                                    "command_id"
+                                )
+                                from .protocol_bridge import canonical_uuid
 
-                            command_id = canonical_uuid(candidate)
+                                command_id = canonical_uuid(candidate)
                         except ContractError:
                             if not isinstance(error, CommandAdmissionError):
                                 reason = "invalid_json"
@@ -252,10 +295,19 @@ class Coordinator:
         ):
             self.reconnect_required = True
 
-    def _publish(self, kind, key, topic, payload, *, qos, retain):
-        properties = None
+    def _publish(
+        self,
+        kind: str,
+        key: str,
+        topic: str,
+        payload: bytes,
+        *,
+        qos: int,
+        retain: bool,
+    ) -> bool:
+        properties: Properties | None = None
         if payload:
-            properties = mqtt.Properties(mqtt.PacketTypes.PUBLISH)
+            properties = Properties(PacketTypes.PUBLISH)
             properties.PayloadFormatIndicator = 1
             properties.ContentType = "application/json"
         info = self.client.publish(
@@ -296,7 +348,7 @@ class Coordinator:
             self.flights[info.mid] = Flight(kind, key, payload, self.monotonic() + 30)
         return True
 
-    def _send_outbox(self, now_mono):
+    def _send_outbox(self, now_mono: float) -> None:
         active = {
             flight.key for flight in self.flights.values() if flight.kind == "outbox"
         }
@@ -331,7 +383,7 @@ class Coordinator:
                             (identity,),
                         )
 
-    def _send_projections(self):
+    def _send_projections(self) -> None:
         active = {
             flight.key
             for flight in self.flights.values()
@@ -385,7 +437,7 @@ class Coordinator:
                         (payload, topic),
                     )
 
-    def _send_misc(self):
+    def _send_misc(self) -> None:
         for table, kind, keyname in [
             ("mqtt_errors", "error", "id"),
             ("mqtt_responses", "response", "command_id"),
@@ -416,8 +468,14 @@ class Coordinator:
                     )
 
     def bridge_status(
-        self, instance_id, *, gateway_connected, gateway_ready, now, shutting_down=False
-    ):
+        self,
+        instance_id: str,
+        *,
+        gateway_connected: bool,
+        gateway_ready: bool,
+        now: float,
+        shutting_down: bool = False,
+    ) -> None:
         """Stage a retained bridge-status projection on material changes.
 
         Critical flags publish immediately; backlog counters are rechecked at most
@@ -431,10 +489,13 @@ class Coordinator:
             self.ready,
             shutting_down,
         )
-        if self._last_status is not None:
-            old_critical, old_counters = self._last_status
-            if critical == old_critical and now_mono - self._last_status_check < 10:
-                return
+        last = self._last_status
+        if (
+            last is not None
+            and critical == last[0]
+            and now_mono - self._last_status_check < 10
+        ):
+            return
         self._last_status_check = now_mono
         pending, quarantined = self.store.db.execute(
             f"""SELECT count(*),coalesce(sum(state='quarantined'),0)
@@ -448,20 +509,16 @@ class Coordinator:
             (int(now_mono * 1000),),
         ).fetchone()[0]
         counters = (pending, overdue, quarantined, self.store.best_effort_dropped)
-        if (
-            self._last_status is not None
-            and critical == old_critical
-            and counters == old_counters
-        ):
+        if last is not None and critical == last[0] and counters == last[1]:
             return
-        value = {
+        value: JsonObject = {
             "schema_version": 1,
             "type": "BRIDGE_STATUS",
             "bridge_id": self.store.bridge_id,
             "instance_id": instance_id,
             "status": "offline" if shutting_down else "online",
             "reason": "shutdown" if shutting_down else None,
-            "observed_at_ms": self.store._millis(now),
+            "observed_at_ms": self.store._millis(now),  # pyright: ignore[reportPrivateUsage]  # the store's package-internal clock helper
         }
         if not shutting_down:
             value.update(
@@ -479,10 +536,10 @@ class Coordinator:
 
         payload = compact(value)
         with self.store.db:
-            self.store._queue_projection(topic, payload)
+            self.store._queue_projection(topic, payload)  # pyright: ignore[reportPrivateUsage]  # the store's package-internal projection hook
         self._last_status = (critical, counters)
 
-    def _publication_failure(self, flight, code, description):
+    def _publication_failure(self, flight: Flight, code: int, description: str) -> None:
         with self.store.db:
             if flight.kind == "outbox":
                 row = self.store.db.execute(
@@ -525,7 +582,7 @@ class Coordinator:
             if code == 0x91:
                 self.reconnect_required = True
 
-    def on_publish(self, mid, reason):
+    def on_publish(self, mid: int, reason: ReasonCode) -> None:
         flight = self.flights.pop(mid, None)
         if flight is None:
             return
@@ -597,7 +654,7 @@ class Coordinator:
                     (flight.key, flight.payload),
                 )
 
-    def tick(self, now):
+    def tick(self, now: float) -> None:
         now_mono = self.monotonic()
         if self.connected and not self.ready and now_mono >= self.subscription_deadline:
             self.reconnect_required = True

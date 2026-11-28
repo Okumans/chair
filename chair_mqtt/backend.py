@@ -1,12 +1,19 @@
 """Transactional backend ingestion and receipt outbox for an application-owned database."""
 
+from __future__ import annotations
+
 import hashlib
 import re
 import sqlite3
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
+from typing import Any
 
-from .contract import IDENTIFIER, NODE, ContractError, validate
+from .contract import IDENTIFIER, NODE, ContractError, Route, known_object, validate
+from .models import JsonObject
 from .store import MAX_REJECTIONS, compact
+
+_FactCallback = Callable[[sqlite3.Connection, Route, JsonObject], object]
 
 
 class BackendLedger:
@@ -19,14 +26,20 @@ class BackendLedger:
     """
 
     def __init__(
-        self, db: sqlite3.Connection, *, node_id, bridge_id, consumer_id, on_fact=None
-    ):
+        self,
+        db: sqlite3.Connection,
+        *,
+        node_id: str,
+        bridge_id: str,
+        consumer_id: str,
+        on_fact: _FactCallback | None = None,
+    ) -> None:
         if db.in_transaction:
             raise ValueError("backend database must have no open transaction")
-        if not isinstance(node_id, str) or not NODE.fullmatch(node_id):
+        if not isinstance(node_id, str) or not NODE.fullmatch(node_id):  # pyright: ignore[reportUnnecessaryIsInstance]  # runtime guard for untyped callers
             raise ValueError("invalid node ID")
         if not all(
-            isinstance(value, str) and IDENTIFIER.fullmatch(value)
+            isinstance(value, str) and IDENTIFIER.fullmatch(value)  # pyright: ignore[reportUnnecessaryIsInstance]  # runtime guard for untyped callers
             for value in (bridge_id, consumer_id)
         ):
             raise ValueError("invalid backend identity")
@@ -75,7 +88,7 @@ class BackendLedger:
             )
 
     @contextmanager
-    def _transaction(self):
+    def _transaction(self) -> Generator[None, None, None]:
         if self.db.in_transaction:
             raise RuntimeError(
                 "caller must finish its transaction before MQTT ingestion"
@@ -88,7 +101,9 @@ class BackendLedger:
             self.db.rollback()
             raise
 
-    def ingest(self, topic, payload, *, qos=1, retain=False):
+    def ingest(
+        self, topic: str, payload: bytes, *, qos: int = 1, retain: bool = False
+    ) -> bool:
         """Commit a validated event/report, optional application fact, and receipt."""
         route, value = validate(
             topic,
@@ -103,7 +118,7 @@ class BackendLedger:
                 "backend accepts only reliable events and report updates"
             )
         if route.kind == "event":
-            message = value["message"]
+            message = known_object(value["message"])
             identity = ["event", route.node, message["boot_id"], message["seq"]]
             content = compact(message)
         else:
@@ -156,7 +171,7 @@ class BackendLedger:
             )
         return not bool(fact)
 
-    def pending_receipts(self, limit=16):
+    def pending_receipts(self, limit: int = 16) -> list[Any]:
         """Return up to ``limit`` pending (publication ID, topic, payload) rows."""
         if type(limit) is not int or limit <= 0:
             raise ValueError("limit must be positive")
@@ -165,9 +180,9 @@ class BackendLedger:
             (limit,),
         ).fetchall()
 
-    def reject(self, topic, payload, reason):
+    def reject(self, topic: str, payload: bytes, reason: str) -> None:
         """Durably diagnose a bad delivery without retaining its full content."""
-        if not isinstance(topic, str) or not isinstance(payload, bytes):
+        if not isinstance(topic, str) or not isinstance(payload, bytes):  # pyright: ignore[reportUnnecessaryIsInstance]  # runtime guard for untyped callers
             raise ValueError("topic and payload have invalid types")
         digest = hashlib.sha256()
         digest.update(topic.encode("utf-8"))
@@ -175,15 +190,15 @@ class BackendLedger:
         digest.update(payload)
         self.reject_digest(topic, digest.hexdigest(), reason)
 
-    def reject_digest(self, topic, digest, reason):
+    def reject_digest(self, topic: str, digest: str, reason: str) -> None:
         """Store a bounded diagnostic after hashing the complete topic and body."""
         if (
-            not isinstance(topic, str)
-            or not isinstance(digest, str)
+            not isinstance(topic, str)  # pyright: ignore[reportUnnecessaryIsInstance]  # runtime guard for untyped callers
+            or not isinstance(digest, str)  # pyright: ignore[reportUnnecessaryIsInstance]  # runtime guard for untyped callers
             or not re.fullmatch(r"[0-9a-f]{64}", digest)
         ):
             raise ValueError("invalid rejection identity")
-        if not isinstance(reason, str) or not reason:
+        if not isinstance(reason, str) or not reason:  # pyright: ignore[reportUnnecessaryIsInstance]  # runtime guard for untyped callers
             raise ValueError("invalid rejection reason")
         prefix = topic.encode("utf-8")[:256].decode("utf-8", errors="ignore")
         with self._transaction():
@@ -211,7 +226,7 @@ class BackendLedger:
                 "ON CONFLICT(kind) DO UPDATE SET total=total+1"
             )
 
-    def confirmed(self, publication_id):
+    def confirmed(self, publication_id: str) -> None:
         """Remove a receipt only after its QoS-1 broker PUBACK."""
         with self._transaction():
             self.db.execute(
