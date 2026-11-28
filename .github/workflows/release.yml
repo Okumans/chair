@@ -1,0 +1,56 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to (re)build the release assets for, such as v1.0
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  wheel:
+    runs-on: ubuntu-26.04
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: refs/tags/${{ env.TAG }}
+
+      - name: Check the tag matches the package version
+        run: python3 tools/release_version.py "$TAG"
+
+      - uses: ./.github/actions/setup-checks
+      - name: Format, lint and test
+        run: make check
+
+      - name: Build the wheel
+        run: uv build --wheel
+
+      - name: Create the release if it does not exist
+        run: |
+          gh release view "$TAG" > /dev/null 2>&1 ||
+            gh release create "$TAG" --verify-tag --title "$TAG" --generate-notes
+
+      # FocusGuard's lockfile pins the wheel hash, so an attached asset is never replaced.
+      - name: Attach the wheel
+        run: |
+          existing=$(gh release view "$TAG" --json assets -q '.assets[].name')
+          for wheel in dist/*.whl; do
+            name=$(basename "$wheel")
+            if grep -qxF "$name" <<< "$existing"; then
+              echo "::error::asset $name already exists on $TAG; refusing to replace it"
+              exit 1
+            fi
+            gh release upload "$TAG" "$wheel"
+          done
