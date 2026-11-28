@@ -3,32 +3,45 @@
 Needs only pyserial; ``tools/transport.py`` runs it as a standalone script.
 """
 
+from __future__ import annotations
+
 import argparse
 import json
 import os
 import re
 import selectors
 import sys
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Protocol, cast
 
 import serial
 from serial.tools import list_ports
+
+if TYPE_CHECKING:
+    from .models import JsonObject
 
 BAUD_RATE = 115200
 MAX_PAYLOAD = 1470
 MAX_LINE = 8192
 
 
+class ByteWriter(Protocol):
+    """The serial port surface that ``write_message`` writes through."""
+
+    def write(self, data: bytes, /) -> int | None: ...
+
+
 class Lines:
     """Bound partial input and discard overlong lines through the next newline."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Start a new bounded serial input accumulator."""
         self.pending = bytearray()
         self.discarding = False
 
-    def feed(self, data):
+    def feed(self, data: bytes) -> list[bytes]:
         """Return completed lines while retaining partial input and discarding oversized lines."""
-        result = []
+        result: list[bytes] = []
         for byte in data:
             if byte == 10:
                 if not self.discarding and self.pending:
@@ -44,7 +57,7 @@ class Lines:
         return result
 
 
-def decode_hex(text):
+def decode_hex(text: object) -> bytes:
     """Decode 1–1470 binary bytes from contiguous hexadecimal text."""
     if not isinstance(text, str) or not re.fullmatch(r"[0-9a-fA-F]{2,2940}", text):
         raise ValueError("expected 1–1470 bytes of hex without spaces")
@@ -53,7 +66,7 @@ def decode_hex(text):
     return bytes.fromhex(text)
 
 
-def command(text, request_id):
+def command(text: str, request_id: int) -> JsonObject:
     """Build a diagnostic USB send envelope from text or the /hex command."""
     data = decode_hex(text[5:]) if text.startswith("/hex ") else text.encode("utf-8")
     if not 1 <= len(data) <= MAX_PAYLOAD:
@@ -61,10 +74,13 @@ def command(text, request_id):
     return {"kind": "tx", "request_id": request_id, "data_hex": data.hex()}
 
 
-def received(line):
+def received(line: bytes | str) -> JsonObject:
     """Validate a diagnostic USB envelope and decode received bytes for display."""
-    message = json.loads(line)
-    if not isinstance(message, dict) or message.get("kind") not in {
+    decoded: object = json.loads(line)
+    if not isinstance(decoded, dict):
+        raise ValueError("unknown USB message")
+    message = cast("JsonObject", decoded)  # A JSON object always has string keys.
+    if message.get("kind") not in {
         "hello",
         "rx",
         "tx_result",
@@ -82,7 +98,12 @@ def received(line):
     return message
 
 
-def write_message(port, message, *, before_write=None):
+def write_message(
+    port: ByteWriter,
+    message: JsonObject,
+    *,
+    before_write: Callable[[], bool] | None = None,
+) -> bool:
     """Finish a bounded line; guard each write, and reconnect if a partial line expires."""
     data = (json.dumps(message, separators=(",", ":")) + "\n").encode("utf-8")
     if len(data) - 1 > MAX_LINE:
@@ -100,7 +121,7 @@ def write_message(port, message, *, before_write=None):
     return True
 
 
-def main():
+def main() -> int:
     """Run the bench console on an explicit serial port, or list serial devices."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -120,7 +141,7 @@ def main():
         file=sys.stderr,
     )
     request_id = 0
-    radio_pending = None
+    radio_pending: int | None = None
     usb_lines = Lines()
     input_lines = Lines()
     try:

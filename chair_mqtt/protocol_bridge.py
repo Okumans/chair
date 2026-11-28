@@ -3,15 +3,24 @@
 The MQTT bridge and the radio-window bench tool build on it; it needs only pyserial.
 """
 
+from __future__ import annotations
+
 import json
 import math
+import os
 import re
 import secrets
 import sqlite3
 import time
 import uuid
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING, TypeGuard, cast
+
+if TYPE_CHECKING:
+    from .models import JsonObject
+    from .transport import ByteWriter
 
 UINT32_MAX = 0xFFFFFFFF
 MAX_BOOT_GENERATION = 0x7FFFFFFFFFFFFFFF
@@ -42,16 +51,20 @@ STATUSES = {
 }
 
 
-def integer(value, minimum=0, maximum=UINT32_MAX):
+def integer(
+    value: object, minimum: int = 0, maximum: int = UINT32_MAX
+) -> TypeGuard[int]:
     """Check an exact JSON integer, excluding bool, within the inclusive bounds."""
     return type(value) is int and minimum <= value <= maximum
 
 
-def configuration(config):
+def configuration(config: object) -> bool:
     """Validate every field of a complete configuration without narrowing uint32 limits."""
+    if not isinstance(config, dict):
+        return False
+    config = cast("JsonObject", config)  # Checked as a dict; keys are compared below.
     return (
-        isinstance(config, dict)
-        and set(config)
+        set(config)
         == {
             "revision",
             "heartbeat_s",
@@ -73,7 +86,7 @@ def configuration(config):
     )
 
 
-def canonical_uuid(text):
+def canonical_uuid(text: object) -> str:
     """Return a nonzero canonical UUID string, or raise ValueError."""
     if not isinstance(text, str):
         raise ValueError("invalid command UUID")
@@ -83,12 +96,13 @@ def canonical_uuid(text):
     return text
 
 
-def mapping_file(path):
+def mapping_file(path: str | os.PathLike[str]) -> dict[str, str]:
     """Load an explicit node-to-unicast-MAC mapping and reject ambiguous identities."""
-    mapping = json.loads(Path(path).read_text())
-    if not isinstance(mapping, dict) or not mapping:
+    decoded: object = json.loads(Path(path).read_text())
+    if not isinstance(decoded, dict) or not decoded:
         raise ValueError("node mapping must be a nonempty node-to-MAC object")
-    result = {}
+    mapping = cast("JsonObject", decoded)  # A JSON object always has string keys.
+    result: dict[str, str] = {}
     for node, mac in mapping.items():
         if (
             not re.fullmatch(r"[A-Za-z0-9_-]{1,15}", node)
@@ -104,21 +118,31 @@ def mapping_file(path):
     return result
 
 
-def validate(message, mapping):
+def validate(message: object, mapping: Mapping[str, str]) -> JsonObject:
     """Validate gateway telemetry and its provisioned sender; return the decoded message."""
-    if not isinstance(message, dict) or message.get("kind") != "telemetry":
+    if not isinstance(message, dict):
         raise ValueError("expected telemetry")
-    m = message.get("message")
-    if not isinstance(m, dict) or m.get("node_id") not in mapping:
+    # Decoded JSON; every field is checked below.
+    envelope = cast("JsonObject", message)
+    if envelope.get("kind") != "telemetry":
+        raise ValueError("expected telemetry")
+    decoded = envelope.get("message")
+    if not isinstance(decoded, dict):
         raise ValueError("unknown node")
-    if message.get("source_mac", "").lower() != mapping[m["node_id"]]:
+    m = cast("JsonObject", decoded)  # Decoded JSON; every field is checked below.
+    node = m.get("node_id")
+    # Mapping keys are strings, so the isinstance test only narrows the type.
+    if node not in mapping or not isinstance(node, str):
+        raise ValueError("unknown node")
+    # A non-string source MAC has always raised AttributeError here; keep that.
+    if envelope.get("source_mac", "").lower() != mapping[node]:  # pyright: ignore[reportAttributeAccessIssue, reportUnknownMemberType]  # unvalidated JSON
         raise ValueError("sender does not match node")
     if (
         type(m.get("version")) is not int
         or m["version"] != 2
-        or not isinstance(m.get("boot_id"), str)
-        or not re.fullmatch(r"[0-9a-f]{16}", m["boot_id"])
-        or int(m["boot_id"], 16) == 0
+        or not isinstance(boot := m.get("boot_id"), str)
+        or not re.fullmatch(r"[0-9a-f]{16}", boot)
+        or int(boot, 16) == 0
         or not integer(m.get("seq"), 1)
     ):
         raise ValueError("invalid event identity")
@@ -185,9 +209,9 @@ def validate(message, mapping):
             raise ValueError("invalid availability")
         if kind == "READY_PROOF" and (
             not m["occupied"]
-            or not isinstance(m.get("ack_boot_id"), str)
-            or not re.fullmatch(r"[0-9a-f]{16}", m["ack_boot_id"])
-            or int(m["ack_boot_id"], 16) == 0
+            or not isinstance(ack_boot := m.get("ack_boot_id"), str)
+            or not re.fullmatch(r"[0-9a-f]{16}", ack_boot)
+            or int(ack_boot, 16) == 0
             or not integer(m.get("ack_seq"), 1)
         ):
             raise ValueError("invalid availability proof")
@@ -195,22 +219,22 @@ def validate(message, mapping):
         samples = m.get("samples")
         if (
             not integer(m.get("batch_start_ms"))
-            or not integer(m.get("duration_ms"))
+            or not integer(duration := m.get("duration_ms"))
             or m.get("end_reason")
             not in {"interval", "capacity", "stopped", "vacant", "disabled"}
             or not isinstance(samples, list)
-            or len(samples) > 75
+            or len(cast("list[object]", samples)) > 75  # Decoded JSON array.
             or (not samples and m["end_reason"] in {"interval", "capacity"})
         ):
             raise ValueError("invalid movement metadata")
         previous = -1
-        for sample in samples:
+        for item in cast("list[object]", samples):
+            if not isinstance(item, dict):
+                raise ValueError("invalid movement sample")
+            sample = cast("JsonObject", item)  # Decoded JSON; checked below.
             if (
-                not isinstance(sample, dict)
-                or set(sample) != {"offset_ms", "ax", "ay", "az", "gx", "gy", "gz"}
-                or not integer(
-                    sample["offset_ms"], previous + 1, min(65535, m["duration_ms"])
-                )
+                set(sample) != {"offset_ms", "ax", "ay", "az", "gx", "gy", "gz"}
+                or not integer(sample["offset_ms"], previous + 1, min(65535, duration))
                 or any(
                     not integer(sample[key], -32768, 32767)
                     for key in ("ax", "ay", "az", "gx", "gy", "gz")
@@ -223,10 +247,33 @@ def validate(message, mapping):
     return m
 
 
+def _identity(message: JsonObject) -> tuple[str, str, int]:
+    """Return the node, boot and sequence identity that ``validate`` already checked."""
+    node, boot, seq = message["node_id"], message["boot_id"], message["seq"]
+    # Unreachable for validated messages; restates validate's identity checks for typing.
+    if not isinstance(node, str) or not isinstance(boot, str) or type(seq) is not int:
+        raise ValueError("invalid event identity")
+    return node, boot, seq
+
+
+def _listen_remaining_ms(message: JsonObject) -> int | None:
+    """Return the announced listen time that ``validate`` already checked."""
+    remaining = message["listen_remaining_ms"]
+    # Unreachable for validated messages; restates validate's availability check.
+    if remaining is not None and type(remaining) is not int:
+        raise ValueError("invalid availability")
+    return remaining
+
+
 class Store:
     """SQLite durable facts, command lifecycle and boot-aware current physical state."""
 
-    def __init__(self, path, *, _additional_versions=()):
+    def __init__(
+        self,
+        path: str | os.PathLike[str],
+        *,
+        _additional_versions: tuple[int, ...] = (),
+    ) -> None:
         """Open the explicit database path and enable WAL with FULL synchronization."""
         if not path or str(path) == ":memory:":
             raise ValueError("a durable SQLite file path is required")
@@ -266,13 +313,13 @@ class Store:
                 self.db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
 
     @staticmethod
-    def _identity_payload(message):
+    def _identity_payload(message: JsonObject) -> JsonObject:
         payload = {key: value for key, value in message.items() if value is not None}
         if message["type"] == "STATE_SYNC":
             payload.setdefault("boot_generation", "0000000000000000")
         return payload
 
-    def _generation(self, message):
+    def _generation(self, message: JsonObject) -> int | None:
         node, boot = message["node_id"], message["boot_id"]
         known = self.db.execute(
             "SELECT generation FROM boots WHERE node=? AND boot=?", (node, boot)
@@ -280,7 +327,11 @@ class Store:
         if message["type"] != "STATE_SYNC":
             return known[0] if known else None
 
-        generation = int(message.get("boot_generation") or "0", 16)
+        encoded = message.get("boot_generation") or "0"
+        if not isinstance(encoded, str):
+            # int() with a base has always rejected a non-string with TypeError.
+            raise TypeError("int() can't convert non-string with explicit base")
+        generation = int(encoded, 16)
         if generation == 0:
             return None
         if known:
@@ -296,13 +347,21 @@ class Store:
         self.db.execute("INSERT INTO boots VALUES (?,?,?)", (node, boot, generation))
         return generation
 
-    def _after_accept(self, message, *, prior, received_at, generation, now):
+    def _after_accept(
+        self,
+        message: JsonObject,
+        *,
+        prior: sqlite3.Row | None,
+        received_at: float,
+        generation: int | None,
+        now: float,
+    ) -> None:
         """Optional transactional integration hook; any error rolls back sensor acceptance."""
 
-    def _after_expire(self, commands, now):
+    def _after_expire(self, commands: list[sqlite3.Row], now: float) -> None:
         """Optional transactional integration hook for newly expired commands."""
 
-    def accept(self, m, now):
+    def accept(self, m: JsonObject, now: float) -> tuple[bool, float]:
         """Commit before returning (fresh, first_received_at); only then may the caller ACK."""
         node, boot, seq = m["node_id"], m["boot_id"], m["seq"]
         payload = json.dumps(m, sort_keys=True, separators=(",", ":"))
@@ -361,7 +420,14 @@ class Store:
             )
         return not bool(prior), prior["received_at"] if prior else now
 
-    def queue(self, node, command_id, config, expires, now):
+    def queue(
+        self,
+        node: str,
+        command_id: str,
+        config: JsonObject,
+        expires: float,
+        now: float,
+    ) -> None:
         """Atomically enqueue a complete, unexpired command; conflicting UUID reuse raises ValueError."""
         canonical_uuid(command_id)
         if not configuration(config) or not math.isfinite(expires) or not expires > now:
@@ -380,7 +446,7 @@ class Store:
                 (command_id, node, encoded, expires, "queued"),
             )
 
-    def pending(self, now, monotonic=None):
+    def pending(self, now: float, monotonic: float | None = None) -> list[sqlite3.Row]:
         """Commit command expiry and return the oldest live command for each node."""
         with self.db:
             expired = self.db.execute(
@@ -396,7 +462,7 @@ class Store:
             rowid=(SELECT MIN(rowid) FROM commands WHERE node=c.node AND status IN ('queued','delivered'))
             ORDER BY rowid""").fetchall()
 
-    def listing(self, now):
+    def listing(self, now: float) -> list[JsonObject]:
         """Return structured command rows after persisting any newly expired statuses."""
         self.pending(now)
         return [
@@ -425,7 +491,7 @@ class ReadyProbe:
     sent_at: float
     sensor_boot: str
 
-    def matches(self, message):
+    def matches(self, message: JsonObject) -> bool:
         return (
             message["ack_boot_id"] == self.boot
             and message["ack_seq"] == self.seq
@@ -443,29 +509,36 @@ class CommandDispatch:
 class Bridge:
     """Serial-independent protocol orchestration; availability and ACK queues stay in RAM."""
 
-    def __init__(self, store, mapping, *, monotonic_clock=None, wall_clock=None):
+    def __init__(
+        self,
+        store: Store,
+        mapping: Mapping[str, str],
+        *,
+        monotonic_clock: Callable[[], float] | None = None,
+        wall_clock: Callable[[], float] | None = None,
+    ) -> None:
         """Bind durable storage to explicit node identities and allocate a bridge boot identity."""
         self.store, self.mapping = store, mapping
         self.monotonic_clock = monotonic_clock or time.monotonic
         self.wall_clock = wall_clock or time.time
-        self.command_dispatch = None
+        self.command_dispatch: CommandDispatch | None = None
         self.boot = f"{secrets.randbits(64) or 1:016x}"
         self.seq = 0
-        self.acks = {}
-        self.available = {}
-        self.ready_hints = {}
+        self.acks: dict[tuple[str, str, int], JsonObject] = {}
+        self.available: dict[str, Availability] = {}
+        self.ready_hints: dict[str, TelemetryIdentity] = {}
         # A hint only justifies probing while its READY's announced window may still be open.
-        self.hint_expires = {}
-        self.probes = {}
-        self.last_command = {}
+        self.hint_expires: dict[str, float] = {}
+        self.probes: dict[str, ReadyProbe] = {}
+        self.last_command: dict[str, float] = {}
         # Keep per-boot watermarks across serial reconnects within this bridge process.
-        self.last_telemetry = {}
-        self.radio_pending = None
-        self.radio_at = 0
+        self.last_telemetry: dict[tuple[str, str], int] = {}
+        self.radio_pending: int | None = None
+        self.radio_at: float = 0
         self.request = secrets.randbelow(UINT32_MAX)
-        self.hello_request = None
+        self.hello_request: int | None = None
 
-    def reset(self):
+    def reset(self) -> JsonObject:
         """Discard connection-local framing work and availability before serial reconnect."""
         self.acks.clear()
         self.available.clear()
@@ -479,32 +552,35 @@ class Bridge:
         self.hello_request = self.request
         return {"kind": "hello", "request_id": self.hello_request}
 
-    def clear_available(self, node):
+    def clear_available(self, node: str) -> None:
         """Discard a lease together with the identity of the READY that granted it."""
         self.available.pop(node, None)
 
-    def available_until(self, node):
+    def available_until(self, node: str) -> float:
         """Return a lease deadline from its single atomic identity/deadline record."""
         lease = self.available.get(node)
         return lease.expires if lease else 0
 
-    def precedes(self, message, reference):
+    def precedes(
+        self, message: JsonObject, reference: TelemetryIdentity | None
+    ) -> bool:
         """Identify events known to precede a READY or proof from the same node."""
         if reference is None:
             return False
-        if message["boot_id"] == reference.boot:
-            return message["seq"] < reference.seq
+        node, boot, seq = _identity(message)
+        if boot == reference.boot:
+            return seq < reference.seq
         row = self.store.db.execute(
             "SELECT generation FROM boots WHERE node=? AND boot=?",
-            (message["node_id"], message["boot_id"]),
+            (node, boot),
         ).fetchone()
         return bool(
             row and reference.generation is not None and row[0] < reference.generation
         )
 
-    def invalidate_before(self, message):
+    def invalidate_before(self, message: JsonObject) -> None:
         """Invalidate older leases and hints independently when a newer fact arrives."""
-        node = message["node_id"]
+        node, _, _ = _identity(message)
         lease = self.available.get(node)
         if not self.precedes(message, lease.identity if lease else None):
             self.clear_available(node)
@@ -513,7 +589,7 @@ class Bridge:
             self.hint_expires.pop(node, None)
             self.probes.pop(node, None)
 
-    def control(self, node, kind, **fields):
+    def control(self, node: str, kind: str, **fields: object) -> JsonObject:
         """Allocate a typed downstream control identity without changing its target event identity."""
         if self.seq == UINT32_MAX:
             self.boot = f"{secrets.randbits(64) or 1:016x}"
@@ -528,7 +604,9 @@ class Bridge:
             **fields,
         )
 
-    def receive(self, envelope, now, monotonic=None):
+    def receive(
+        self, envelope: JsonObject, now: float, monotonic: float | None = None
+    ) -> JsonObject:
         """Validate and durably accept an envelope before making a reliable ACK eligible to send."""
         lease_now = now if monotonic is None else monotonic
         if envelope.get("kind") != "telemetry":
@@ -545,33 +623,34 @@ class Bridge:
                 self.radio_pending = None
             return envelope
         m = validate(envelope, self.mapping)
+        node, boot, seq = _identity(m)
         if m["type"] in {"READY", "READY_PROOF"} and self.hello_request is not None:
             return dict(kind="ignored", reason="awaiting_fresh_connection", message=m)
         if m["type"] == "READY_PROOF":
             # Never persist a proof this bridge cannot correlate with its own probe.
-            probe = self.probes.get(m["node_id"])
+            probe = self.probes.get(node)
             if not probe or not probe.matches(m):
                 return dict(kind="ignored", reason="unmatched_ready_proof", message=m)
         fresh, received_at = self.store.accept(m, now)
-        identity = (m["node_id"], m["boot_id"])
-        newer = m["seq"] > self.last_telemetry.get(identity, 0)
+        identity = (node, boot)
+        newer = seq > self.last_telemetry.get(identity, 0)
         # Best-effort batches and loss reports can be sent ahead of an older queued READY;
         # only state-changing reliable events and READY itself invalidate an older lease.
         if newer and (m["type"] in RELIABLE or m["type"] in {"READY", "READY_PROOF"}):
-            self.last_telemetry[identity] = m["seq"]
+            self.last_telemetry[identity] = seq
         if m["type"] == "COMMAND_RESULT" and m["status"] in {
             "applied",
             "already_applied",
         }:
             self.invalidate_before(m)
         if m["type"] in RELIABLE:
-            key = (m["node_id"], m["boot_id"], m["seq"])
+            key = (node, boot, seq)
             if len(self.acks) < MAX_PENDING_ACKS or key in self.acks:
                 self.acks[key] = self.control(
-                    m["node_id"],
+                    node,
                     "EVENT_ACK",
-                    ack_boot_id=m["boot_id"],
-                    ack_seq=m["seq"],
+                    ack_boot_id=boot,
+                    ack_seq=seq,
                 )
         if m["type"] != "COMMAND_RECEIPT":
             if not m["occupied"]:
@@ -580,18 +659,17 @@ class Bridge:
             # trail newer reliable facts. Any fact that ends availability also drops the probe.
             elif (m["type"] == "READY" and newer) or m["type"] == "READY_PROOF":
                 current = self.store.db.execute(
-                    "SELECT generation FROM current_state WHERE node=?", (m["node_id"],)
+                    "SELECT generation FROM current_state WHERE node=?", (node,)
                 ).fetchone()
                 known = self.store.db.execute(
                     "SELECT generation FROM boots WHERE node=? AND boot=?", identity
                 ).fetchone()
                 if not current or (known and known[0] == current[0]):
-                    node = m["node_id"]
                     if m["type"] == "READY":
                         self.ready_hints[node] = TelemetryIdentity(
-                            m["boot_id"], m["seq"], known[0] if known else None
+                            boot, seq, known[0] if known else None
                         )
-                        remaining = m["listen_remaining_ms"]
+                        remaining = _listen_remaining_ms(m)
                         self.hint_expires[node] = (
                             float("inf")
                             if remaining is None
@@ -600,7 +678,7 @@ class Bridge:
                     else:
                         probe = self.probes[node]  # Correlation was validated above.
                         self.probes.pop(node, None)
-                        remaining = m["listen_remaining_ms"]
+                        remaining = _listen_remaining_ms(m)
                         # The probe left the Pi before the sensor calculated this duration.
                         # Its complete round trip is therefore a conservative age bound.
                         expires = probe.sent_at + min(
@@ -614,14 +692,16 @@ class Bridge:
                             self.available[node] = Availability(
                                 expires,
                                 TelemetryIdentity(
-                                    m["boot_id"], m["seq"], known[0] if known else None
+                                    boot, seq, known[0] if known else None
                                 ),
                             )
         return dict(
             kind="accepted", duplicate=not fresh, received_at=received_at, message=m
         )
 
-    def next(self, now=None, monotonic=None):
+    def next(
+        self, now: float | None = None, monotonic: float | None = None
+    ) -> JsonObject | None:
         """Return one ACK or live command when the radio slot is free; expired commands never dispatch."""
         started = self.monotonic_clock()
         supplied_now = now
@@ -644,7 +724,7 @@ class Bridge:
         clock += elapsed
         if self.radio_pending is not None and clock - self.radio_at < RADIO_TIMEOUT_S:
             return None
-        message = None
+        message: JsonObject | None = None
         if self.acks:
             _, control = self.acks.popitem()
             message = dict(kind="event_ack", message=control)
@@ -661,9 +741,10 @@ class Bridge:
                     and (not probe or clock - probe.sent_at >= PROBE_RETRY_S)
                 ):
                     control = self.control(node, "READY_PROBE")
+                    # control() just stamped this probe with the bridge's boot and seq.
                     self.probes[node] = ReadyProbe(
-                        control["boot_id"],
-                        control["seq"],
+                        self.boot,
+                        self.seq,
                         clock,
                         self.ready_hints[node].boot,
                     )
@@ -695,23 +776,39 @@ class Bridge:
             self.radio_at = clock
         return message
 
-    def send(self, port, outgoing, *, before_write=None):
+    def send(
+        self,
+        port: ByteWriter,
+        outgoing: JsonObject,
+        *,
+        before_write: Callable[[], bool] | None = None,
+    ) -> bool:
         """Recheck command deadlines after encoding and before every serial write."""
         from .transport import write_message
 
         if outgoing["kind"] != "command":
             return write_message(port, outgoing)
         dispatch = self.command_dispatch
-        control = outgoing["message"]
+        message = outgoing["message"]
+        if not isinstance(message, dict):
+            # Subscripting a non-dict has always raised TypeError here.
+            raise TypeError("command message must be an object")
+        control = cast("JsonObject", message)  # Built by control().
         if dispatch is None or control["command_id"] != dispatch.command_id:
             return False
 
-        def allowed():
+        def allowed() -> bool:
             return (
                 self.radio_pending == outgoing["request_id"]
                 and self.wall_clock() < dispatch.expires
                 and self.monotonic_clock()
-                < min(dispatch.lease_expires, self.available_until(control["node_id"]))
+                < min(
+                    dispatch.lease_expires,
+                    # Leases are keyed by string node IDs; anything else has none.
+                    self.available_until(node)
+                    if isinstance(node := control["node_id"], str)
+                    else 0,
+                )
                 and (before_write is None or before_write())
             )
 

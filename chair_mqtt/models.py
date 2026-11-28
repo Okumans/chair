@@ -3,7 +3,7 @@
 import re
 import uuid
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Self
 
 from pydantic import (
     BaseModel,
@@ -24,6 +24,9 @@ MAC_RE = re.compile(r"(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}\Z")
 
 
 LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+
+# A decoded JSON object as it crosses a wire boundary, before validation narrows it.
+JsonObject = dict[str, object]
 
 
 class StrictModel(BaseModel):
@@ -48,7 +51,7 @@ class BrokerConfig(StrictModel):
 
     @field_validator("ca_file", mode="before")
     @classmethod
-    def valid_ca_file(cls, value):
+    def valid_ca_file(cls, value: object) -> Path | None:
         if value is None:
             return None
         if not isinstance(value, (str, Path)) or str(value) in {"", "."}:
@@ -56,7 +59,7 @@ class BrokerConfig(StrictModel):
         return Path(value)
 
     @model_validator(mode="after")
-    def validate_security(self):
+    def validate_security(self) -> Self:
         if self.plaintext and self.host not in LOOPBACK_HOSTS:
             raise ValueError("plaintext MQTT is permitted only to a loopback host")
         if self.plaintext and self.ca_file is not None:
@@ -77,21 +80,21 @@ class BridgeConfig(StrictModel):
 
     @field_validator("node_id")
     @classmethod
-    def valid_node(cls, value):
+    def valid_node(cls, value: str) -> str:
         if not NODE_RE.fullmatch(value):
             raise ValueError("invalid node ID")
         return value
 
     @field_validator("bridge_id", "consumer_id")
     @classmethod
-    def valid_id(cls, value):
+    def valid_id(cls, value: str) -> str:
         if not ID_RE.fullmatch(value):
             raise ValueError("invalid bridge or consumer ID")
         return value
 
     @field_validator("sensor_mac")
     @classmethod
-    def valid_mac(cls, value):
+    def valid_mac(cls, value: str) -> str:
         if not MAC_RE.fullmatch(value):
             raise ValueError("invalid sensor MAC")
         address = bytes.fromhex(value.replace(":", ""))
@@ -101,13 +104,13 @@ class BridgeConfig(StrictModel):
 
     @field_validator("database_path", mode="before")
     @classmethod
-    def valid_path(cls, value):
+    def valid_path(cls, value: object) -> Path:
         if not isinstance(value, (str, Path)):
             raise ValueError("durable database path required")
-        value = Path(value)
-        if str(value) in {"", ".", ":memory:"}:
+        path = Path(value)
+        if str(path) in {"", ".", ":memory:"}:
             raise ValueError("durable database path required")
-        return value
+        return path
 
 
 class ConfigSet(StrictModel):
@@ -128,14 +131,14 @@ class ConfigSet(StrictModel):
 
     @field_validator("node_id")
     @classmethod
-    def valid_node(cls, value):
+    def valid_node(cls, value: str) -> str:
         if not NODE_RE.fullmatch(value):
             raise ValueError("invalid node ID")
         return value
 
     @field_validator("command_id")
     @classmethod
-    def valid_uuid(cls, value):
+    def valid_uuid(cls, value: str) -> str:
         try:
             parsed = uuid.UUID(value)
         except (ValueError, TypeError) as error:
@@ -145,7 +148,7 @@ class ConfigSet(StrictModel):
         return value
 
     @model_validator(mode="after")
-    def validate_window(self):
+    def validate_window(self) -> Self:
         if self.radio_open_s > self.radio_interval_s:
             raise ValueError("radio opening exceeds interval")
         return self
@@ -166,12 +169,12 @@ class ClientConfig(StrictModel):
 
     @field_validator("node_id")
     @classmethod
-    def valid_node(cls, value):
+    def valid_node(cls, value: str) -> str:
         return BridgeConfig.valid_node(value)
 
     @field_validator("bridge_id", "consumer_id")
     @classmethod
-    def valid_id(cls, value):
+    def valid_id(cls, value: str) -> str:
         return BridgeConfig.valid_id(value)
 
 
@@ -188,7 +191,7 @@ class ChairConfiguration(StrictModel):
     radio_motion_tail_s: PositiveUint32
 
     @model_validator(mode="after")
-    def validate_window(self):
+    def validate_window(self) -> Self:
         if self.radio_open_s > self.radio_interval_s:
             raise ValueError("radio opening exceeds interval")
         return self
@@ -202,14 +205,14 @@ class BackendReceipt(StrictModel):
 
     @field_validator("consumer_id")
     @classmethod
-    def valid_consumer(cls, value):
+    def valid_consumer(cls, value: str) -> str:
         if not ID_RE.fullmatch(value):
             raise ValueError("invalid consumer ID")
         return value
 
     @field_validator("publication_id")
     @classmethod
-    def valid_publication(cls, value):
+    def valid_publication(cls, value: str) -> str:
         try:
             parsed = uuid.UUID(value)
         except (ValueError, TypeError) as error:
@@ -239,14 +242,14 @@ class SensorIdentity(StrictModel):
 
     @field_validator("node_id")
     @classmethod
-    def valid_node(cls, value):
+    def valid_node(cls, value: str) -> str:
         if not NODE_RE.fullmatch(value):
             raise ValueError("invalid node ID")
         return value
 
     @field_validator("boot_id")
     @classmethod
-    def valid_boot(cls, value):
+    def valid_boot(cls, value: str) -> str:
         if not re.fullmatch(r"[0-9a-f]{16}", value) or int(value, 16) == 0:
             raise ValueError("boot ID must be a nonzero 16-digit lowercase hex string")
         return value
@@ -266,7 +269,7 @@ class SeatEvent(SensorTelemetry):
     type: Literal["OCCUPIED", "VACATED", "HEARTBEAT", "BATTERY_LOW"]
 
     @model_validator(mode="after")
-    def matching_occupancy(self):
+    def matching_occupancy(self) -> Self:
         if (self.type == "OCCUPIED" and not self.occupied) or (
             self.type == "VACATED" and self.occupied
         ):
@@ -282,7 +285,7 @@ class StateSync(SensorTelemetry):
 
     @field_validator("boot_generation")
     @classmethod
-    def valid_generation(cls, value):
+    def valid_generation(cls, value: str) -> str:
         if (
             not re.fullmatch(r"[0-9a-f]{16}", value)
             or not 1 <= int(value, 16) <= 0x7FFFFFFFFFFFFFFF
@@ -301,7 +304,7 @@ class MovementBatch(SensorTelemetry):
     samples: Annotated[list[MovementSample], Field(max_length=75)]
 
     @model_validator(mode="after")
-    def ordered_samples(self):
+    def ordered_samples(self) -> Self:
         if not self.samples and self.end_reason in {"interval", "capacity"}:
             raise ValueError("only a final boundary may have no samples")
         previous = -1
@@ -343,7 +346,7 @@ class CommandResult(SensorTelemetry):
 
     @field_validator("command_id")
     @classmethod
-    def valid_command(cls, value):
+    def valid_command(cls, value: str) -> str:
         return ConfigSet.valid_uuid(value)
 
 
@@ -364,7 +367,7 @@ class CommandReceipt(SensorIdentity):
 
     @field_validator("command_id")
     @classmethod
-    def valid_command(cls, value):
+    def valid_command(cls, value: str) -> str:
         return ConfigSet.valid_uuid(value)
 
 
