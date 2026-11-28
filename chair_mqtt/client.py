@@ -1,5 +1,7 @@
 """Async application client for the chair MQTT protocol."""
 
+from __future__ import annotations
+
 import asyncio
 import inspect
 import logging
@@ -7,13 +9,19 @@ import math
 import threading
 import time
 import uuid
-from typing import Literal
+from collections.abc import Awaitable, Callable
+from typing import Any, ClassVar, Literal, Self, TypeAlias, TypeVar, cast
 
 import paho.mqtt.client as mqtt
+from paho.mqtt.packettypes import PacketTypes
+from paho.mqtt.properties import Properties
+from paho.mqtt.reasoncodes import ReasonCode
+from paho.mqtt.subscribeoptions import SubscribeOptions
 from pydantic import BaseModel, ConfigDict
 
 from . import connection
-from .contract import ContractError, route, validate
+from .async_storage import Storage
+from .contract import ContractError, Route, known_str, route, validate
 from .models import (
     BrokerConfig,
     ChairConfiguration,
@@ -21,6 +29,7 @@ from .models import (
     CommandResult,
     ConfigRequest,
     ConfigSet,
+    JsonObject,
     MovementBatch,
     MovementLoss,
     SeatEvent,
@@ -37,7 +46,9 @@ _QUEUED = {mqtt.MQTT_ERR_SUCCESS, mqtt.MQTT_ERR_NO_CONN}
 class SensorEvent(BaseModel):
     """A reliable sensor publication; ``message`` contains its typed ESP data."""
 
-    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
+    model_config: ClassVar[ConfigDict] = ConfigDict(
+        extra="forbid", strict=True, frozen=True
+    )
     schema_version: Literal[1]
     bridge_id: str
     publication_id: str
@@ -50,14 +61,16 @@ class SensorEvent(BaseModel):
 class SensorState(SensorEvent):
     """Last known sensor state; its publication ID is always ``None``."""
 
-    publication_id: None
-    boot_generation: str
+    publication_id: None  # pyright: ignore[reportIncompatibleVariableOverride]  # retained state uses None where reliable events carry a UUID
+    boot_generation: str  # pyright: ignore[reportIncompatibleVariableOverride]  # retained state always carries a boot generation
 
 
 class BridgeStatus(BaseModel):
     """Bridge availability and optional health details reported over MQTT."""
 
-    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
+    model_config: ClassVar[ConfigDict] = ConfigDict(
+        extra="forbid", strict=True, frozen=True
+    )
     schema_version: Literal[1]
     type: Literal["BRIDGE_STATUS"]
     bridge_id: str
@@ -78,7 +91,9 @@ class BridgeStatus(BaseModel):
 class CommandError(BaseModel):
     """A bridge admission error, optionally associated with a command ID."""
 
-    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
+    model_config: ClassVar[ConfigDict] = ConfigDict(
+        extra="forbid", strict=True, frozen=True
+    )
     schema_version: Literal[1]
     bridge_id: str
     error_id: str
@@ -91,7 +106,9 @@ class CommandError(BaseModel):
 class CommandUpdate(BaseModel):
     """A bridge command report, including any late sensor result."""
 
-    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
+    model_config: ClassVar[ConfigDict] = ConfigDict(
+        extra="forbid", strict=True, frozen=True
+    )
     schema_version: Literal[1]
     type: Literal["COMMAND_STATUS"]
     bridge_id: str
@@ -110,7 +127,9 @@ class CommandUpdate(BaseModel):
 class CommandState(BaseModel):
     """Latest locally stored command state and, when available, its report."""
 
-    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
+    model_config: ClassVar[ConfigDict] = ConfigDict(
+        extra="forbid", strict=True, frozen=True
+    )
     command_id: str
     admitted: bool
     status: (
@@ -123,6 +142,25 @@ class CommandState(BaseModel):
     report: CommandUpdate | None
 
 
+EventHandler: TypeAlias = Callable[[SensorEvent, Any], Awaitable[None]]
+StateHandler: TypeAlias = Callable[[SensorState], Awaitable[None]]
+MovementHandler: TypeAlias = Callable[[MovementBatch], Awaitable[None]]
+MovementLossHandler: TypeAlias = Callable[[MovementLoss], Awaitable[None]]
+CommandUpdateHandler: TypeAlias = Callable[[CommandUpdate], Awaitable[None]]
+BridgeStatusHandler: TypeAlias = Callable[[BridgeStatus], Awaitable[None]]
+CommandErrorHandler: TypeAlias = Callable[[CommandError], Awaitable[None]]
+
+_HandlerT = TypeVar("_HandlerT", bound=Callable[..., Awaitable[None]])
+_Flight: TypeAlias = tuple[Literal["command", "receipt"], str, float]
+_QueueItem: TypeAlias = (
+    tuple[Literal["connect"], int, ReasonCode]
+    | tuple[Literal["disconnect"], int]
+    | tuple[Literal["subscribe"], int, list[ReasonCode]]
+    | tuple[Literal["publish"], int, ReasonCode]
+    | tuple[Literal["message"], int, int, int, bool, str, bytes]
+)
+
+
 class CommandHandle:
     """A persisted submission, identified by ``command_id``."""
 
@@ -130,11 +168,17 @@ class CommandHandle:
     # same storage observed the report.
     _FALLBACK_RECHECK_S = 5.0
 
-    def __init__(self, client, command_id, expires_at_ms=None):
-        self._client, self.command_id = client, command_id
-        self._expires_at_ms = expires_at_ms
+    def __init__(
+        self,
+        client: ChairClient,
+        command_id: str,
+        expires_at_ms: int | None = None,
+    ) -> None:
+        self._client: ChairClient = client
+        self.command_id: str = command_id
+        self._expires_at_ms: int | None = expires_at_ms
 
-    async def wait(self, timeout=None):
+    async def wait(self, timeout: float | None = None) -> CommandState:
         """Wait for a terminal state; timeout raises TimeoutError without cancellation.
 
         ``admission_unknown`` is terminal for this wait but may change if a
@@ -143,10 +187,10 @@ class CommandHandle:
         command or the command expires; ``stop()`` ends it with RuntimeError.
         """
 
-        async def until_terminal():
+        async def until_terminal() -> CommandState:
             while True:
                 # Register before reading, so a report between the two is not missed.
-                change = self._client._watch_command(self.command_id)
+                change = self._client._watch_command(self.command_id)  # pyright: ignore[reportPrivateUsage]  # internal waiter helper on ChairClient
                 try:
                     current = await self._client.get_command(self.command_id)
                     if current and current.status in {
@@ -166,7 +210,7 @@ class CommandHandle:
                     except TimeoutError:
                         pass
                 finally:
-                    self._client._unwatch_command(self.command_id, change)
+                    self._client._unwatch_command(self.command_id, change)  # pyright: ignore[reportPrivateUsage]  # internal waiter helper on ChairClient
 
         return await asyncio.wait_for(until_terminal(), timeout)
 
@@ -180,13 +224,17 @@ class ChairClient:
     recovers unacknowledged deliveries itself.
     """
 
-    def __init__(self, config: ClientConfig, storage, broker: BrokerConfig):
-        if not isinstance(config, ClientConfig):
+    def __init__(
+        self, config: ClientConfig, storage: Storage, broker: BrokerConfig
+    ) -> None:
+        if not isinstance(config, ClientConfig):  # pyright: ignore[reportUnnecessaryIsInstance]  # runtime guard for untyped callers
             raise TypeError("config must be ClientConfig")
-        if not isinstance(broker, BrokerConfig):
+        if not isinstance(broker, BrokerConfig):  # pyright: ignore[reportUnnecessaryIsInstance]  # runtime guard for untyped callers
             raise TypeError("broker must be BrokerConfig")
-        self.config, self.storage, self.broker = config, storage, broker
-        self._handlers = {
+        self.config: ClientConfig = config
+        self.storage: Storage = storage
+        self.broker: BrokerConfig = broker
+        self._handlers: dict[str, list[Callable[..., Awaitable[None]]]] = {
             name: []
             for name in (
                 "event",
@@ -198,21 +246,22 @@ class ChairClient:
                 "command_error",
             )
         }
-        self._queue = asyncio.Queue(maxsize=128)
-        self._loop = self._task = None
+        self._queue: asyncio.Queue[_QueueItem] = asyncio.Queue(maxsize=128)
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._task: asyncio.Task[None] | None = None
         self._started = self._attached = self._connected = self._ready = False
         self._stopping = self._draining = False
         self._next_recovery = 0.0
         self._generation = 0
         self._network_generation = 0
         self._network_lock = threading.Lock()
-        self._subscriptions = set()
+        self._subscriptions: set[int | None] = set()
         self._subscription_deadline = 0.0
-        self._flights = {}
-        self._inflight_receipts = set()
-        self._command_waiters = {}
-        self.error = None
-        self.reconnect_required = False
+        self._flights: dict[int, _Flight] = {}
+        self._inflight_receipts: set[str] = set()
+        self._command_waiters: dict[str, set[asyncio.Future[None]]] = {}
+        self.error: str | None = None
+        self.reconnect_required: bool = False
         node, bridge = config.node_id, config.bridge_id
         self._filters = [
             f"smartchair/v1/nodes/{node}/events",
@@ -228,14 +277,10 @@ class ChairClient:
         self._mqtt.on_connect = self._on_connect
         self._mqtt.on_disconnect = self._on_disconnect
         self._mqtt.on_message = self._message
-        self._mqtt.on_subscribe = lambda c, u, mid, r, p: self._enqueue(
-            ("subscribe", mid, r)
-        )
-        self._mqtt.on_publish = lambda c, u, mid, r, p: self._enqueue(
-            ("publish", mid, r)
-        )
+        self._mqtt.on_subscribe = self._on_subscribe
+        self._mqtt.on_publish = self._on_publish
 
-    def _watch_command(self, command_id):
+    def _watch_command(self, command_id: str) -> asyncio.Future[None]:
         """Return a future resolved when this client sees the command advance."""
         if not self._attached:
             raise RuntimeError("client is not running")
@@ -243,59 +288,59 @@ class ChairClient:
         self._command_waiters.setdefault(command_id, set()).add(change)
         return change
 
-    def _unwatch_command(self, command_id, change):
+    def _unwatch_command(self, command_id: str, change: asyncio.Future[None]) -> None:
         waiters = self._command_waiters.get(command_id)
         if waiters is not None:
             waiters.discard(change)
             if not waiters:
                 del self._command_waiters[command_id]
 
-    def _wake_commands(self, command_id=None):
+    def _wake_commands(self, command_id: str | None = None) -> None:
         ids = list(self._command_waiters) if command_id is None else [command_id]
         for key in ids:
             for change in self._command_waiters.get(key, ()):
                 if not change.done():
                     change.set_result(None)
 
-    def _register(self, name, callback):
+    def _register(self, name: str, callback: _HandlerT) -> _HandlerT:
         if not inspect.iscoroutinefunction(callback):
             raise TypeError("callbacks must be async functions")
         self._handlers[name].append(callback)
         return callback
 
-    def on_event(self, callback):
+    def on_event(self, callback: EventHandler) -> EventHandler:
         """Register async ``callback(event: SensorEvent, transaction)`` for reliable facts."""
         return self._register("event", callback)
 
-    def on_movement(self, callback):
+    def on_movement(self, callback: MovementHandler) -> MovementHandler:
         """Register async ``callback(batch: MovementBatch)`` for best-effort samples."""
         return self._register("movement", callback)
 
-    def on_command_update(self, callback):
+    def on_command_update(self, callback: CommandUpdateHandler) -> CommandUpdateHandler:
         """Register async ``callback(update: CommandUpdate)`` for status notifications."""
         return self._register("command_update", callback)
 
-    def on_bridge_status(self, callback):
+    def on_bridge_status(self, callback: BridgeStatusHandler) -> BridgeStatusHandler:
         """Register async ``callback(status: BridgeStatus)`` for bridge availability."""
         return self._register("bridge_status", callback)
 
-    def on_state(self, callback):
+    def on_state(self, callback: StateHandler) -> StateHandler:
         """Register async ``callback(state: SensorState)`` for the last known state."""
         return self._register("state", callback)
 
-    def on_movement_loss(self, callback):
+    def on_movement_loss(self, callback: MovementLossHandler) -> MovementLossHandler:
         """Register async ``callback(loss: MovementLoss)`` for dropped sensor batches."""
         return self._register("movement_loss", callback)
 
-    def on_command_error(self, callback):
+    def on_command_error(self, callback: CommandErrorHandler) -> CommandErrorHandler:
         """Register async ``callback(error: CommandError)`` for command admission errors."""
         return self._register("command_error", callback)
 
-    async def _emit(self, name, *args):
+    async def _emit(self, name: str, *args: object) -> None:
         for callback in self._handlers[name]:
             await callback(*args)
 
-    async def _notify(self, name, *args):
+    async def _notify(self, name: str, *args: object) -> None:
         """Run notification handlers; redelivery cannot repeat them, so log failures.
 
         Movement is QoS 0 and command updates are already committed, so leaving a
@@ -311,17 +356,21 @@ class ChairClient:
                 )
 
     @property
-    def ready(self):
+    def ready(self) -> bool:
         """Whether all chair subscriptions have been granted at QoS 1."""
         return self._ready and not self.reconnect_required and not self._draining
 
     @property
-    def connected(self):
+    def connected(self) -> bool:
         """Whether the latest MQTT connection succeeded; check ``ready`` separately."""
         return self._connected
 
-    def _enqueue(self, item):
-        def put():
+    def _enqueue(self, item: _QueueItem) -> None:
+        assert (
+            self._loop is not None
+        )  # Paho callbacks start only after start() sets _loop
+
+        def put() -> None:
             try:
                 self._queue.put_nowait(item)
             except asyncio.QueueFull:
@@ -330,7 +379,7 @@ class ChairClient:
 
         self._loop.call_soon_threadsafe(put)
 
-    async def start(self):
+    async def start(self) -> Self:
         """Initialize storage and connect in the background; return this client.
 
         Does not wait for the broker: sensor facts and commands are durable, and
@@ -353,7 +402,7 @@ class ChairClient:
             raise
         return self
 
-    async def stop(self):
+    async def stop(self) -> None:
         """Disconnect, stop the worker and close storage; the client cannot restart.
 
         The next client starts a clean broker session: the bridge republishes
@@ -362,6 +411,7 @@ class ChairClient:
         """
         if not self._attached:
             return
+        assert self._task is not None  # start() creates _task before setting _attached
         self._draining = self._stopping = True
         try:
             await self._task
@@ -373,13 +423,15 @@ class ChairClient:
                 await self.storage.close()
                 self._wake_commands()  # Pending waits re-check and raise RuntimeError.
 
-    async def __aenter__(self):
+    async def __aenter__(self) -> Self:
         return await self.start()
 
-    async def __aexit__(self, *exc_info):
+    async def __aexit__(self, *exc_info: object) -> None:
         await self.stop()
 
-    def _message(self, client, userdata, message):
+    def _message(
+        self, client: mqtt.Client, userdata: object, message: mqtt.MQTTMessage
+    ) -> None:
         with self._network_lock:
             generation = self._network_generation
         self._enqueue(
@@ -394,21 +446,55 @@ class ChairClient:
             )
         )
 
-    def _on_connect(self, client, userdata, flags, reason, properties):
+    def _on_connect(
+        self,
+        client: mqtt.Client,
+        userdata: object,
+        flags: mqtt.ConnectFlags,
+        reason: ReasonCode,
+        properties: Properties | None,
+    ) -> None:
         with self._network_lock:
             self._network_generation += 1
             generation = self._network_generation
         self._enqueue(("connect", generation, reason))
 
-    def _on_disconnect(self, client, userdata, flags, reason, properties):
+    def _on_disconnect(
+        self,
+        client: mqtt.Client,
+        userdata: object,
+        flags: mqtt.DisconnectFlags,
+        reason: ReasonCode,
+        properties: Properties | None,
+    ) -> None:
         with self._network_lock:
             self._network_generation += 1
             generation = self._network_generation
         self._enqueue(("disconnect", generation))
 
+    def _on_subscribe(
+        self,
+        client: mqtt.Client,
+        userdata: object,
+        mid: int,
+        reason_codes: list[ReasonCode],
+        properties: Properties | None,
+    ) -> None:
+        self._enqueue(("subscribe", mid, reason_codes))
+
+    def _on_publish(
+        self,
+        client: mqtt.Client,
+        userdata: object,
+        mid: int,
+        reason_code: ReasonCode,
+        properties: Properties,
+    ) -> None:
+        self._enqueue(("publish", mid, reason_code))
+
     async def set_config(
-        self, configuration: ChairConfiguration, *, expires_in_seconds
-    ):
+        self, configuration: ChairConfiguration, *, expires_in_seconds: int
+    ) -> CommandHandle:
         """Persist a full configuration and return a handle without waiting for the sensor.
 
         ``expires_in_seconds`` must be an integer from 1 through 86400. The
@@ -416,7 +502,7 @@ class ChairClient:
         """
         if not self._attached or self._stopping:
             raise RuntimeError("client is not running")
-        if not isinstance(configuration, ChairConfiguration):
+        if not isinstance(configuration, ChairConfiguration):  # pyright: ignore[reportUnnecessaryIsInstance]  # runtime guard for untyped callers
             raise TypeError("configuration must be ChairConfiguration")
         if type(expires_in_seconds) is not int or not 1 <= expires_in_seconds <= 86400:
             raise ValueError("expiry must be between 1 and 86400 seconds")
@@ -427,7 +513,14 @@ class ChairClient:
             type="CONFIG_SET",
             node_id=self.config.node_id,
             command_id=command_id,
-            **configuration.model_dump(),
+            revision=configuration.revision,
+            heartbeat_s=configuration.heartbeat_s,
+            movement_batch_s=configuration.movement_batch_s,
+            movement_enabled=configuration.movement_enabled,
+            radio_windows_enabled=configuration.radio_windows_enabled,
+            radio_interval_s=configuration.radio_interval_s,
+            radio_open_s=configuration.radio_open_s,
+            radio_motion_tail_s=configuration.radio_motion_tail_s,
         )
         request = ConfigRequest(
             schema_version=1,
@@ -437,28 +530,44 @@ class ChairClient:
         await self.storage.enqueue_command(request, now)
         return CommandHandle(self, command_id, request.expires_at_ms)
 
-    async def get_command(self, command_id):
+    async def get_command(self, command_id: str) -> CommandState | None:
         """Return the locally stored CommandState, or None for an unknown ID."""
         await self.storage.due_commands(int(time.time() * 1000))
         value = await self.storage.get_command(command_id)
         if value is None:
             return None
-        report = value["report"]
-        if report is not None:
-            report = CommandUpdate.model_validate({**report, "publication_id": None})
-        return CommandState(
-            command_id=command_id,
-            admitted=value["admitted"],
-            status=value["outcome"],
-            report_seq=value["report_seq"],
-            report=report,
+        raw_report = value["report"]
+        report: CommandUpdate | None
+        if raw_report is not None:
+            assert isinstance(raw_report, dict)  # stored report JSON object or None
+            report = CommandUpdate.model_validate(
+                {**cast(JsonObject, raw_report), "publication_id": None}
+            )
+        else:
+            report = None
+        return CommandState.model_validate(
+            {
+                "command_id": command_id,
+                "admitted": value["admitted"],
+                "status": value["outcome"],
+                "report_seq": value["report_seq"],
+                "report": report,
+            }
         )
 
-    async def _fact(self, target, value, tx):
+    async def _fact(self, target: Route, value: JsonObject, tx: object) -> None:
         if target.kind == "event":
             await self._emit("event", SensorEvent.model_validate(value), tx)
 
-    async def _incoming(self, generation, mid, qos, retain, topic, payload):
+    async def _incoming(
+        self,
+        generation: int,
+        mid: int,
+        qos: int,
+        retain: bool,
+        topic: str,
+        payload: bytes,
+    ) -> None:
         if (
             generation != self._generation
             or not self._connected
@@ -490,13 +599,14 @@ class ChairClient:
                     topic, payload, qos=qos, retain=retain, on_fact=self._fact
                 )
             if target.kind in {"report_update", "report_status"}:
-                existing = await self.storage.get_command(value["command_id"])
+                command_id = known_str(value["command_id"])
+                existing = await self.storage.get_command(command_id)
                 if existing is not None:
                     changed = await self.storage.observe_report(
                         topic, payload, qos=qos, retain=retain
                     )
                     if changed:
-                        self._wake_commands(value["command_id"])
+                        self._wake_commands(command_id)
                         await self._notify(
                             "command_update", CommandUpdate.model_validate(value)
                         )
@@ -536,7 +646,7 @@ class ChairClient:
             if self._mqtt.ack(mid, qos) != mqtt.MQTT_ERR_SUCCESS:
                 self.reconnect_required = True
 
-    async def _tick(self):
+    async def _tick(self) -> None:
         if self.reconnect_required:
             return
         if (
@@ -558,7 +668,7 @@ class ChairClient:
                 for kind, key, _ in self._flights.values()
             ):
                 continue
-            props = mqtt.Properties(mqtt.PacketTypes.PUBLISH)
+            props = Properties(PacketTypes.PUBLISH)
             props.MessageExpiryInterval = max(1, math.ceil((expires - now) / 1000))
             props.PayloadFormatIndicator = 1
             props.ContentType = "application/json"
@@ -573,7 +683,7 @@ class ChairClient:
         for publication_id, topic, payload in await self.storage.pending_receipts():
             if publication_id in self._inflight_receipts:
                 continue
-            props = mqtt.Properties(mqtt.PacketTypes.PUBLISH)
+            props = Properties(PacketTypes.PUBLISH)
             props.PayloadFormatIndicator = 1
             props.ContentType = "application/json"
             info = self._mqtt.publish(
@@ -589,26 +699,27 @@ class ChairClient:
             else:
                 raise RuntimeError(f"receipt publish failed: {info.rc}")
 
-    async def _worker(self):
+    async def _worker(self) -> None:
         while not self._stopping:
+            item: _QueueItem | None
             try:
                 item = await asyncio.wait_for(self._queue.get(), 0.25)
             except asyncio.TimeoutError:
                 item = None
             try:
-                if item:
-                    kind, *args = item
-                    if kind == "connect":
-                        self._generation = args[0]
-                        self._connected = not args[1].is_failure
-                        if args[1].is_failure:
-                            raise RuntimeError(f"MQTT connection refused: {args[1]}")
+                if item is not None:
+                    if item[0] == "connect":
+                        _, generation, reason = item
+                        self._generation = generation
+                        self._connected = not reason.is_failure
+                        if reason.is_failure:
+                            raise RuntimeError(f"MQTT connection refused: {reason}")
                         self._ready = False
                         self._subscriptions.clear()
                         self._subscription_deadline = time.monotonic() + 30
                         self._flights = {
-                            mid: (kind, key, time.monotonic() + 30)
-                            for mid, (kind, key, _) in self._flights.items()
+                            mid: (flight_kind, key, time.monotonic() + 30)
+                            for mid, (flight_kind, key, _) in self._flights.items()
                         }
                         if self._connected:
                             self.error = None
@@ -616,29 +727,35 @@ class ChairClient:
                             for topic in self._filters:
                                 rc, mid = self._mqtt.subscribe(
                                     topic,
-                                    options=mqtt.SubscribeOptions(
+                                    options=SubscribeOptions(
                                         qos=1, retainAsPublished=True
                                     ),
                                 )
                                 if rc != mqtt.MQTT_ERR_SUCCESS:
                                     raise RuntimeError("subscription failed")
                                 self._subscriptions.add(mid)
-                    elif kind == "disconnect":
-                        self._generation = args[0]
+                    elif item[0] == "disconnect":
+                        _, generation = item
+                        self._generation = generation
                         self._connected = self._ready = False
-                    elif kind == "subscribe" and args[0] in self._subscriptions:
-                        if (
-                            len(args[1]) != 1
-                            or args[1][0].is_failure
-                            or args[1][0].value != 1
-                        ):
-                            raise RuntimeError("subscription refused or downgraded")
-                        self._subscriptions.remove(args[0])
-                        self._ready = not self._subscriptions
-                    elif kind == "message":
-                        await self._incoming(*args)
-                    elif kind == "publish":
-                        mid, reason = args
+                    elif item[0] == "subscribe":
+                        _, mid, reasons = item
+                        if mid in self._subscriptions:
+                            if (
+                                len(reasons) != 1
+                                or reasons[0].is_failure
+                                or reasons[0].value != 1
+                            ):
+                                raise RuntimeError("subscription refused or downgraded")
+                            self._subscriptions.remove(mid)
+                            self._ready = not self._subscriptions
+                    elif item[0] == "message":
+                        _, generation, mid, qos, retain, topic, payload = item
+                        await self._incoming(
+                            generation, mid, qos, retain, topic, payload
+                        )
+                    elif item[0] == "publish":
+                        _, mid, reason = item
                         flight = self._flights.pop(mid, None)
                         if flight:
                             flight_kind, key, _ = flight
@@ -655,7 +772,7 @@ class ChairClient:
                 LOG.exception("Chair client worker failed")
             self._recover()
 
-    def _recover(self):
+    def _recover(self) -> None:
         """Drop a connection that needs redelivery; Paho then reconnects."""
         if (
             self.reconnect_required

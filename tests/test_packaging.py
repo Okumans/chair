@@ -57,6 +57,15 @@ class PackagingTests(unittest.TestCase):
             with self.subTest(model=name):
                 self.assertEqual(actual[name], schema)
 
+    def test_typed_usage_checks(self):
+        result = subprocess.run(
+            ["uv", "run", "--locked", "pyright", "tests/typing_usage.py"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()
