@@ -334,7 +334,7 @@ Both firmware targets must build and clangd must report zero source errors.
 Physical acceptance remains required for encrypted 1108-byte delivery, actual sample
 timing, sensor calibration, configuration round trips, reset durability, seat/timer wake,
 and power/radio measurements. Pi deployment of the MQTT bridge service has not been
-performed; battery hardware and actual occupied light sleep are deferred. Validate the test schedule, radio restart, discovery after resets and
+performed; actual occupied light sleep is deferred. Validate the test schedule, radio restart, discovery after resets and
 missed windows, movement loss reporting, and power consumption on the actual boards.
 
 Before sending a command, the bridge challenges the sensor and bounds the lease from the
