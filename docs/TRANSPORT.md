@@ -278,7 +278,11 @@ protocol gateway/chair now reject incoming bytes that are not valid provisioned 
 frames. This console is useful for hello, malformed-input testing and manually encoded
 protocol frames; arbitrary text is no longer forwarded as a normal received message.
 
-### MQTT test console
+Hello readiness is local initialization evidence. The existing 8.5 dBm transmit cap is
+retained from bench bring-up. Match channel, peer MACs and key fingerprints on both
+boards when diagnosing radio issues. This code does not claim physical delivery.
+
+## MQTT test console
 
 To exercise the whole path (broker, Pi bridge, gateway and chair), run the MQTT test
 console against a **test** bridge. It acts as that bridge's backend through
@@ -299,10 +303,9 @@ result. MQTT has no configuration readback, so unnamed fields come from the last
 configuration this console sent, or the firmware defaults; the revision is the last seen
 `config_revision` plus one unless `revision=` is given. `/state` and `/status` reprint the
 last state and bridge status, `/help` lists the keys, and `/quit` or Ctrl+D exits.
-
-Hello readiness is local initialization evidence. The existing 8.5 dBm transmit cap is
-retained from bench bring-up. Match channel, peer MACs and key fingerprints on both
-boards when diagnosing radio issues. This code does not claim physical delivery.
+Commands can also be piped or redirected from a file. At the end of input the console
+waits for a pending `/config` to finish or expire; `/quit` and Ctrl+C abandon it, and a
+command the bridge has not yet received is lost with the temporary receipt database.
 
 ## Reset sensor state
 

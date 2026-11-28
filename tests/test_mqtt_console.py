@@ -20,6 +20,7 @@ from chair_mqtt.console import (
     Console,
     build_configuration,
     build_parser,
+    main,
     parse_assignments,
     settings_from_args,
 )
@@ -250,6 +251,82 @@ class ConsoleTests(unittest.IsolatedAsyncioTestCase):
         line = json.loads(self.out.getvalue())
         self.assertEqual((line["kind"], line["publication_id"]), ("event", "p-1"))
 
+    async def test_revision_never_moves_backwards(self):
+        await self.client.handlers["state"](
+            STATE.model_copy(
+                update={
+                    "message": STATE.message.model_copy(update={"config_revision": 5})
+                }
+            )
+        )
+        await self.client.handlers["state"](STATE)  # config_revision 3, older
+        await self.console.handle("/config")
+        sent, _ = self.client.sent[-1]
+        self.assertEqual(sent.revision, 6)
+
+    async def test_finish_waits_for_the_pending_command(self):
+        await self.console.handle("/config")
+        finishing = asyncio.create_task(self.console.finish())
+        await asyncio.sleep(0.01)
+        self.assertFalse(finishing.done())
+        self.assertIn("waiting for the pending command", self.err.getvalue())
+        self.client.finish()
+        await asyncio.wait_for(finishing, 1)
+        self.assertIn("finished: applied", self.err.getvalue())
+
+    async def test_finish_without_a_pending_command_returns(self):
+        await asyncio.wait_for(self.console.finish(), 1)
+
+
+class MainTests(unittest.TestCase):
+    def test_invalid_settings_never_print_the_password(self):
+        err = io.StringIO()
+        code = main(
+            [
+                "--host",
+                "broker.example",
+                "--plaintext",
+                "--bridge",
+                "pi-01",
+                "--consumer",
+                "backend-01",
+            ],
+            environ={"CHAIR_MQTT_USERNAME": "u", "CHAIR_MQTT_PASSWORD": "hunter2"},
+            err=err,
+        )
+        self.assertEqual(code, 2)
+        self.assertIn("loopback", err.getvalue())
+        self.assertNotIn("hunter2", err.getvalue())
+
+    def test_stdin_redirected_from_a_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            commands = Path(directory) / "commands.txt"
+            commands.write_text("/help\n/quit\n")
+            with commands.open() as stdin:
+                result = subprocess.run(
+                    [
+                        sys.executable,
+                        "tools/mqtt_console.py",
+                        "--host",
+                        "127.0.0.1",
+                        "--port",
+                        "9",
+                        "--plaintext",
+                        "--bridge",
+                        "pi-01",
+                        "--consumer",
+                        "backend-01",
+                    ],
+                    cwd=ROOT,
+                    stdin=stdin,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertIn("/config key=value", result.stderr)
+
 
 ROOT = Path(__file__).resolve().parents[1]
 MAC = "02:00:00:00:00:01"
@@ -349,11 +426,24 @@ class ConsoleBrokerTests(unittest.TestCase):
             self.wait_for(
                 lines, lambda v: v["kind"] == "event" and v["message"]["seq"] == 1
             )
-            proc.stdin.write("/config radio_interval_s=60\n")
+            proc.stdin.write("/config radio_interval_s=60 expires=3\n")
             proc.stdin.flush()
             notice = bridge.receive(timeout=10)
             self.assertEqual(notice.disposition, "queued")
             message = notice.request.message
             self.assertEqual((message.radio_interval_s, message.revision), (60, 1))
             proc.stdin.close()
-            self.assertEqual(proc.wait(timeout=10), 0)
+            self.assertEqual(proc.wait(timeout=20), 0)
+
+    def test_eof_waits_for_a_pending_config(self):
+        with tempfile.TemporaryDirectory() as directory:
+            port = start_broker(self, directory)
+            bridge = self.start_bridge(directory, port)
+            proc, lines = self.start_console(port)
+            self.wait_for(lines, lambda v: v["kind"] == "bridge_status")
+            proc.stdin.write("/config radio_interval_s=60 expires=3\n")
+            proc.stdin.close()
+            notice = bridge.receive(timeout=10)
+            self.assertIsNotNone(notice)
+            self.assertEqual(notice.request.message.radio_interval_s, 60)
+            self.assertEqual(proc.wait(timeout=20), 0)

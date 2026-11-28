@@ -7,7 +7,10 @@ import os
 import secrets
 import sys
 import tempfile
+import threading
 from pathlib import Path
+
+from pydantic import ValidationError
 
 from .async_storage import SQLiteStorage
 from .client import ChairClient
@@ -157,8 +160,12 @@ class Console:
         if revision is None:
             revision = getattr(model, "config_revision", None)
         if revision is not None:
-            self.known_revision = revision
+            self._advance_revision(revision)
         self._line(kind, model)
+
+    def _advance_revision(self, revision):
+        # Events can arrive out of order; the firmware rejects older revisions.
+        self.known_revision = max(self.known_revision or 0, revision)
 
     def _line(self, kind, model):
         value = {"kind": kind, **model.model_dump(mode="json")}
@@ -175,6 +182,8 @@ class Console:
         if not command:
             return True
         if command == "/quit":
+            if self._pending is not None and not self._pending.done():
+                self._say("abandoning the pending command; it may still be sent")
             return False
         if command == "/config":
             await self._config(rest)
@@ -210,13 +219,19 @@ class Console:
         self._say(f"sending {configuration.model_dump_json()}")
         handle = await self.client.set_config(configuration, expires_in_seconds=expires)
         fields = configuration.model_dump()
-        self.known_revision = fields.pop("revision")
+        self._advance_revision(fields.pop("revision"))
         self.base = fields
         self._pending = asyncio.create_task(self._follow(handle))
 
     async def _follow(self, handle):
         state = await handle.wait()
         self._say(f"command {handle.command_id} finished: {state.status}")
+
+    async def finish(self):
+        """Wait for a pending command to finish; its expiry bounds the wait."""
+        if self._pending is not None and not self._pending.done():
+            self._say("waiting for the pending command (Ctrl+C to abandon)")
+            await asyncio.shield(self._pending)
 
     async def close(self):
         """Stop following a pending command."""
@@ -226,6 +241,29 @@ class Console:
                 await self._pending
             except asyncio.CancelledError:
                 pass
+
+
+def _read_lines(stdin):
+    """Return a queue fed from ``stdin`` by a daemon thread; None marks the end.
+
+    A thread works for terminals, pipes and files alike and leaves the
+    terminal's blocking mode untouched; it never delays exit on Ctrl+C.
+    """
+    loop = asyncio.get_running_loop()
+    lines = asyncio.Queue()
+    source = getattr(stdin, "buffer", stdin)
+
+    def read():
+        try:
+            for raw in source:
+                if isinstance(raw, bytes):
+                    raw = raw.decode("utf-8", errors="replace")
+                loop.call_soon_threadsafe(lines.put_nowait, raw)
+        finally:
+            loop.call_soon_threadsafe(lines.put_nowait, None)
+
+    threading.Thread(target=read, name="console-stdin", daemon=True).start()
+    return lines
 
 
 async def _session(args, broker, client_config, stdin, out, err):
@@ -239,25 +277,17 @@ async def _session(args, broker, client_config, stdin, out, err):
             "use it only with a test bridge. Type /help for commands.\n"
         )
         err.flush()
-        loop = asyncio.get_running_loop()
-        reader = asyncio.StreamReader()
-        transport, _ = await loop.connect_read_pipe(
-            lambda: asyncio.StreamReaderProtocol(reader), stdin
-        )
-        try:
-            async with ChairClient(
-                client_config, SQLiteStorage(path), broker
-            ) as client:
-                console = Console(client, out=out, err=err)
-                try:
-                    while line := await reader.readline():
-                        text = line.decode("utf-8", errors="replace")
-                        if not await console.handle(text):
-                            break
-                finally:
-                    await console.close()
-        finally:
-            transport.close()
+        lines = _read_lines(stdin)
+        async with ChairClient(client_config, SQLiteStorage(path), broker) as client:
+            console = Console(client, out=out, err=err)
+            try:
+                while (line := await lines.get()) is not None:
+                    if not await console.handle(line):
+                        break
+                else:
+                    await console.finish()
+            finally:
+                await console.close()
     return 0
 
 
@@ -270,7 +300,12 @@ def main(
     try:
         broker, client_config = settings_from_args(args, environ)
     except ValueError as error:
-        err.write(f"invalid settings: {error}\n")
+        if isinstance(error, ValidationError):
+            # The default text repeats the input, including any password.
+            reason = "; ".join(e["msg"] for e in error.errors(include_input=False))
+        else:
+            reason = str(error)
+        err.write(f"invalid settings: {reason}\n")
         return 2
     try:
         return asyncio.run(_session(args, broker, client_config, stdin, out, err))
