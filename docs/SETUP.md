@@ -163,7 +163,8 @@ uv run python -m chair_mqtt.service --config ./bridge.toml
 ```
 
 Create `bridge.toml` from `deploy/bridge.example.toml`; [the bridge service
-guide](MQTT_BRIDGE_SERVICE.md) describes its keys and a local plaintext broker.
+guide](MQTT_BRIDGE_SERVICE.md) describes its keys, a local plaintext broker and installing
+the bridge as a systemd service on the Pi.
 
 Replace serial placeholders with actual device paths. The commands above pass
 `--upload-port` directly to PlatformIO; `make upload`, `make flash`, `make monitor`

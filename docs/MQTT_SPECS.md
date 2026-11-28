@@ -60,8 +60,8 @@ Let `N = smartchair/v1/nodes/<node_id>` and
 This namespace has no site identifier; if a broker is shared with another
 installation, node and bridge IDs must be unique across that broker.
 The **Sensor Node** is the ESP that reads the chair sensors; the **Gateway ESP**
-forwards its packets to the Raspberry Pi. The **Pi MQTT service** is the planned
-service that connects the existing gateway/bridge adapter to the MQTT broker.
+forwards its packets to the Raspberry Pi. The **Pi MQTT service** (`python -m chair_mqtt.service`)
+connects the gateway/bridge adapter to the MQTT broker.
 
 | Topic | Information source → intended consumer | MQTT publisher → subscriber | QoS | Retain | Pi storage / backend receipt |
 | --- | --- | --- | --- | --- | --- |
