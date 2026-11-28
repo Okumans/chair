@@ -88,7 +88,8 @@ keys private. Both targets must use matching keys, channel and node ID. The shar
 ID is `LinkConfig::NODE_ID` in `shared/include/link_config.h`, default `chair-01`.
 
 Seat: C3 GPIO5, contact to ground, internal pull-up. MPU6050: address 0x68, SDA6/SCL7.
-INT21 is unused by the polling adapter. Battery measurement is disabled. Neither board
+INT21 is unused by the polling adapter. Battery: 21700 cell through a 100k/100k divider
+on GPIO0 (see [SETUP](SETUP.md)). Neither board
 owns sessions. The gateway handles one configured encrypted chair peer.
 
 ```sh

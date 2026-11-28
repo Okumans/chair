@@ -26,6 +26,9 @@ while vacant it can deep sleep and wake from the seat switch or heartbeat timer.
    uv run python -m chair_mqtt.service --config ./bridge.toml
    ```
 
+   To run it permanently on the Pi, install it as a systemd service with the
+   [bridge service guide](docs/MQTT_BRIDGE_SERVICE.md#installation).
+
 The bridge acknowledges and stores sensor facts even while the broker is unreachable, and
 publishes them once it connects. For development against a local Mosquitto, set
 `host = "localhost"`, `port = 1883` and `plaintext = true` under `[mqtt]` and remove
