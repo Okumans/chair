@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cassert>
 #include <string>
 
@@ -12,6 +13,7 @@ namespace Fake {
   int reboots  = 0;
   int suspends = 0, resumes = 0;
   uint64_t wakeMask = 0, timerUs = 0;
+  uint32_t adcMv                 = 0;  // Millivolts at the ADC pin, half the cell voltage.
   esp_sleep_wakeup_cause_t cause = ESP_SLEEP_WAKEUP_UNDEFINED;
   std::vector<std::vector<uint8_t>> sent;
 
@@ -37,8 +39,9 @@ namespace Fake {
     nextImuProbe             = 0;
     if (clear) {
       Preferences::bytes.clear();
-      retainedBoot = 0;
-      retainedSeq  = 1;
+      retainedBoot       = 0;
+      retainedSeq        = 1;
+      retainedBatteryLow = false;
     }
     Preferences::available = true;
     Wire.connected         = true;
@@ -63,6 +66,11 @@ void delay(uint32_t) {}
 void pinMode(uint8_t, int) {}
 
 int digitalRead(uint8_t) { return Fake::seat; }
+
+uint32_t analogReadMilliVolts(uint8_t pin) {
+  assert(pin == Pins::BATTERY_ADC);
+  return Fake::adcMv;
+}
 
 void FakeSerial::flush() {}
 
@@ -131,8 +139,78 @@ namespace Transport {
   }
 }  // namespace Transport
 
+namespace {
+  using namespace SmartChair;
+
+  size_t batteryAlerts() {
+    return std::ranges::count_if(engine->durable.outbox,
+                                 [](const Frame& f) { return f.type == Type::BATTERY_LOW; });
+  }
+
+  void reportsBattery() {
+    Fake::adcMv = 1955;
+    Fake::boot();
+    Fake::tick(0, HIGH);
+    Fake::tick(50, HIGH);
+    Frame first;
+    assert(decode(Fake::sent[0], first) && first.common.battery == 3910);
+    assert(!(first.common.health & Health::BATTERY_UNAVAILABLE));
+  }
+
+  void noCell() {
+    Fake::adcMv = 0;
+    Fake::boot();
+    Fake::tick(0, HIGH);
+    Fake::tick(50, HIGH);
+    Fake::tick(60, HIGH);
+    Frame first;
+    assert(decode(Fake::sent[0], first) && first.common.battery == UINT16_MAX);
+    assert(first.common.health & Health::BATTERY_UNAVAILABLE);
+    assert(batteryAlerts() == 0 && !engine->batteryLow);
+  }
+
+  void rereadsAfterInterval() {
+    Fake::adcMv = 1955;
+    Fake::boot();
+    Fake::tick(0, LOW);
+    Fake::tick(50, LOW);
+    Fake::adcMv = 1700;
+    Fake::tick(59999, LOW);
+    assert(engine->batteryMv() == 3910);
+    Fake::tick(60000, LOW);
+    assert(engine->batteryMv() == 3400);
+  }
+
+  void timerWakeKeepsLatch() {
+    Fake::adcMv = 1650;
+    Fake::boot();
+    Fake::tick(0, HIGH);
+    Fake::tick(50, HIGH);
+    Fake::tick(60, HIGH);
+    assert(engine->batteryLow && batteryAlerts() == 1);
+    Fake::tick(2550, HIGH);
+    assert(Fake::sleeps == 1 && retainedBatteryLow);
+    Fake::boot(ESP_SLEEP_WAKEUP_TIMER, false);
+    Fake::tick(0, HIGH);
+    Fake::tick(50, HIGH);
+    Fake::tick(60, HIGH);
+    assert(engine->batteryLow && batteryAlerts() == 1);
+    Fake::boot(ESP_SLEEP_WAKEUP_UNDEFINED, false);
+    assert(!engine->batteryLow);  // A cold boot forgets the latch and may alert once more.
+  }
+
+  void batteryTests() {
+    reportsBattery();
+    noCell();
+    rereadsAfterInterval();
+    timerWakeKeepsLatch();
+    Fake::adcMv = 0;
+  }
+}  // namespace
+
 int main() {
   using namespace SmartChair;
+  batteryTests();
   Fake::boot();
   Fake::tick(0, LOW);
   Fake::tick(50, LOW);

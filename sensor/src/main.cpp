@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <Preferences.h>
 
+#include <algorithm>
 #include <memory>
 
 #include "bench_diagnostics.h"
@@ -25,8 +26,9 @@ namespace {
 
   Preferences preferences;
   std::unique_ptr<Engine> engine;
-  RTC_DATA_ATTR uint64_t retainedBoot = 0;
-  RTC_DATA_ATTR uint32_t retainedSeq  = 1;
+  RTC_DATA_ATTR uint64_t retainedBoot   = 0;
+  RTC_DATA_ATTR uint32_t retainedSeq    = 1;
+  RTC_DATA_ATTR bool retainedBatteryLow = false;
   // Survives software resets only; the magic rejects the random contents after power-on.
   RTC_NOINIT_ATTR uint32_t forcedRestartMagic;
   RTC_NOINIT_ATTR uint32_t forcedRestarts;
@@ -35,6 +37,7 @@ namespace {
   bool storageResetRequired = false;
   bool imuReady             = false;
   uint64_t nextImuProbe     = 0;
+  uint64_t nextBatteryRead  = 0;
   Transport::RadioLifecycle lifecycle;
   bool lifecycleTimeoutReported = false;
   bool recoveryPending          = false;
@@ -63,7 +66,9 @@ namespace {
   inline void startColdBoot() {
     retainedBoot = newBootId(retainedBoot);
     retainedSeq  = 1;
-    wakeReason   = Wake::cold_boot;
+    // Unlike RTC memory, the cell may have been replaced or recharged while powered off.
+    retainedBatteryLow = false;
+    wakeReason         = Wake::cold_boot;
   }
 
   inline bool loadDurable(Durable& durable) {
@@ -86,6 +91,20 @@ namespace {
   inline void initializeImu() {
     imuReady             = Mpu6050::begin();
     engine->imuAvailable = imuReady;
+  }
+
+  /// Average the divider's ADC readings into cell millivolts; no cell reads as unavailable.
+  inline uint16_t readBatteryMv() {
+    uint32_t total = 0;
+    for (uint8_t i = 0; i < Battery::SAMPLES; ++i) total += analogReadMilliVolts(Pins::BATTERY_ADC);
+    const uint32_t mv = total / Battery::SAMPLES * 2;
+    if (mv < Battery::MIN_VALID_MV) return UINT16_MAX;
+    return uint16_t(std::min<uint32_t>(mv, UINT16_MAX - 1));
+  }
+
+  inline void sampleBattery(uint64_t now) {
+    engine->battery(readBatteryMv());
+    nextBatteryRead = deadlineAfter(now, Battery::SAMPLE_INTERVAL_MS);
   }
 
   void receive(const uint8_t* bytes, size_t size) {
@@ -127,8 +146,9 @@ namespace {
     // Recheck the physical contact after bounded delivery/persistence work.
     if (digitalRead(Pins::SEAT_SENSOR) == LOW) return;
 
-    retainedBoot = engine->identity.boot;
-    retainedSeq  = engine->identity.seq;
+    retainedBoot       = engine->identity.boot;
+    retainedSeq        = engine->identity.seq;
+    retainedBatteryLow = engine->batteryLow;
 
     esp_deep_sleep_start();
   }
@@ -254,6 +274,8 @@ void setup() {
   }
 
   initializeEngine(std::move(durable));
+  engine->batteryLow = retainedBatteryLow;
+  sampleBattery(nowMs());
   initializeImu();
 
   Transport::setReceiver(receive);
@@ -288,6 +310,7 @@ void loop() {
     Bench::trace(engine->motionActive() ? "motion_start" : "motion_stop", *engine, nowMs(),
                  wakeReason);
 
+  if (now >= nextBatteryRead) sampleBattery(now);
   engine->tick(nowMs(), Transport::busy());
   if (Transport::needsRestart()) engine->radioFault(nowMs());
   reconcileRadio(nowMs());

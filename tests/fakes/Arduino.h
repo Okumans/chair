@@ -52,6 +52,7 @@ uint32_t millis();
 void delay(uint32_t ms);
 void pinMode(uint8_t pin, int mode);
 int digitalRead(uint8_t pin);
+uint32_t analogReadMilliVolts(uint8_t pin);
 #define RTC_DATA_ATTR
 #define RTC_NOINIT_ATTR
 uint32_t esp_random();
