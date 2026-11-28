@@ -1,5 +1,7 @@
 """Interactive MQTT test console that acts as the backend for a test bridge."""
 
+from __future__ import annotations
+
 import argparse
 import asyncio
 import json
@@ -8,16 +10,18 @@ import secrets
 import sys
 import tempfile
 import threading
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from pathlib import Path
+from typing import TextIO
 
-from pydantic import ValidationError
+from pydantic import BaseModel, SecretStr, ValidationError
 
 from .async_storage import SQLiteStorage
-from .client import ChairClient
+from .client import BridgeStatus, ChairClient, CommandHandle, SensorEvent, SensorState
 from .models import BrokerConfig, ChairConfiguration, ClientConfig
 
 # Firmware defaults; the MQTT contract has no configuration readback.
-DEFAULTS = {
+DEFAULTS: dict[str, int | bool] = {
     "heartbeat_s": 900,
     "movement_batch_s": 3,
     "movement_enabled": True,
@@ -26,8 +30,8 @@ DEFAULTS = {
     "radio_open_s": 5,
     "radio_motion_tail_s": 10,
 }
-BOOLEAN_KEYS = {"movement_enabled", "radio_windows_enabled"}
-KEYS = {*DEFAULTS, "revision", "expires"}
+BOOLEAN_KEYS: set[str] = {"movement_enabled", "radio_windows_enabled"}
+KEYS: set[str] = {*DEFAULTS, "revision", "expires"}
 DEFAULT_EXPIRY_S = 120
 HELP = """Commands:
   /config key=value ...  send a full configuration; unnamed fields come from the
@@ -41,9 +45,9 @@ HELP = """Commands:
   /quit                  exit (Ctrl+D also works)"""
 
 
-def parse_assignments(text):
+def parse_assignments(text: str) -> dict[str, int | bool]:
     """Parse ``key=value`` tokens into typed configuration overrides."""
-    values = {}
+    values: dict[str, int | bool] = {}
     for token in text.split():
         key, separator, raw = token.partition("=")
         if not separator or key not in KEYS:
@@ -59,23 +63,30 @@ def parse_assignments(text):
     return values
 
 
-def build_configuration(base, known_revision, assignments):
+def build_configuration(
+    base: Mapping[str, int | bool],
+    known_revision: int | None,
+    assignments: Mapping[str, int | bool],
+) -> tuple[ChairConfiguration, int, bool]:
     """Return ``(configuration, expiry seconds, revision guessed)``.
 
     Unnamed fields come from ``base``. The revision is the explicit one, else
     the known revision plus one, else 1, which is reported as guessed.
     """
-    fields = {**base, **assignments}
+    fields: dict[str, int | bool] = {**base, **assignments}
     expires = fields.pop("expires", DEFAULT_EXPIRY_S)
+    assert (
+        type(expires) is int
+    )  # parse_assignments only stores int for non-boolean keys
     if not 1 <= expires <= 86400:
         raise ValueError("expires must be between 1 and 86400 seconds")
     guessed = "revision" not in fields and known_revision is None
     if "revision" not in fields:
-        fields["revision"] = 1 if guessed else known_revision + 1
-    return ChairConfiguration(**fields), expires, guessed
+        fields["revision"] = 1 if known_revision is None else known_revision + 1
+    return ChairConfiguration.model_validate(fields), expires, guessed
 
 
-def build_parser():
+def build_parser() -> argparse.ArgumentParser:
     """Return the console's argument parser; every setting is explicit."""
     parser = argparse.ArgumentParser(
         description=__doc__,
@@ -102,9 +113,13 @@ def build_parser():
     return parser
 
 
-def settings_from_args(args, environ):
+def settings_from_args(
+    args: argparse.Namespace, environ: Mapping[str, str]
+) -> tuple[BrokerConfig, ClientConfig]:
     """Return ``(BrokerConfig, ClientConfig)``; the MQTT client ID is always new."""
     port = args.port or (1883 if args.plaintext else 8883)
+    raw_password = environ.get("CHAIR_MQTT_PASSWORD") or None
+    password = SecretStr(raw_password) if raw_password is not None else None
     broker = BrokerConfig(
         host=args.host,
         port=port,
@@ -112,7 +127,7 @@ def settings_from_args(args, environ):
         ca_file=args.ca_file,
         plaintext=args.plaintext,
         username=environ.get("CHAIR_MQTT_USERNAME") or None,
-        password=environ.get("CHAIR_MQTT_PASSWORD") or None,
+        password=password,
     )
     client = ClientConfig(
         node_id=args.node, bridge_id=args.bridge, consumer_id=args.consumer
@@ -123,60 +138,60 @@ def settings_from_args(args, environ):
 class Console:
     """Print a ChairClient's traffic as JSON lines and run typed commands."""
 
-    def __init__(self, client, *, out, err):
-        self.client, self.out, self.err = client, out, err
-        self.last_state = self.last_status = None
-        self.base = dict(DEFAULTS)
-        self.known_revision = None
-        self._pending = None
+    def __init__(self, client: ChairClient, *, out: TextIO, err: TextIO) -> None:
+        self.client: ChairClient = client
+        self.out: TextIO = out
+        self.err: TextIO = err
+        self.last_state: SensorState | None = None
+        self.last_status: BridgeStatus | None = None
+        self.base: dict[str, int | bool] = dict(DEFAULTS)
+        self.known_revision: int | None = None
+        self._pending: asyncio.Task[None] | None = None
 
-        async def on_event(event, tx):
+        async def on_event(event: SensorEvent, tx: object) -> None:
             self._show("event", event)
 
         client.on_event(on_event)
-        for kind in (
-            "state",
-            "movement",
-            "movement_loss",
-            "command_update",
-            "command_error",
-            "bridge_status",
-        ):
-            getattr(client, f"on_{kind}")(self._printer(kind))
+        client.on_state(self._printer("state"))
+        client.on_movement(self._printer("movement"))
+        client.on_movement_loss(self._printer("movement_loss"))
+        client.on_command_update(self._printer("command_update"))
+        client.on_command_error(self._printer("command_error"))
+        client.on_bridge_status(self._printer("bridge_status"))
 
-    def _printer(self, kind):
-        async def show(model):
+    def _printer(self, kind: str) -> Callable[[BaseModel], Awaitable[None]]:
+        async def show(model: BaseModel) -> None:
             self._show(kind, model)
 
         return show
 
-    def _show(self, kind, model):
-        if kind == "state":
+    def _show(self, kind: str, model: BaseModel) -> None:
+        if kind == "state" and isinstance(model, SensorState):
             self.last_state = model
-        elif kind == "bridge_status":
+        elif kind == "bridge_status" and isinstance(model, BridgeStatus):
             self.last_status = model
-        message = getattr(model, "message", None)
-        revision = getattr(message, "config_revision", None)
+        message: object = getattr(model, "message", None)
+        revision: object = getattr(message, "config_revision", None)
         if revision is None:
             revision = getattr(model, "config_revision", None)
-        if revision is not None:
+        if isinstance(revision, int):
             self._advance_revision(revision)
         self._line(kind, model)
 
-    def _advance_revision(self, revision):
+    def _advance_revision(self, revision: int) -> None:
         # Events can arrive out of order; the firmware rejects older revisions.
         self.known_revision = max(self.known_revision or 0, revision)
 
-    def _line(self, kind, model):
+    def _line(self, kind: str, model: BaseModel) -> None:
         value = {"kind": kind, **model.model_dump(mode="json")}
         self.out.write(json.dumps(value, ensure_ascii=True) + "\n")
         self.out.flush()
 
-    def _say(self, text):
+    def _say(self, text: str) -> None:
         self.err.write(text + "\n")
         self.err.flush()
 
-    async def handle(self, line):
+    async def handle(self, line: str) -> bool:
         """Run one input line; return False when the console should exit."""
         command, _, rest = line.strip().partition(" ")
         if not command:
@@ -203,7 +218,7 @@ class Console:
             self._say("unknown command; type /help")
         return True
 
-    async def _config(self, text):
+    async def _config(self, text: str) -> None:
         if self._pending is not None and not self._pending.done():
             self._say("a configuration is still pending; wait for its result")
             return
@@ -218,22 +233,23 @@ class Console:
             self._say("no revision seen yet; using revision 1")
         self._say(f"sending {configuration.model_dump_json()}")
         handle = await self.client.set_config(configuration, expires_in_seconds=expires)
-        fields = configuration.model_dump()
-        self._advance_revision(fields.pop("revision"))
+        fields: dict[str, int | bool] = configuration.model_dump()
+        fields.pop("revision")
+        self._advance_revision(configuration.revision)
         self.base = fields
         self._pending = asyncio.create_task(self._follow(handle))
 
-    async def _follow(self, handle):
+    async def _follow(self, handle: CommandHandle) -> None:
         state = await handle.wait()
         self._say(f"command {handle.command_id} finished: {state.status}")
 
-    async def finish(self):
+    async def finish(self) -> None:
         """Wait for a pending command to finish; its expiry bounds the wait."""
         if self._pending is not None and not self._pending.done():
             self._say("waiting for the pending command (Ctrl+C to abandon)")
             await asyncio.shield(self._pending)
 
-    async def close(self):
+    async def close(self) -> None:
         """Stop following a pending command."""
         if self._pending is not None and not self._pending.done():
             self._pending.cancel()
@@ -243,22 +259,25 @@ class Console:
                 pass
 
 
-def _read_lines(stdin):
+def _read_lines(stdin: TextIO) -> asyncio.Queue[str | None]:
     """Return a queue fed from ``stdin`` by a daemon thread; None marks the end.
 
     A thread works for terminals, pipes and files alike and leaves the
     terminal's blocking mode untouched; it never delays exit on Ctrl+C.
     """
     loop = asyncio.get_running_loop()
-    lines = asyncio.Queue()
-    source = getattr(stdin, "buffer", stdin)
+    lines: asyncio.Queue[str | None] = asyncio.Queue()
+    source: Iterable[bytes | str] = getattr(stdin, "buffer", stdin)
 
-    def read():
+    def read() -> None:
         try:
             for raw in source:
-                if isinstance(raw, bytes):
-                    raw = raw.decode("utf-8", errors="replace")
-                loop.call_soon_threadsafe(lines.put_nowait, raw)
+                text = (
+                    raw.decode("utf-8", errors="replace")
+                    if isinstance(raw, bytes)
+                    else raw
+                )
+                loop.call_soon_threadsafe(lines.put_nowait, text)
         finally:
             loop.call_soon_threadsafe(lines.put_nowait, None)
 
@@ -266,7 +285,14 @@ def _read_lines(stdin):
     return lines
 
 
-async def _session(args, broker, client_config, stdin, out, err):
+async def _session(
+    args: argparse.Namespace,
+    broker: BrokerConfig,
+    client_config: ClientConfig,
+    stdin: TextIO,
+    out: TextIO,
+    err: TextIO,
+) -> int:
     with tempfile.TemporaryDirectory(prefix="chair-console-") as scratch:
         path = args.db or Path(scratch) / "receipts.sqlite"
         err.write(
@@ -292,8 +318,13 @@ async def _session(args, broker, client_config, stdin, out, err):
 
 
 def main(
-    argv=None, *, environ=os.environ, stdin=sys.stdin, out=sys.stdout, err=sys.stderr
-):
+    argv: Sequence[str] | None = None,
+    *,
+    environ: Mapping[str, str] = os.environ,
+    stdin: TextIO = sys.stdin,
+    out: TextIO = sys.stdout,
+    err: TextIO = sys.stderr,
+) -> int:
     """Run the console until /quit, end of input or Ctrl+C."""
     parser = build_parser()
     args = parser.parse_args(argv)

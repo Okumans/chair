@@ -4,6 +4,8 @@
 # ///
 """Repeatable radio-window fault injection and sensor USB trace capture."""
 
+from __future__ import annotations
+
 import argparse
 import json
 import math
@@ -11,7 +13,9 @@ import sqlite3
 import sys
 import time
 import uuid
+from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
+from typing import TYPE_CHECKING, Literal, TypeAlias, cast
 
 import serial
 
@@ -29,46 +33,77 @@ from chair_mqtt.protocol_bridge import (  # noqa: E402
 )
 from chair_mqtt.transport import BAUD_RATE, Lines, write_message  # noqa: E402
 
+if TYPE_CHECKING:
+    from chair_mqtt.models import JsonObject
 
-def envelope_line(line):
+_Outcome: TypeAlias = Literal["pass", "fail", "inconclusive"]
+_EXITS: dict[_Outcome, int] = {"pass": 0, "fail": 1, "inconclusive": 2}
+
+
+def _str(value: object) -> str:
+    assert isinstance(value, str)
+    return value
+
+
+def _int(value: object) -> int:
+    assert type(value) is int
+    return value
+
+
+def _obj(value: object) -> JsonObject:
+    assert isinstance(value, dict)
+    return cast("JsonObject", value)
+
+
+def envelope_line(line: bytes | str) -> JsonObject | None:
     """Ignore ROM boot text without treating it as a protocol message or timing evidence."""
     try:
-        value = json.loads(line)
+        value: object = json.loads(line)
     except ValueError:
         return None
-    return value if isinstance(value, dict) else None
+    return cast("JsonObject", value) if isinstance(value, dict) else None
 
 
 class FaultTest:
     """Inject faults around the real bridge, preserving its deadline guards and durable ACKs."""
 
-    def __init__(self, mode, bridge, node, config, emit):
-        self.mode, self.bridge, self.node = mode, bridge, node
-        self.config, self.emit = config, emit
-        self.command = None
-        self.second = None
-        self.held = None
-        self.release_at = None
-        self.check_until = None
-        self.target = None
+    def __init__(
+        self,
+        mode: str,
+        bridge: Bridge,
+        node: str,
+        config: JsonObject,
+        emit: Callable[[JsonObject], object],
+    ) -> None:
+        self.mode: str = mode
+        self.bridge: Bridge = bridge
+        self.node: str = node
+        self.config: JsonObject = config
+        self.emit: Callable[[JsonObject], object] = emit
+        self.command: str | None = None
+        self.second: str | None = None
+        self.held: JsonObject | None = None
+        self.release_at: float | None = None
+        self.check_until: float | None = None
+        self.target: tuple[str, str, int] | None = None
         self.proof_seen = False
         self.interference = False
-        self.outcome = None
+        self.outcome: _Outcome | None = None
         self.cleanup_submitted = False
 
-    def finish(self, outcome, reason):
+    def finish(self, outcome: _Outcome, reason: str) -> None:
         if self.outcome is None:
             self.outcome = outcome
             self.emit(dict(kind="result", outcome=outcome, reason=reason))
 
-    def queue(self, now):
+    def queue(self, now: float) -> str:
         command = str(uuid.uuid4())
         self.bridge.store.queue(self.node, command, self.config, now + 300, now)
         self.emit(dict(kind="queued_test", command_id=command))
         return command
 
-    def receive(self, envelope, now, mono):
-        m = None
+    def receive(self, envelope: JsonObject, now: float, mono: float) -> None:
+        m: JsonObject | None = None
         if envelope.get("kind") == "telemetry":
             try:
                 m = validate(envelope, self.bridge.mapping)
@@ -102,7 +137,7 @@ class FaultTest:
                         self.finish("inconclusive", "requires a finite radio window")
                     else:
                         self.held = envelope
-                        self.release_at = mono + remaining / 1000 + 1
+                        self.release_at = mono + _int(remaining) / 1000 + 1
                         self.emit(
                             dict(
                                 kind="held_ready",
@@ -130,7 +165,7 @@ class FaultTest:
                     "inconclusive", "no-op configuration did not match sensor settings"
                 )
                 return
-            target = (m["node_id"], m["boot_id"], m["seq"])
+            target = (_str(m["node_id"]), _str(m["boot_id"]), _int(m["seq"]))
             if self.target is None:
                 self.target = target
                 self.second = self.queue(
@@ -144,25 +179,27 @@ class FaultTest:
                 )
         if m["type"] == "READY_PROOF" and self.target is not None:
             if self.bridge.available_until(self.node) > mono and (
-                m["boot_id"] == self.target[1] and m["seq"] > self.target[2]
+                m["boot_id"] == self.target[1] and _int(m["seq"]) > self.target[2]
             ):
                 self.proof_seen = True
 
-    def tick(self, now, mono):
-        if self.held is not None and mono >= self.release_at:
-            self.bridge.receive(self.held, now, mono)
-            self.held = None
-            self.check_until = mono + 3
-            self.emit(dict(kind="released_expired_ready"))
+    def tick(self, now: float, mono: float) -> None:
+        if self.held is not None:
+            assert self.release_at is not None  # set together with self.held
+            if mono >= self.release_at:
+                self.bridge.receive(self.held, now, mono)
+                self.held = None
+                self.check_until = mono + 3
+                self.emit(dict(kind="released_expired_ready"))
         if self.check_until is not None and mono >= self.check_until:
             self.finish(
                 "inconclusive" if self.interference else "pass",
                 "delayed READY observation completed",
             )
 
-    def allow(self, outgoing, now, mono):
+    def allow(self, outgoing: JsonObject, now: float, mono: float) -> bool:
         """Return whether to transmit; suppressed work releases only its own radio request."""
-        m = outgoing["message"]
+        m = _obj(outgoing["message"])
         suppress = False
         if outgoing["kind"] == "command":
             if self.mode == "delayed-ready":
@@ -174,7 +211,7 @@ class FaultTest:
             elif m["command_id"] == self.second or self.outcome is not None:
                 suppress = True
         if outgoing["kind"] == "event_ack" and self.target is not None:
-            target = (m["node_id"], m["ack_boot_id"], m["ack_seq"])
+            target = (_str(m["node_id"]), _str(m["ack_boot_id"]), _int(m["ack_seq"]))
             suppress = target == self.target and self.outcome is None
         if suppress:
             self.bridge.receive(
@@ -183,7 +220,7 @@ class FaultTest:
             self.emit(dict(kind="suppressed", message=outgoing))
         return not suppress
 
-    def cleanup(self):
+    def cleanup(self) -> None:
         """Retain facts and command history; expire only this harness's unfinished commands."""
         with self.bridge.store.db:
             for command in (self.command, self.second):
@@ -194,9 +231,11 @@ class FaultTest:
                     )
 
 
-def trace_tail(messages, tail_s):
+def trace_tail(messages: Iterable[JsonObject], tail_s: int) -> JsonObject:
     """Return evidence only for a confirmed stop between startup and readiness."""
-    start, stop, boot = None, None, None
+    start: JsonObject | None = None
+    stop: JsonObject | None = None
+    boot: object = None
     for m in messages:
         if m.get("kind") != "sensor_trace":
             continue
@@ -213,17 +252,18 @@ def trace_tail(messages, tail_s):
             if m["occupied"] and m["radio_state"] == "opening":
                 stop = m
         elif m["event"] == "radio_ready" and start is not None:
-            if (
-                stop is not None
-                and start["uptime_ms"] <= stop["uptime_ms"] <= m["uptime_ms"]
-            ):
-                required = stop["uptime_ms"] + tail_s * 1000
+            if stop is not None and _int(start["uptime_ms"]) <= _int(
+                stop["uptime_ms"]
+            ) <= _int(m["uptime_ms"]):
+                stop_ms = _int(stop["uptime_ms"])
+                closes_ms = _int(m["closes_ms"])
+                required = stop_ms + tail_s * 1000
                 return dict(
                     kind="tail_check",
-                    outcome="pass" if m["closes_ms"] >= required else "fail",
-                    stop_ms=stop["uptime_ms"],
-                    ready_ms=m["uptime_ms"],
-                    closes_ms=m["closes_ms"],
+                    outcome="pass" if closes_ms >= required else "fail",
+                    stop_ms=stop_ms,
+                    ready_ms=_int(m["uptime_ms"]),
+                    closes_ms=closes_ms,
                     required_ms=required,
                 )
             start, stop = None, None
@@ -234,7 +274,7 @@ def trace_tail(messages, tail_s):
     )
 
 
-def main(argv=None):
+def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("mode", choices=["delayed-ready", "lost-ack", "trace"])
     parser.add_argument(
@@ -255,27 +295,30 @@ def main(argv=None):
     if not math.isfinite(args.duration) or args.duration <= 0 or args.tail_s <= 0:
         parser.error("duration and tail must be positive")
 
-    def emit(message):
+    def emit(message: JsonObject) -> None:
         print(json.dumps(dict(host_monotonic=time.monotonic(), **message)), flush=True)
 
-    store, test = None, None
+    store: Store | None = None
+    bridge: Bridge | None = None
+    test: FaultTest | None = None
     try:
         if args.mode != "trace":
             if not all((args.nodes, args.node, args.db, args.config)):
                 parser.error("fault tests require --nodes, --node, --db and --config")
             mapping = mapping_file(args.nodes)
-            config = json.loads(Path(args.config).read_text())
-            if args.node not in mapping or not configuration(config):
+            config_raw: object = json.loads(Path(args.config).read_text())
+            if args.node not in mapping or not configuration(config_raw):
                 parser.error(
                     "expected a mapped node and a complete valid configuration"
                 )
+            config = _obj(config_raw)
             # Never run alongside pending production commands or overwrite a previous test.
             with Path(args.db).open("x"):
                 pass
             store = Store(args.db)
             bridge = Bridge(store, mapping)
             test = FaultTest(args.mode, bridge, args.node, config, emit)
-        traces = []
+        traces: list[JsonObject] = []
         lines = Lines()
         with serial.Serial(
             args.port,
@@ -284,11 +327,16 @@ def main(argv=None):
             write_timeout=SERIAL_WRITE_TIMEOUT_S,
             exclusive=True,
         ) as port:
-            hello = bridge.reset() if test else dict(kind="hello", request_id=1)
+            hello: JsonObject
+            if test:
+                assert bridge is not None  # created alongside test
+                hello = bridge.reset()
+            else:
+                hello = dict(kind="hello", request_id=1)
             write_message(port, hello)
             last_hello = time.monotonic()
             end = last_hello + args.duration
-            cleanup_until = None
+            cleanup_until: float | None = None
             try:
                 while time.monotonic() < end:
                     chunk = port.read(min(8192, max(1, port.in_waiting)))
@@ -306,6 +354,7 @@ def main(argv=None):
                     mono = time.monotonic()
                     if not test:
                         continue
+                    assert bridge is not None  # created alongside test
                     test.tick(time.time(), mono)
                     if test.outcome is not None and cleanup_until is None:
                         test.cleanup()
@@ -324,11 +373,11 @@ def main(argv=None):
                         sent = bridge.send(port, outgoing)
                         emit(dict(kind="tx", message=outgoing, submitted=sent))
                         if sent and test.target and outgoing["kind"] == "event_ack":
-                            m = outgoing["message"]
+                            m = _obj(outgoing["message"])
                             if (
-                                m["node_id"],
-                                m["ack_boot_id"],
-                                m["ack_seq"],
+                                _str(m["node_id"]),
+                                _str(m["ack_boot_id"]),
+                                _int(m["ack_seq"]),
                             ) == test.target:
                                 test.cleanup_submitted = True
                     if cleanup_until is not None and (
@@ -339,6 +388,7 @@ def main(argv=None):
                         break
             finally:
                 if test and test.target and not test.cleanup_submitted:
+                    assert bridge is not None  # created alongside test
                     node, boot, seq = test.target
                     control = bridge.control(
                         node, "EVENT_ACK", ack_boot_id=boot, ack_seq=seq
@@ -357,10 +407,13 @@ def main(argv=None):
                         pass
         if test:
             test.finish("inconclusive", "test deadline reached")
-            return {"pass": 0, "fail": 1, "inconclusive": 2}[test.outcome]
+            assert test.outcome is not None  # finish() guarantees outcome is set
+            return _EXITS[test.outcome]
         result = trace_tail(traces, args.tail_s)
         emit(result)
-        return {"pass": 0, "fail": 1, "inconclusive": 2}[result["outcome"]]
+        outcome = result["outcome"]
+        assert outcome in _EXITS  # trace_tail only emits pass/fail/inconclusive
+        return _EXITS[outcome]
     except KeyboardInterrupt:
         emit(dict(kind="result", outcome="inconclusive", reason="interrupted"))
         return 2
