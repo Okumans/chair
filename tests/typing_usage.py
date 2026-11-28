@@ -5,30 +5,28 @@ from pathlib import Path
 
 from chair_mqtt import (
     BridgeStatus,
+    BridgeStatusHandler,
     BrokerConfig,
     ChairClient,
     ChairConfiguration,
     ClientConfig,
     CommandError,
+    CommandErrorHandler,
     CommandHandle,
     CommandState,
     CommandUpdate,
+    CommandUpdateHandler,
+    EventHandler,
     MovementBatch,
+    MovementHandler,
     MovementLoss,
+    MovementLossHandler,
     SensorEvent,
     SensorState,
     SQLiteStorage,
-)
-from chair_mqtt.async_storage import SQLiteTransaction
-from chair_mqtt.client import (
-    BridgeStatusHandler,
-    CommandErrorHandler,
-    CommandUpdateHandler,
-    EventHandler,
-    MovementHandler,
-    MovementLossHandler,
     StateHandler,
 )
+from chair_mqtt.async_storage import SQLiteTransaction
 
 
 async def exercise_client(db_path: Path) -> None:

@@ -6,20 +6,27 @@ installed.
 """
 
 from importlib import import_module
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-_EXPORTS = {
+_EXPORTS: dict[str, str] = {
     "SQLiteStorage": ".async_storage",
     "Storage": ".async_storage",
     "BackendLedger": ".backend",
     "BridgeStatus": ".client",
+    "BridgeStatusHandler": ".client",
     "ChairClient": ".client",
     "CommandError": ".client",
+    "CommandErrorHandler": ".client",
     "CommandHandle": ".client",
     "CommandState": ".client",
     "CommandUpdate": ".client",
+    "CommandUpdateHandler": ".client",
+    "EventHandler": ".client",
+    "MovementHandler": ".client",
+    "MovementLossHandler": ".client",
     "SensorEvent": ".client",
     "SensorState": ".client",
+    "StateHandler": ".client",
     "ControllerLedger": ".controller",
     "ChairBridge": ".bridge",
     "GatewayStream": ".gateway",
@@ -50,26 +57,32 @@ __all__ = [
     "BridgeConfig",
     "BridgeHealth",
     "BridgeStatus",
+    "BridgeStatusHandler",
     "BrokerConfig",
     "ChairClient",
     "ChairConfiguration",
     "ChairBridge",
     "ClientConfig",
     "CommandError",
+    "CommandErrorHandler",
     "CommandHandle",
     "CommandNotice",
     "CommandReceipt",
     "CommandResult",
     "CommandState",
     "CommandUpdate",
+    "CommandUpdateHandler",
     "ConfigRequest",
     "ConfigSet",
     "ControllerLedger",
     "EventAck",
+    "EventHandler",
     "GatewayStream",
     "GatewayTransport",
     "MovementBatch",
+    "MovementHandler",
     "MovementLoss",
+    "MovementLossHandler",
     "MovementSample",
     "PublishResult",
     "RadioReady",
@@ -78,12 +91,13 @@ __all__ = [
     "SensorEvent",
     "SerialTransport",
     "SensorState",
+    "StateHandler",
     "StateSync",
     "Storage",
 ]
 
 
-def __getattr__(name):
+def __getattr__(name: str) -> Any:
     module = _EXPORTS.get(name)
     if module is None:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
@@ -92,7 +106,7 @@ def __getattr__(name):
     return value
 
 
-def __dir__():
+def __dir__() -> list[str]:
     return sorted({*globals(), *__all__})
 
 
@@ -102,13 +116,20 @@ if TYPE_CHECKING:
     from .bridge import ChairBridge
     from .client import (
         BridgeStatus,
+        BridgeStatusHandler,
         ChairClient,
         CommandError,
+        CommandErrorHandler,
         CommandHandle,
         CommandState,
         CommandUpdate,
+        CommandUpdateHandler,
+        EventHandler,
+        MovementHandler,
+        MovementLossHandler,
         SensorEvent,
         SensorState,
+        StateHandler,
     )
     from .controller import ControllerLedger
     from .gateway import GatewayStream, GatewayTransport
