@@ -97,9 +97,10 @@ namespace {
   inline uint16_t readBatteryMv() {
     uint32_t total = 0;
     for (uint8_t i = 0; i < Battery::SAMPLES; ++i) total += analogReadMilliVolts(Pins::BATTERY_ADC);
-    const uint32_t mv = total / Battery::SAMPLES * 2;
+    const uint64_t mv = uint64_t(total) * 2 * Battery::CALIBRATION_MULTIMETER_MV /
+                        (uint64_t(Battery::SAMPLES) * Battery::CALIBRATION_ADC_MV);
     if (mv < Battery::MIN_VALID_MV) return UINT16_MAX;
-    return uint16_t(std::min<uint32_t>(mv, UINT16_MAX - 1));
+    return uint16_t(std::min<uint64_t>(mv, UINT16_MAX - 1));
   }
 
   inline void sampleBattery(uint64_t now) {

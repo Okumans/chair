@@ -145,7 +145,7 @@ I2C address `0x68`, SDA GPIO6 and SCL GPIO7. Confirm wiring against
 `sensor/include/pins.h`; the optional interrupt is unused.
 
 The battery is one 21700 Li-ion cell measured through a 100k/100k divider into GPIO0, so
-`battery_mv` is twice the ADC reading (8 samples averaged, read at every wake and every 60 s
+`battery_mv` is twice the ADC reading scaled by a bench calibration of 3760/3718 (16 samples averaged, read at every wake and every 60 s
 while awake). Below 1000 mV the cell counts as absent and `battery_mv` is null. The chair
 sends `BATTERY_LOW` when the cell drops below 3400 mV, keeps it queued until the Pi
 acknowledges it, and re-arms at 3600 mV. The

@@ -76,6 +76,9 @@ namespace SmartChair {
     inline constexpr uint16_t REARM_MV           = 3600;
     inline constexpr uint16_t MIN_VALID_MV       = 1000;
     inline constexpr uint32_t SAMPLE_INTERVAL_MS = 60000;
-    inline constexpr uint8_t SAMPLES             = 8;
+    inline constexpr uint8_t SAMPLES             = 16;
+    /// Bench calibration: a multimeter read 3760 mV where the divided ADC reported 3718 mV.
+    inline constexpr uint32_t CALIBRATION_MULTIMETER_MV = 3760;
+    inline constexpr uint32_t CALIBRATION_ADC_MV        = 3718;
   }  // namespace Battery
 }  // namespace SmartChair
