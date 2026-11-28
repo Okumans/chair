@@ -17,8 +17,6 @@ the example configuration contains no credentials, and the service refuses a
 `ca_file` or else the system trust store, before anything is sent. Only for
 development against a broker on the same machine, `plaintext = true` disables
 TLS; it is rejected for any host other than `localhost`, `127.0.0.1` or `::1`.
-It replaces the former `allow_local_plaintext` key under `[bridge]`, which is now
-rejected as unknown.
 
 The service opens the gateway serial port immediately and connects to the broker in
 the background, so sensor facts are acknowledged and stored durably while the

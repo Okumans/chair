@@ -1,7 +1,6 @@
 # Radio windows specification
 
-Confirmed design, 12 November 2026. This document specifies the next implementation,
-using wire protocol version 2. The current firmware implements wire version 1.
+Confirmed design, 12 November 2026, implemented as wire protocol version 2.
 The revision number in `PROTOCOL_SPEC.md` is a document revision, independent of the
 wire version. This specification takes precedence for the v2 changes described here.
 
@@ -64,11 +63,9 @@ Reject unsupported versions, incorrect payload lengths and invalid values before
 changing engine state. The full default movement frame remains 1108 bytes and the
 maximum ESP-NOW payload remains 1470 bytes.
 
-Extend typed USB JSON, configuration equality, command UUID records, durable encoding,
-Python validation and command listing to carry all settings. Add matching CLI options
-`--radio-windows-enabled`, `--radio-interval-s`, `--radio-open-s` and
-`--radio-motion-tail-s`. The Boolean option accepts `true` or `false`. New CLI commands
-use the defaults above for unspecified radio options.
+Typed serial JSON, configuration equality, command UUID records, durable encoding and
+Python validation carry all settings. A backend submits them with
+`ChairClient.set_config`.
 
 Persist configuration, command record and reliable command result together before
 adopting the new policy. Failed persistence leaves the prior policy authoritative.
@@ -336,25 +333,11 @@ spacing. Vacancy's single preparation deadline overrides occupied retry activity
 Hardware lifecycle operations must preserve cooperative sensing and must not wait for
 application ACKs. Measure their effect on sample timing during physical acceptance.
 
-## Breaking upgrade procedure
+## Unsupported stored state
 
-This test deployment permits disposable data to be removed. Perform reset only as an
-explicit provisioning action. Runtime startup rejects old or unsupported storage rather
-than silently clearing it.
-
-1. Stop the bridge and serial monitors.
-2. Remove the disposable Pi database and its associated WAL/SHM files while it is closed,
-   or choose a new empty database path.
-3. Reset the chair's application NVS snapshot and retained boot identity through an
-   explicit provisioning procedure. Keep the configured MACs and keys available for builds.
-4. Upgrade the Pi bridge, gateway and chair together to v2.
-5. Start with default configuration and verify a new STATE_SYNC, occupied READY, scheduled
-   closure/reopening and a complete configuration round trip.
-
-The v2 persistence format and Pi schema must identify their version and reject unsupported
-old data with a clear reset instruction. Automatic v1 command replay and migration are
-outside this revision. Old pending events and test command records are discarded by the
-explicit reset.
+Runtime startup rejects old or unsupported storage rather than silently clearing it,
+and the Pi rejects databases with an older schema. Recover with the explicit
+[sensor state reset](TRANSPORT.md#reset-sensor-state) and a new database path.
 
 ## Acceptance criteria
 
@@ -382,12 +365,6 @@ Deterministic engine and integration tests must cover the following cases.
 Physical acceptance must measure radio-off periods, encrypted large-frame delivery after
 restart, command round trips, sample timing during transitions, outage recovery and vacant
 seat/timer wake. Power reduction remains a measurement outcome.
-
-The implementation handoff should use separate contract/codec, engine, hardware and Pi
-integration commits. Before each implementation commit, apply formatting, run lint and
-native tests, build both normal firmware targets and check affected clangd translation
-units. Document public APIs, non-obvious validation and state transitions. Use named
-constants and keep hardware sequencing out of large inline loop blocks.
 
 ## Later occupied light sleep integration
 

@@ -3,8 +3,8 @@
 ## Recovery behavior
 
 Both nodes run Wi-Fi/ESP-NOW start and stop calls in one FreeRTOS worker at a
-time. The loop continues sampling the occupied sensor and servicing USB while
-that worker runs. The original 2.5-second start/stop timeout still reports a
+time. The loop continues sampling the occupied sensor and servicing its serial link
+(sensor USB, gateway UART) while that worker runs. The original 2.5-second start/stop timeout still reports a
 failure; it does not delete a task that may hold SDK locks.
 
 A worker still outstanding after 15 seconds requests a full emergency restart.
@@ -26,8 +26,8 @@ and peripherals without Wi-Fi shutdown hooks, which could wait on the stalled
 worker's locks. This is deliberately limited to unrecoverable radio faults.
 It depends on the pinned IDF internal API; rebuild both targets when upgrading
 that dependency. A diagnostic is queued before reset, which waits at least 20 ms
-and until the USB queue drains, but never more than 250 ms; USB output is best
-effort and delivery is not guaranteed. The sensor also waits for its persistence
+and until the serial output queue drains, but never more than 250 ms; that output is
+best effort and delivery is not guaranteed. The sensor also waits for its persistence
 gate, but a restart is forced 60 s after the notice so failing storage cannot
 keep a radio-less chair awake. Hardware recovery must still be validated on both
 ESP models; host tests verify the policy and persistence gate.

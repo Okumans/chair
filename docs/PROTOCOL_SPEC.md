@@ -5,7 +5,7 @@ Revision 3, wire version 2. This is the implementation contract; [radio-window p
 ## Ownership and defaults
 
 Chair → encrypted unicast ESP-NOW → gateway → UART JSON → Pi SQLite.
-The Pi owns logical sessions. The chair owns physical occupancy, sensing, configuration and power. MQTT, systemd, battery measurement and actual occupied light sleep are deferred.
+The Pi owns logical sessions. The chair owns physical occupancy, sensing, configuration and power. Battery measurement and actual occupied light sleep are deferred.
 
 Seat GPIO5 is active low with 50 ms debounce. MPU6050 uses SDA6/SCL7; INT21 is optional and unused by the polling adapter. Poll at 25 Hz, ±2 g and ±250 degrees/s. Preserve raw readings. Local classification uses acceleration magnitude deviation from 1 g and maximum absolute gyro axis: start above 0.15 g or 15 degrees/s; quiet below 0.08 g and 8 degrees/s; 100 ms debounce on start and stop. Initial gravity is the calibration reference; thresholds require physical tuning.
 
@@ -44,7 +44,7 @@ READY hint. While occupied availability remains open, the sensor answers with RE
 and the probe identity. The Pi calculates a conservative expiry from the probe's send
 time and the proof's remaining duration, capped at five seconds. It rejects unmatched,
 expired or delayed proofs and retries the probe when necessary. This avoids relying on
-synchronized clocks or assuming a bound on radio or USB buffering. These two message types
+synchronized clocks or assuming a bound on radio or serial buffering. These two message types
 extend wire v2; update the sensor, gateway, and bridge together.
 
 UUIDs are nonzero 16-byte values, represented as canonical UUID strings in JSON. Status: 0 applied, 1 already_applied, 2 revision_conflict, 3 stale_revision, 4 busy, 5 received, 6 command_conflict. READY reasons: 0 seat_occupied, 1 movement_started, 2 scheduled. Never persist, replay or application-ACK READY. Generate it afresh when occupied communication opens or movement starts. Null listen remaining means no scheduled close; timed windows compute remaining time when sent. There is no UTC clock or listen_until on the chair.
@@ -100,14 +100,14 @@ Retry each pending event at 0, 250, 750, 1750 ms within a 2500 ms round. Start a
 
 PREPARE_SLEEP allows 2500 ms for delivery and persistence, cancels on reseating, then rechecks the physical pin before radio stop and deep sleep. Storage failure keeps the chair awake to avoid silently losing a new physical transition. Wake on low seat GPIO and configured heartbeat timer. All sleep timer multiplication is uint64.
 
-## USB and Pi
+## Serial link and Pi
 
-USB uses bounded UTF-8 JSON lines up to 8192 bytes excluding LF; accept CRLF. Configure the underlying CDC receive queue for at least a complete line plus LF before startup. Discard malformed/overlong input through newline. Partial writes retain their cursor; messages never interleave. Bounded RAM output may drop messages; reliable radio retries recover them. Reset partial input/output on a hardware USB bus reset, preserving framing across transient readiness changes. Hello reports radio readiness. Structured errors only. JSON parse failures retain reason `invalid_json` and include the parser error name, byte offset and received line byte count; arbitrary command contents are never echoed.
+The gateway talks to the Pi over UART1 (115200 baud); the sensor's diagnostic link is native USB CDC. Both use bounded UTF-8 JSON lines up to 8192 bytes excluding LF; accept CRLF. Configure the underlying receive queue for at least a complete line plus LF before startup. Discard malformed/overlong input through newline. Partial writes retain their cursor; messages never interleave. Bounded RAM output may drop messages; reliable radio retries recover them. On USB CDC, reset partial input/output on a hardware bus reset, preserving framing across transient readiness changes; a UART has no bus-reset event. Hello reports radio readiness. Structured errors only. JSON parse failures retain reason `invalid_json` and include the parser error name, byte offset and received line byte count; arbitrary command contents are never echoed.
 
 Gateway telemetry: `{kind:"telemetry",source_mac:"...",message:{version:2,type:"...",node_id:"chair-01",boot_id:"16 hex",seq:1,uptime_ms:0,occupied:true,battery_mv:null,config_revision:0,health_flags:2,...}}`.
 Emit identity, common telemetry where applicable, and only the fields belonging to the message type. Omit unrelated fields entirely. Preserve intentional nulls: unavailable `battery_mv` in telemetry and indefinite `listen_remaining_ms` in READY. Thus OCCUPIED has no command, ACK, movement, READY or boot-generation fields. Compact retransmissions still match earlier SQLite facts containing unrelated null fields; no database reset is needed.
 Pi controls use `{kind:"command",request_id:1,message:{...CONFIG_SET fields...}}` or kind `event_ack` with EVENT_ACK fields. Bench kind `tx`/`rx` hexadecimal transport remains for diagnostics; protocol frames are decoded and validated in normal operation.
 
-Pi operation requires explicit serial path, node-to-MAC mapping and SQLite path. SQLite WAL + synchronous FULL. Commit reliable event before ACK; deduplicate by identity and ACK duplicates. Track the chair-provided durable boot generation; older generations and older sequences cannot replace current state. A previously unseen boot establishes its generation via STATE_SYNC. Reject a boot that changes its generation or reuses another boot's generation. V1 storage and databases require the explicit test reset procedure in [radio-window policy](RADIO_WINDOWS_SPEC.md). Store late command results as facts without dispatching expired commands. Commands have UUID, complete config and UTC expiry, one pending dispatch per node. Serial disconnect resets framing and reconnects automatically. The bridge publishes facts over MQTT as specified in [MQTT_SPECS.md](MQTT_SPECS.md).
+Pi operation requires explicit serial path, node-to-MAC mapping and SQLite path. SQLite WAL + synchronous FULL. Commit reliable event before ACK; deduplicate by identity and ACK duplicates. Track the chair-provided durable boot generation; older generations and older sequences cannot replace current state. A previously unseen boot establishes its generation via STATE_SYNC. Reject a boot that changes its generation or reuses another boot's generation. Unsupported sensor storage requires the explicit [sensor state reset](TRANSPORT.md#reset-sensor-state), and older databases are rejected. Store late command results as facts without dispatching expired commands. Commands have UUID, complete config and UTC expiry, one pending dispatch per node. Serial disconnect resets framing and reconnects automatically. The bridge publishes facts over MQTT as specified in [MQTT_SPECS.md](MQTT_SPECS.md).
 
 See TRANSPORT.md for commands and validation. Physical acceptance must cover encrypted 1108-byte frames, sample timing, configuration, durable retries, and seat/timer deep-sleep wake. Build/native checks do not establish power use or radio reliability.
