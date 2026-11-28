@@ -245,14 +245,13 @@ namespace SmartChair {
     else if (communication.state != Communication::OPEN &&
              communication.state != Communication::SETTLING)
       delivery = Delivery::WAITING;
-    // Startup reports first; a missing reading never changes the latch.
+    // Startup reports first; a missing reading never changes the latch. The latch follows the
+    // Pi's ACK, so an alert dropped by outbox overflow is raised again instead of being lost.
     if (operating != Operating::STARTING && batteryMv_ != UINT16_MAX) {
-      if (!batteryLow && batteryMv_ < Battery::LOW_MV) {
-        batteryLow = true;
-        queueEvent(Type::BATTERY_LOW, now);
-      } else if (batteryLow && batteryMv_ >= Battery::REARM_MV) {
+      if (batteryLow && batteryMv_ >= Battery::REARM_MV)
         batteryLow = false;
-      }
+      else if (!batteryLow && batteryMv_ < Battery::LOW_MV && !batteryAlertQueued())
+        queueEvent(Type::BATTERY_LOW, now);
     }
     if (occupied && now - heartbeatAt_ >= milliseconds(durable.config.heartbeat_s)) {
       heartbeatAt_ = now;

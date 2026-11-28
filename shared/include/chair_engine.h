@@ -37,7 +37,8 @@ namespace SmartChair {
     Window communication;
     Delivery delivery = Delivery::IDLE;
     bool occupied = false, imuAvailable = false, storageFailed = false;
-    /// BATTERY_LOW already sent for this discharge; the adapter carries it across deep sleep.
+    /// The Pi acknowledged BATTERY_LOW for this discharge; the adapter carries it across deep
+    /// sleep.
     bool batteryLow            = false;
     uint32_t occupied_sleep_ms = 0;
     Header identity;
@@ -134,6 +135,8 @@ namespace SmartChair {
     }
 
     void acknowledge(const Frame& ack);
+
+    bool batteryAlertQueued() const;
 
     const CommandRecord* findCommand(const Uuid& uuid) const;
 
