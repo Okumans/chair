@@ -13,6 +13,7 @@ from jsonschema.protocols import Validator
 from jsonschema.validators import extend  # pyright: ignore[reportUnknownVariableType]  # types-jsonschema leaves extend() unannotated
 from pydantic import ValidationError as ModelValidationError
 
+from ._narrow import known_int, known_list, known_object, known_str
 from .models import BackendReceipt, ConfigRequest, JsonObject, MovementSample
 
 MAX_PAYLOAD = 16384
@@ -148,30 +149,6 @@ def decode(payload: object) -> JsonObject:
 # assertion restates that invariant; it never fails for validated input.
 def _object_or_none(value: object) -> JsonObject | None:
     return cast(JsonObject, value) if isinstance(value, dict) else None
-
-
-def known_object(value: object) -> JsonObject:
-    """Return a value that validation already proved is a JSON object."""
-    assert isinstance(value, dict), "validated JSON object expected"
-    return cast(JsonObject, value)
-
-
-def known_list(value: object) -> list[object]:
-    """Return a value that validation already proved is a JSON array."""
-    assert isinstance(value, list), "validated JSON array expected"
-    return cast(list[object], value)
-
-
-def known_str(value: object) -> str:
-    """Return a value that validation already proved is a JSON string."""
-    assert isinstance(value, str), "validated JSON string expected"
-    return value
-
-
-def known_int(value: object) -> int:
-    """Return a value that validation already proved is a JSON integer."""
-    assert isinstance(value, int), "validated JSON integer expected"
-    return value
 
 
 def validate(

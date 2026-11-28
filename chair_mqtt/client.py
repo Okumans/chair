@@ -20,8 +20,9 @@ from paho.mqtt.subscribeoptions import SubscribeOptions
 from pydantic import BaseModel, ConfigDict
 
 from . import connection
+from ._narrow import known_str
 from .async_storage import Storage
-from .contract import ContractError, Route, known_str, route, validate
+from .contract import ContractError, Route, route, validate
 from .models import (
     BrokerConfig,
     ChairConfiguration,

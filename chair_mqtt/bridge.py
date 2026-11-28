@@ -20,7 +20,8 @@ from paho.mqtt.properties import Properties
 from pydantic import BaseModel
 
 from . import connection
-from .contract import MAX_PAYLOAD, known_int, known_object, known_str
+from ._narrow import known_int, known_object, known_str
+from .contract import MAX_PAYLOAD
 from .coordinator import Coordinator, Oversized
 from .gateway import GatewayLink
 from .models import (
@@ -41,6 +42,7 @@ if TYPE_CHECKING:
 
     from .gateway import GatewayStream, GatewayTransport
     from .models import JsonObject
+    from .store import CommandDisposition
 
     # One operation the worker runs for a caller: its name, then its arguments.
     _Request: TypeAlias = (
@@ -229,10 +231,10 @@ class ChairBridge:
             )
         )
 
-    def _notice(self, request: JsonObject, disposition: str) -> None:
+    def _notice(self, request: JsonObject, disposition: CommandDisposition) -> None:
         notice = CommandNotice(
             request=ConfigRequest.model_validate(request),
-            disposition=disposition,  # pyright: ignore[reportArgumentType]  # the store's disposition string; pydantic checks the Literal
+            disposition=disposition,
         )
         try:
             self._notifications.put_nowait(notice)
@@ -283,30 +285,52 @@ class ChairBridge:
     # Each overload names the result ``_dispatch_call`` returns for that request.
     @overload
     def _call(
-        self, request: tuple[Literal["publish"], JsonObject, str]
+        self,
+        request: tuple[Literal["publish"], JsonObject, str],
+        *,
+        timeout: float = 10,
     ) -> PublishResult: ...
     @overload
-    def _call(self, request: tuple[Literal["gateway_opened"]]) -> JsonObject: ...
+    def _call(
+        self, request: tuple[Literal["gateway_opened"]], *, timeout: float = 10
+    ) -> JsonObject: ...
     @overload
     def _call(
-        self, request: tuple[Literal["gateway_closed"]] | tuple[Literal["shutdown"]]
+        self,
+        request: tuple[Literal["gateway_closed"]] | tuple[Literal["shutdown"]],
+        *,
+        timeout: float = 10,
     ) -> None: ...
     @overload
     def _call(
-        self, request: tuple[Literal["gateway_received"], JsonObject]
+        self,
+        request: tuple[Literal["gateway_received"], JsonObject],
+        *,
+        timeout: float = 10,
     ) -> JsonObject: ...
     @overload
-    def _call(self, request: tuple[Literal["gateway_next"]]) -> JsonObject | None: ...
+    def _call(
+        self, request: tuple[Literal["gateway_next"]], *, timeout: float = 10
+    ) -> JsonObject | None: ...
     @overload
     def _call(
-        self, request: tuple[Literal["gateway_write"], JsonObject, GatewayStream]
+        self,
+        request: tuple[Literal["gateway_write"], JsonObject, GatewayStream],
+        *,
+        timeout: float = 10,
     ) -> bool: ...
     @overload
-    def _call(self, request: tuple[Literal["health"]]) -> BridgeHealth: ...
+    def _call(
+        self, request: tuple[Literal["health"]], *, timeout: float = 10
+    ) -> BridgeHealth: ...
     @overload
-    def _call(self, request: tuple[Literal["retry_quarantined"]]) -> int: ...
+    def _call(
+        self, request: tuple[Literal["retry_quarantined"]], *, timeout: float = 10
+    ) -> int: ...
     @overload
-    def _call(self, request: tuple[Literal["shutdown_confirmed"]]) -> bool: ...
+    def _call(
+        self, request: tuple[Literal["shutdown_confirmed"]], *, timeout: float = 10
+    ) -> bool: ...
     def _call(self, request: _Request, *, timeout: float = 10) -> object:
         if not self._attached or self._stopping:
             raise RuntimeError("bridge is not started")
@@ -464,7 +488,7 @@ class ChairBridge:
                     self._gateway.radio_pending = None
                     self._gateway_outgoing = None
                     return False
-                deadline = self._store._command_deadlines.get(command_id, 0)  # pyright: ignore[reportPrivateUsage]  # the store's package-internal deadline table
+                deadline = self._store.command_deadline(command_id)
 
                 def _before_deadline() -> bool:
                     return time.monotonic() < deadline
