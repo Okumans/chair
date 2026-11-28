@@ -1,0 +1,37 @@
+name: Set up chair checks
+description: Install the pinned toolchain that `make check` needs.
+
+runs:
+  using: composite
+  steps:
+    - name: Install system packages
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends make g++ mosquitto openssl
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v7
+
+    # Pinned to the maintainer's versions so formatting never drifts with the runner.
+    - name: Install formatters
+      shell: bash
+      run: |
+        uv tool install clang-format==23.1.5
+        uv tool install ruff==0.17.6
+        uv tool dir --bin >> "$GITHUB_PATH"
+
+    # Hook tests create throwaway repositories and commit to them.
+    - name: Configure git identity
+      shell: bash
+      run: |
+        git config --global user.name "chair-ci"
+        git config --global user.email "chair-ci@users.noreply.github.com"
+
+    - name: Show toolchain
+      shell: bash
+      run: |
+        c++ --version | head -1
+        clang-format --version
+        ruff --version
+        uv --version

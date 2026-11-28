@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/setup-checks
+      - name: Format, lint and test
+        run: make check
+
+  firmware:
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: platformio-${{ hashFiles('platformio.ini') }}
+      - name: Install PlatformIO
+        run: pip install platformio
+      - name: Build sensor and gateway firmware
+        run: pio run -e sensor -e gateway
