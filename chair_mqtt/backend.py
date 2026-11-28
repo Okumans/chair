@@ -9,7 +9,8 @@ from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from typing import Any
 
-from .contract import IDENTIFIER, NODE, ContractError, Route, known_object, validate
+from ._narrow import known_object
+from .contract import IDENTIFIER, NODE, ContractError, Route, validate
 from .models import JsonObject
 from .store import MAX_REJECTIONS, compact
 

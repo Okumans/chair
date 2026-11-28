@@ -9,7 +9,8 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from typing import Any
 
-from .contract import NODE, ContractError, known_int, known_str, validate
+from ._narrow import known_int, known_str
+from .contract import NODE, ContractError, validate
 from .contract import route as parse_route
 from .models import ConfigRequest, JsonObject
 from .store import compact

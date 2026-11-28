@@ -26,7 +26,7 @@ if TYPE_CHECKING:
     from paho.mqtt.reasoncodes import ReasonCode
 
     from .models import JsonObject
-    from .store import MqttStore
+    from .store import CommandDisposition, MqttStore
 
 
 @dataclass
@@ -58,7 +58,7 @@ class Coordinator:
         wall_clock: Callable[[], float] = time.time,
         token_is_current: Callable[[int], bool] = lambda _: True,
         on_command: Callable[
-            [JsonObject, str], object
+            [JsonObject, CommandDisposition], object
         ] = lambda _request, _disposition: None,
     ) -> None:
         self.store, self.client, self.monotonic = store, client, monotonic

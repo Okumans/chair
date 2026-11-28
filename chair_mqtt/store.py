@@ -14,18 +14,19 @@ from collections import deque
 from collections.abc import Callable
 from contextlib import closing
 from pathlib import Path
+from typing import Literal, TypeAlias
 
+from ._narrow import known_int, known_object, known_str
 from .contract import (
     IDENTIFIER,
     NODE,
     SCHEMA,
-    known_int,
-    known_object,
-    known_str,
     validate,
 )
 from .models import JsonObject
 from .protocol_bridge import RELIABLE, SCHEMA_VERSION, Store, configuration
+
+CommandDisposition: TypeAlias = Literal["queued", "expired", "duplicate"]
 
 MQTT_SCHEMA_VERSION = 3
 MAX_OUTBOX_ROWS = 10_000
@@ -479,7 +480,7 @@ class MqttStore(Store):
         now: float,
         qos: int = 1,
         retain: bool = False,
-    ) -> str:
+    ) -> CommandDisposition:
         try:
             return self._admit_command(topic, payload, now=now, qos=qos, retain=retain)
         except sqlite3.OperationalError as error:
@@ -498,7 +499,7 @@ class MqttStore(Store):
         now: float,
         qos: int = 1,
         retain: bool = False,
-    ) -> str:
+    ) -> CommandDisposition:
         """Durably admit one MQTT configuration command or an identical retry."""
         node = next(iter(self.mapping))
         target, value = validate(
@@ -575,7 +576,7 @@ class MqttStore(Store):
                 raise CommandAdmissionError("clock_untrusted", retryable=True)
             if expires > now_ms + 86400000:
                 raise CommandAdmissionError("deadline_too_far")
-            status = "expired" if expires <= now_ms else "queued"
+            status: CommandDisposition = "expired" if expires <= now_ms else "queued"
             if status == "queued":
                 count = self.db.execute(
                     "SELECT count(*) FROM commands WHERE status IN ('queued','delivered')"
@@ -596,6 +597,10 @@ class MqttStore(Store):
                 self.monotonic_clock() + (expires - now_ms) / 1000
             )
         return status
+
+    def command_deadline(self, command_id: str) -> float:
+        """Return the monotonic dispatch deadline for ``command_id``, or 0 if unknown."""
+        return self._command_deadlines.get(command_id, 0)
 
     def reject_command(
         self,
