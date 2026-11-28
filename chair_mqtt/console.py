@@ -1,6 +1,8 @@
 """Interactive MQTT test console that acts as the backend for a test bridge."""
 
 import argparse
+import asyncio
+import json
 import secrets
 from pathlib import Path
 
@@ -19,6 +21,16 @@ DEFAULTS = {
 BOOLEAN_KEYS = {"movement_enabled", "radio_windows_enabled"}
 KEYS = {*DEFAULTS, "revision", "expires"}
 DEFAULT_EXPIRY_S = 120
+HELP = """Commands:
+  /config key=value ...  send a full configuration; unnamed fields come from the
+                         last one sent, else firmware defaults. Keys: revision,
+                         expires (seconds, default 120), heartbeat_s,
+                         movement_batch_s, movement_enabled, radio_windows_enabled,
+                         radio_interval_s, radio_open_s, radio_motion_tail_s
+  /state                 print the last state received
+  /status                print the last bridge status received
+  /help                  show this help
+  /quit                  exit (Ctrl+D also works)"""
 
 
 def parse_assignments(text):
@@ -98,3 +110,114 @@ def settings_from_args(args, environ):
         node_id=args.node, bridge_id=args.bridge, consumer_id=args.consumer
     )
     return broker, client
+
+
+class Console:
+    """Print a ChairClient's traffic as JSON lines and run typed commands."""
+
+    def __init__(self, client, *, out, err):
+        self.client, self.out, self.err = client, out, err
+        self.last_state = self.last_status = None
+        self.base = dict(DEFAULTS)
+        self.known_revision = None
+        self._pending = None
+
+        async def on_event(event, tx):
+            self._show("event", event)
+
+        client.on_event(on_event)
+        for kind in (
+            "state",
+            "movement",
+            "movement_loss",
+            "command_update",
+            "command_error",
+            "bridge_status",
+        ):
+            getattr(client, f"on_{kind}")(self._printer(kind))
+
+    def _printer(self, kind):
+        async def show(model):
+            self._show(kind, model)
+
+        return show
+
+    def _show(self, kind, model):
+        if kind == "state":
+            self.last_state = model
+        elif kind == "bridge_status":
+            self.last_status = model
+        message = getattr(model, "message", None)
+        revision = getattr(message, "config_revision", None)
+        if revision is None:
+            revision = getattr(model, "config_revision", None)
+        if revision is not None:
+            self.known_revision = revision
+        self._line(kind, model)
+
+    def _line(self, kind, model):
+        value = {"kind": kind, **model.model_dump(mode="json")}
+        self.out.write(json.dumps(value, ensure_ascii=True) + "\n")
+        self.out.flush()
+
+    def _say(self, text):
+        self.err.write(text + "\n")
+        self.err.flush()
+
+    async def handle(self, line):
+        """Run one input line; return False when the console should exit."""
+        command, _, rest = line.strip().partition(" ")
+        if not command:
+            return True
+        if command == "/quit":
+            return False
+        if command == "/config":
+            await self._config(rest)
+        elif command in {"/state", "/status"}:
+            kind, last = (
+                ("state", self.last_state)
+                if command == "/state"
+                else ("bridge_status", self.last_status)
+            )
+            if last is None:
+                self._say("nothing received yet")
+            else:
+                self._line(kind, last)
+        elif command == "/help":
+            self._say(HELP)
+        else:
+            self._say("unknown command; type /help")
+        return True
+
+    async def _config(self, text):
+        if self._pending is not None and not self._pending.done():
+            self._say("a configuration is still pending; wait for its result")
+            return
+        try:
+            configuration, expires, guessed = build_configuration(
+                self.base, self.known_revision, parse_assignments(text)
+            )
+        except ValueError as error:
+            self._say(f"cannot send: {error}")
+            return
+        if guessed:
+            self._say("no revision seen yet; using revision 1")
+        self._say(f"sending {configuration.model_dump_json()}")
+        handle = await self.client.set_config(configuration, expires_in_seconds=expires)
+        fields = configuration.model_dump()
+        self.known_revision = fields.pop("revision")
+        self.base = fields
+        self._pending = asyncio.create_task(self._follow(handle))
+
+    async def _follow(self, handle):
+        state = await handle.wait()
+        self._say(f"command {handle.command_id} finished: {state.status}")
+
+    async def close(self):
+        """Stop following a pending command."""
+        if self._pending is not None and not self._pending.done():
+            self._pending.cancel()
+            try:
+                await self._pending
+            except asyncio.CancelledError:
+                pass

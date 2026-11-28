@@ -1,7 +1,12 @@
+import asyncio
+import io
+import json
 import unittest
 
+from chair_mqtt.client import SensorEvent, SensorState
 from chair_mqtt.console import (
     DEFAULTS,
+    Console,
     build_configuration,
     build_parser,
     parse_assignments,
@@ -97,3 +102,139 @@ class ArgumentTests(unittest.TestCase):
     def test_remote_plaintext_is_refused(self):
         with self.assertRaises(ValueError):
             settings_from_args(self.parse("--plaintext", host="broker.example"), {})
+
+
+STATE = SensorState.model_validate(
+    dict(
+        schema_version=1,
+        bridge_id="pi-01",
+        publication_id=None,
+        source_mac="02:00:00:00:00:01",
+        received_at_ms=1800000000000,
+        boot_generation="0000000000000001",
+        message=dict(
+            version=2,
+            type="STATE_SYNC",
+            node_id="chair-01",
+            boot_id="0000000000000001",
+            boot_generation="0000000000000001",
+            seq=1,
+            uptime_ms=100,
+            occupied=True,
+            battery_mv=None,
+            config_revision=3,
+            health_flags=0,
+        ),
+    )
+)
+
+
+class FakeHandle:
+    def __init__(self, command_id, done):
+        self.command_id, self._done = command_id, done
+
+    async def wait(self, timeout=None):
+        await self._done.wait()
+        return type("State", (), {"status": "applied"})()
+
+
+class FakeClient:
+    """Records handler registrations and set_config calls."""
+
+    def __init__(self):
+        self.handlers, self.sent = {}, []
+        self._done = asyncio.Event()
+        for name in (
+            "event",
+            "state",
+            "movement",
+            "movement_loss",
+            "command_update",
+            "command_error",
+            "bridge_status",
+        ):
+            setattr(self, f"on_{name}", self._register(name))
+
+    def _register(self, name):
+        def register(callback):
+            self.handlers[name] = callback
+            return callback
+
+        return register
+
+    async def set_config(self, configuration, *, expires_in_seconds):
+        self.sent.append((configuration, expires_in_seconds))
+        self._done = asyncio.Event()
+        return FakeHandle(f"command-{len(self.sent)}", self._done)
+
+    def finish(self):
+        self._done.set()
+
+
+class ConsoleTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.client, self.out, self.err = FakeClient(), io.StringIO(), io.StringIO()
+        self.console = Console(self.client, out=self.out, err=self.err)
+        self.addAsyncCleanup(self.console.close)
+
+    async def test_state_prints_as_a_json_line_and_sets_the_revision(self):
+        await self.client.handlers["state"](STATE)
+        line = json.loads(self.out.getvalue().splitlines()[-1])
+        self.assertEqual(
+            (line["kind"], line["message"]["config_revision"]), ("state", 3)
+        )
+        await self.console.handle("/config radio_interval_s=60")
+        sent, expires = self.client.sent[-1]
+        self.assertEqual((sent.revision, sent.radio_interval_s, expires), (4, 60, 120))
+
+    async def test_second_config_is_refused_while_the_first_is_pending(self):
+        await self.console.handle("/config")
+        await self.console.handle("/config")
+        self.assertEqual(len(self.client.sent), 1)
+        self.assertIn("still pending", self.err.getvalue())
+
+    async def test_next_config_starts_from_the_last_one_sent(self):
+        await self.console.handle("/config heartbeat_s=60")
+        self.assertIn("no revision seen yet", self.err.getvalue())
+        self.client.finish()
+        for _ in range(3):
+            await asyncio.sleep(0)
+        self.assertIn("finished: applied", self.err.getvalue())
+        await self.console.handle("/config radio_interval_s=40")
+        sent, _ = self.client.sent[-1]
+        self.assertEqual(
+            (sent.heartbeat_s, sent.radio_interval_s, sent.revision), (60, 40, 2)
+        )
+
+    async def test_invalid_config_sends_nothing(self):
+        await self.console.handle("/config radio_open_s=60")
+        await self.console.handle("/config movement_enabled=yes")
+        self.assertEqual(self.client.sent, [])
+        self.assertEqual(self.err.getvalue().count("cannot send"), 2)
+
+    async def test_unknown_command_blank_line_and_quit(self):
+        self.assertTrue(await self.console.handle("/bogus"))
+        self.assertIn("unknown command", self.err.getvalue())
+        self.assertTrue(await self.console.handle("   "))
+        self.assertFalse(await self.console.handle("/quit"))
+
+    async def test_state_and_status_before_any_is_received(self):
+        await self.console.handle("/state")
+        await self.console.handle("/status")
+        self.assertEqual(self.err.getvalue().count("nothing received yet"), 2)
+        self.assertEqual(self.out.getvalue(), "")
+
+    async def test_state_command_reprints_the_last_state(self):
+        await self.client.handlers["state"](STATE)
+        await self.console.handle("/state")
+        lines = self.out.getvalue().splitlines()
+        self.assertEqual(len(lines), 2)
+        self.assertEqual(lines[0], lines[1])
+
+    async def test_event_handler_takes_a_transaction(self):
+        event = SensorEvent.model_validate(
+            {**STATE.model_dump(), "publication_id": "p-1"}
+        )
+        await self.client.handlers["event"](event, object())
+        line = json.loads(self.out.getvalue())
+        self.assertEqual((line["kind"], line["publication_id"]), ("event", "p-1"))
