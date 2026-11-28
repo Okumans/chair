@@ -69,4 +69,13 @@ namespace SmartChair {
     inline constexpr uint8_t BATTERY_UNAVAILABLE = 1 << 1;
     inline constexpr uint8_t KNOWN_FLAGS         = IMU_UNAVAILABLE | BATTERY_UNAVAILABLE;
   }  // namespace Health
+
+  /// One 21700 Li-ion cell measured through a 100k/100k divider on the battery ADC pin.
+  namespace Battery {
+    inline constexpr uint16_t LOW_MV             = 3400;
+    inline constexpr uint16_t REARM_MV           = 3600;
+    inline constexpr uint16_t MIN_VALID_MV       = 1000;
+    inline constexpr uint32_t SAMPLE_INTERVAL_MS = 60000;
+    inline constexpr uint8_t SAMPLES             = 8;
+  }  // namespace Battery
 }  // namespace SmartChair

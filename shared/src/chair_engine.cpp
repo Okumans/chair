@@ -245,6 +245,15 @@ namespace SmartChair {
     else if (communication.state != Communication::OPEN &&
              communication.state != Communication::SETTLING)
       delivery = Delivery::WAITING;
+    // Startup reports first; a missing reading never changes the latch.
+    if (operating != Operating::STARTING && batteryMv_ != UINT16_MAX) {
+      if (!batteryLow && batteryMv_ < Battery::LOW_MV) {
+        batteryLow = true;
+        queueEvent(Type::BATTERY_LOW, now);
+      } else if (batteryLow && batteryMv_ >= Battery::REARM_MV) {
+        batteryLow = false;
+      }
+    }
     if (occupied && now - heartbeatAt_ >= milliseconds(durable.config.heartbeat_s)) {
       heartbeatAt_ = now;
       queueEvent(Type::HEARTBEAT, now);

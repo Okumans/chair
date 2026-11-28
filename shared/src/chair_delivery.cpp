@@ -14,9 +14,9 @@ namespace SmartChair {
       f.id.seq = 0;
     else
       ++identity.seq;
-    f.common = {
-        uint32_t(now), occupied, UINT16_MAX, durable.config.revision,
-        uint8_t(Health::BATTERY_UNAVAILABLE | (imuAvailable ? 0 : Health::IMU_UNAVAILABLE))};
+    f.common = {uint32_t(now), occupied, batteryMv_, durable.config.revision,
+                uint8_t((batteryMv_ == UINT16_MAX ? Health::BATTERY_UNAVAILABLE : 0) |
+                        (imuAvailable ? 0 : Health::IMU_UNAVAILABLE))};
     return f;
   }
 
