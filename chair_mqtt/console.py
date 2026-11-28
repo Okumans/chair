@@ -1,6 +1,10 @@
 """Interactive MQTT test console that acts as the backend for a test bridge."""
 
-from .models import ChairConfiguration
+import argparse
+import secrets
+from pathlib import Path
+
+from .models import BrokerConfig, ChairConfiguration, ClientConfig
 
 # Firmware defaults; the MQTT contract has no configuration readback.
 DEFAULTS = {
@@ -49,3 +53,48 @@ def build_configuration(base, known_revision, assignments):
     if "revision" not in fields:
         fields["revision"] = 1 if guessed else known_revision + 1
     return ChairConfiguration(**fields), expires, guessed
+
+
+def build_parser():
+    """Return the console's argument parser; every setting is explicit."""
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        epilog="Broker credentials come from CHAIR_MQTT_USERNAME and "
+        "CHAIR_MQTT_PASSWORD. Receipts complete deliveries for --consumer, so "
+        "use this only with a test bridge.",
+    )
+    parser.add_argument("--host", required=True, help="MQTT broker host")
+    parser.add_argument(
+        "--port", type=int, help="broker port (default 8883, or 1883 with --plaintext)"
+    )
+    parser.add_argument(
+        "--plaintext", action="store_true", help="no TLS; loopback brokers only"
+    )
+    parser.add_argument("--ca-file", type=Path, help="CA bundle for the broker")
+    parser.add_argument("--node", default="chair-01", help="chair node ID")
+    parser.add_argument("--bridge", required=True, help="the test bridge's bridge_id")
+    parser.add_argument(
+        "--consumer", required=True, help="the test bridge's consumer_id"
+    )
+    parser.add_argument(
+        "--db", type=Path, help="receipt database (default: temporary, removed on exit)"
+    )
+    return parser
+
+
+def settings_from_args(args, environ):
+    """Return ``(BrokerConfig, ClientConfig)``; the MQTT client ID is always new."""
+    port = args.port or (1883 if args.plaintext else 8883)
+    broker = BrokerConfig(
+        host=args.host,
+        port=port,
+        client_id=f"chair-console-{secrets.token_hex(4)}",
+        ca_file=args.ca_file,
+        plaintext=args.plaintext,
+        username=environ.get("CHAIR_MQTT_USERNAME") or None,
+        password=environ.get("CHAIR_MQTT_PASSWORD") or None,
+    )
+    client = ClientConfig(
+        node_id=args.node, bridge_id=args.bridge, consumer_id=args.consumer
+    )
+    return broker, client
