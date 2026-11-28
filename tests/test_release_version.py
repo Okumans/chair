@@ -1,10 +1,13 @@
 import subprocess
 import sys
+import tomllib
 import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "tools/release_version.py"
+# The CLI test follows the real version so a release bump never breaks it.
+VERSION = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["version"]
 sys.path.insert(0, str(ROOT / "tools"))
 
 from release_version import tag_matches  # noqa: E402
@@ -31,8 +34,8 @@ class ReleaseVersionTests(unittest.TestCase):
                 [sys.executable, str(SCRIPT), tag], capture_output=True, text=True
             )
 
-        self.assertEqual(run("v1.0").returncode, 0)
-        mismatch = run("v9.9")
+        self.assertEqual(run(f"v{VERSION}").returncode, 0)
+        mismatch = run("v0.0.0.999")
         self.assertEqual(mismatch.returncode, 1)
         self.assertIn("does not match", mismatch.stderr)
         malformed = run("release-1")
