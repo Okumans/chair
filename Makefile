@@ -8,7 +8,7 @@ PORT_ARG = $(if $(strip $(PORT)),--port "$(PORT)")
 
 CPP_FILES := $(shell find sensor gateway shared tests tools -name '*.cpp' -o -name '*.h' 2>/dev/null)
 
-.PHONY: help build upload monitor flash mac lsp compiledb format format-check lint test check setup-hooks clean
+.PHONY: help build upload monitor flash mac lsp compiledb format format-check lint typecheck test check setup-hooks clean
 
 help:
 	@echo -e "Smart Chair Monorepo — Build & Development Shortcuts"
@@ -90,6 +90,10 @@ format-check:
 lint:
 	sh -n .githooks/pre-commit
 	ruff check chair_mqtt tools tests
+
+typecheck:
+	uv run --locked pyright
+	uv run --locked pyright --verifytypes chair_mqtt --ignoreexternal
 
 test:
 	uv run --locked python -m unittest discover -s tests -v

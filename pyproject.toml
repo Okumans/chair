@@ -13,4 +13,17 @@ dependencies = ["jsonschema>=4.26,<5", "paho-mqtt>=2.1,<3", "pydantic>=2.12,<3",
 packages = ["chair_mqtt"]
 
 [tool.setuptools.package-data]
-chair_mqtt = ["mqtt.schema.json"]
+chair_mqtt = ["mqtt.schema.json", "py.typed"]
+
+[dependency-groups]
+dev = [
+    "pyright==1.1.414",
+    "types-jsonschema==4.26.0.20261006",
+    "types-pyserial==3.5.0.20261122",
+]
+
+[tool.pyright]
+include = ["chair_mqtt", "tools"]
+exclude = ["tests"]
+typeCheckingMode = "strict"
+pythonVersion = "3.11"
