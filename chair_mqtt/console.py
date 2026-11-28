@@ -3,9 +3,14 @@
 import argparse
 import asyncio
 import json
+import os
 import secrets
+import sys
+import tempfile
 from pathlib import Path
 
+from .async_storage import SQLiteStorage
+from .client import ChairClient
 from .models import BrokerConfig, ChairConfiguration, ClientConfig
 
 # Firmware defaults; the MQTT contract has no configuration readback.
@@ -221,3 +226,53 @@ class Console:
                 await self._pending
             except asyncio.CancelledError:
                 pass
+
+
+async def _session(args, broker, client_config, stdin, out, err):
+    with tempfile.TemporaryDirectory(prefix="chair-console-") as scratch:
+        path = args.db or Path(scratch) / "receipts.sqlite"
+        err.write(
+            f"connecting to {broker.host}:{broker.port} as {broker.client_id}; "
+            f"node {client_config.node_id}, bridge {client_config.bridge_id}, "
+            f"consumer {client_config.consumer_id}\n"
+            "Receipts from this console complete deliveries for that consumer: "
+            "use it only with a test bridge. Type /help for commands.\n"
+        )
+        err.flush()
+        loop = asyncio.get_running_loop()
+        reader = asyncio.StreamReader()
+        transport, _ = await loop.connect_read_pipe(
+            lambda: asyncio.StreamReaderProtocol(reader), stdin
+        )
+        try:
+            async with ChairClient(
+                client_config, SQLiteStorage(path), broker
+            ) as client:
+                console = Console(client, out=out, err=err)
+                try:
+                    while line := await reader.readline():
+                        text = line.decode("utf-8", errors="replace")
+                        if not await console.handle(text):
+                            break
+                finally:
+                    await console.close()
+        finally:
+            transport.close()
+    return 0
+
+
+def main(
+    argv=None, *, environ=os.environ, stdin=sys.stdin, out=sys.stdout, err=sys.stderr
+):
+    """Run the console until /quit, end of input or Ctrl+C."""
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    try:
+        broker, client_config = settings_from_args(args, environ)
+    except ValueError as error:
+        err.write(f"invalid settings: {error}\n")
+        return 2
+    try:
+        return asyncio.run(_session(args, broker, client_config, stdin, out, err))
+    except KeyboardInterrupt:
+        return 0

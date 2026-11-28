@@ -1,8 +1,19 @@
 import asyncio
 import io
 import json
+import queue
+import subprocess
+import sys
+import tempfile
+import threading
+import time
 import unittest
+from pathlib import Path
 
+from gateway_fake import FakeGateway
+from test_mqtt_async_client import MOSQUITTO, start_broker
+
+from chair_mqtt import BridgeConfig, BrokerConfig, ChairBridge
 from chair_mqtt.client import SensorEvent, SensorState
 from chair_mqtt.console import (
     DEFAULTS,
@@ -238,3 +249,111 @@ class ConsoleTests(unittest.IsolatedAsyncioTestCase):
         await self.client.handlers["event"](event, object())
         line = json.loads(self.out.getvalue())
         self.assertEqual((line["kind"], line["publication_id"]), ("event", "p-1"))
+
+
+ROOT = Path(__file__).resolve().parents[1]
+MAC = "02:00:00:00:00:01"
+
+
+@unittest.skipUnless(MOSQUITTO, "private Mosquitto broker unavailable")
+class ConsoleBrokerTests(unittest.TestCase):
+    def start_bridge(self, directory, port):
+        bridge = ChairBridge(
+            BridgeConfig(
+                node_id="chair-01",
+                sensor_mac=MAC,
+                bridge_id="pi-01",
+                consumer_id="backend-01",
+                database_path=Path(directory) / "chair.sqlite",
+            ),
+            BrokerConfig(
+                host="127.0.0.1", port=port, client_id="bridge-test", plaintext=True
+            ),
+            gateway=FakeGateway(),
+        ).start()
+        self.addCleanup(bridge.stop)
+        deadline = time.monotonic() + 5
+        while not bridge.health().subscriptions_ready:
+            self.assertLess(time.monotonic(), deadline, "bridge not ready")
+            time.sleep(0.02)
+        return bridge
+
+    def start_console(self, port):
+        proc = subprocess.Popen(
+            [
+                sys.executable,
+                "tools/mqtt_console.py",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                str(port),
+                "--plaintext",
+                "--bridge",
+                "pi-01",
+                "--consumer",
+                "backend-01",
+            ],
+            cwd=ROOT,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        lines = queue.Queue()
+        readers = [
+            threading.Thread(
+                target=lambda s=stream: [lines.put(line) for line in s], daemon=True
+            )
+            for stream in (proc.stdout, proc.stderr)
+        ]
+        for reader in readers:
+            reader.start()
+
+        def finish():
+            if proc.poll() is None:
+                proc.kill()
+            proc.wait(timeout=5)
+            for reader in readers:
+                reader.join(timeout=5)
+            for stream in (proc.stdin, proc.stdout, proc.stderr):
+                stream.close()
+
+        self.addCleanup(finish)
+        return proc, lines
+
+    def wait_for(self, lines, predicate, timeout=10):
+        deadline = time.monotonic() + timeout
+        seen = []
+        while (remaining := deadline - time.monotonic()) > 0:
+            try:
+                line = lines.get(timeout=remaining)
+            except queue.Empty:
+                break
+            seen.append(line)
+            try:
+                if predicate(json.loads(line)):
+                    return
+            except ValueError:
+                continue
+        self.fail(f"no matching line; saw {seen}")
+
+    def test_console_prints_events_and_sends_configs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            port = start_broker(self, directory)
+            bridge = self.start_bridge(directory, port)
+            proc, lines = self.start_console(port)
+            self.wait_for(lines, lambda v: v["kind"] == "bridge_status")
+            state = STATE.message.model_dump()
+            state["config_revision"] = 0
+            self.assertEqual(bridge.publish(state, source_mac=MAC).status, "accepted")
+            self.wait_for(
+                lines, lambda v: v["kind"] == "event" and v["message"]["seq"] == 1
+            )
+            proc.stdin.write("/config radio_interval_s=60\n")
+            proc.stdin.flush()
+            notice = bridge.receive(timeout=10)
+            self.assertEqual(notice.disposition, "queued")
+            message = notice.request.message
+            self.assertEqual((message.radio_interval_s, message.revision), (60, 1))
+            proc.stdin.close()
+            self.assertEqual(proc.wait(timeout=10), 0)
