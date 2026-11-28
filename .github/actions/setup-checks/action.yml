@@ -28,6 +28,17 @@ runs:
         git config --global user.name "chair-ci"
         git config --global user.email "chair-ci@users.noreply.github.com"
 
+    # Ubuntu's AppArmor profile only lets mosquitto read its own config directories, but
+    # the broker tests start it from a temporary config file. Unload the profile on this
+    # throwaway runner.
+    - name: Let Mosquitto read test configs
+      shell: bash
+      run: |
+        sudo systemctl disable --now mosquitto || true
+        for profile in $(grep -l '/usr/sbin/mosquitto' /etc/apparmor.d/* 2>/dev/null); do
+          sudo apparmor_parser -R "$profile"
+        done
+
     # The broker tests start a private Mosquitto from a temporary config; fail early, with
     # its own error output, if this runner cannot do that.
     - name: Check a private Mosquitto starts
