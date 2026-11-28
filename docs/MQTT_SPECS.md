@@ -1,7 +1,7 @@
 # Smart Chair MQTT specification
 
-Revision 2. This specifies the proposed MQTT interface; the production Pi MQTT
-service is not yet implemented.
+Revision 2. This specifies the MQTT interface implemented by `chair_mqtt`; see
+[MQTT_LIBRARY.md](MQTT_LIBRARY.md) and [MQTT_BRIDGE_SERVICE.md](MQTT_BRIDGE_SERVICE.md).
 
 ## Scope and architecture
 

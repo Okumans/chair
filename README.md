@@ -17,8 +17,8 @@ while vacant it can deep sleep and wake from the seat switch or heartbeat timer.
 1. Follow [Setup and dependencies](docs/SETUP.md) for Arch Linux, Debian or Ubuntu.
 2. [Read both boards' station MACs](docs/TRANSPORT.md#read-a-boards-mac-for-esp-now)
    and configure the shared, ignored pairing file.
-3. For a v1-to-v2 upgrade, follow the [explicit test reset procedure](docs/TRANSPORT.md#explicit-v2-test-reset).
-   Build and upload the normal sensor and gateway firmware using explicit serial ports.
+3. If the sensor reports unsupported or corrupt storage, follow the
+   [sensor state reset](docs/TRANSPORT.md#reset-sensor-state). Build and upload the normal sensor and gateway firmware using explicit serial ports.
 4. Copy `deploy/bridge.example.toml` to `bridge.toml`, set `sensor_mac` to your sensor's
    MAC, the gateway's serial port, a new `database_path` and the broker, then run the bridge:
 
@@ -56,8 +56,8 @@ are separate; see [development checks](docs/SETUP.md#development-checks).
 |---|---|
 | `sensor/` | C3 hardware adapter, MPU6050 sampling and deep sleep |
 | `gateway/` | S3 gateway entry point |
-| `shared/` | Wire codec, state engine, persistence and ESP-NOW/USB transport |
-| `chair_mqtt/` | Python protocol bridge, USB console and MQTT library |
+| `shared/` | Wire codec, state engine, persistence, ESP-NOW and USB/UART serial transport |
+| `chair_mqtt/` | Python protocol bridge, serial bench console and MQTT library |
 | `tools/` | Bench console and radio-window scripts, and MAC-only firmware |
 | `tests/` | Python integration tests, native C++ tests and hardware fakes |
 | `third_party/glaze/` | Vendored C++ JSON dependency |
@@ -74,7 +74,8 @@ are separate; see [development checks](docs/SETUP.md#development-checks).
 
 - [Radio-window bench tools](docs/RADIO_WINDOWS_BENCH.md): recovery policy, contact traces, fault tests and current measurement.
 
-Battery measurement, systemd deployment and actual occupied light sleep remain
-deferred. The MQTT library requires integration and deployment on the Pi. The occupied radio uses a test schedule; physical validation is still required.
+Battery measurement and actual occupied light sleep remain deferred. The MQTT bridge
+service and its systemd unit exist but have not yet been deployed or accepted on a Pi.
+The occupied radio uses a test schedule; physical validation is still required.
 Native tests do not establish physical radio reliability,
 sample timing, power use or correct wiring; those require board testing.

@@ -19,7 +19,8 @@ the bridge does not need the C++ tools or PlatformIO.
 The firmware platform is pinned in `platformio.ini` to pioarduino `55.03.312-1`.
 Glaze is vendored in `third_party/glaze`; no separate download is needed. MPU6050 access
 uses Arduino Wire directly. Python's SQLite support is in the standard library; no
-SQLite server is needed. The bridge script and test target pin `pyserial==3.5`.
+SQLite server is needed. The package requires `pyserial>=3.5,<4`; the standalone
+`tools/` scripts pin `pyserial==3.5`.
 
 The host compiler must support the C++23 features used by Glaze as well as `-std=c++23`.
 `make test` verifies this by compiling and running the native tests. Formatter and lint
@@ -165,8 +166,9 @@ can build without pairing values, but the normal radio link will not become read
 until valid matching settings are supplied.
 
 Use a local durable filesystem for SQLite and keep database files out of commits.
-Stop the bridge before opening a serial monitor or uploading the gateway. Only one
-program should read/write its serial port at a time. On permission errors, inspect
+Stop the bridge before opening a monitor on the gateway's UART. Only one program
+should read/write a serial port at a time; uploading over native USB does not use the
+bridge's UART. On permission errors, inspect
 `ls -l /dev/ttyACM*` and your distribution's serial-device group or udev rules; reconnect
 and log in again after changing permissions. Run the bridge as your normal user.
 
@@ -217,7 +219,7 @@ workaround; the PlatformIO build remains the firmware compilation check.
   Git. Hooks inherit that environment and need the same commands as `make check`.
 - **`ready: false`:** check the local pairing header, both MACs, keys and channel.
 - **`invalid_json`:** stop extra serial owners and inspect `parse_error`, `byte_offset`
-  and `line_bytes`; see [USB diagnostics](TRANSPORT.md#usb-details-and-diagnostics).
+  and `line_bytes`; see [serial diagnostics](TRANSPORT.md#usb-details-and-diagnostics).
 - **No movement:** check MPU6050 wiring and health flags; battery readings remain null.
 - **No serial output:** check the USB cable, native USB connector and device path after
   reconnecting. Prefer `/dev/serial/by-id/` when available.

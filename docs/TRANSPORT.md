@@ -232,8 +232,8 @@ rechecks the physical pin before radio stop. Wake is GPIO5 low or the configured
 heartbeat timer. While occupied, the sensor defaults to a five-second radio window every
 30 seconds and holds the radio through movement plus a ten-second tail. The gateway listens
 continuously. The sensor keeps sampling while its radio is off; occupied light sleep remains
-deferred. See [the radio-window specification](RADIO_WINDOWS_SPEC.md) for the v2 configuration,
-upgrade procedure and failure semantics. Upgrade the bridge and both firmware images together.
+deferred. See [the radio-window specification](RADIO_WINDOWS_SPEC.md) for the v2 configuration
+and failure semantics. Upgrade the bridge and both firmware images together.
 
 ## USB details and diagnostics
 
@@ -282,9 +282,10 @@ Hello readiness is local initialization evidence. The existing 8.5 dBm transmit 
 retained from bench bring-up. Match channel, peer MACs and key fingerprints on both
 boards when diagnosing radio issues. This code does not claim physical delivery.
 
-## Explicit v2 test reset
+## Reset sensor state
 
-This procedure discards the sensor's persisted configuration, event outbox and command
+Use this when the sensor's hello reports
+`unsupported_or_corrupt_storage_explicit_v2_reset_required`. This procedure discards the sensor's persisted configuration, event outbox and command
 records. Stop the bridge and serial monitors first; keep the pairing header and keys.
 Choose a new empty SQLite database path, or remove the disposable database and its WAL/SHM
 files while all database connections are closed. Do not reuse the old Pi history with a
@@ -293,7 +294,7 @@ reset sensor generation.
 Flash `pio run -e reset-sensor -t upload --upload-port YOUR_SENSOR_PORT`, then open a
 115200-baud monitor on that same port. Send the exact line `RESET-CHAIR-V2` and wait for
 the success message. Disconnect power to clear the retained identity, reconnect and flash
-the normal `sensor` firmware. Upgrade the gateway and bridge to v2 before starting them.
+the normal `sensor` firmware.
 The reset utility only removes the chair application state key; it never runs at ordinary
 startup. Verify a new STATE_SYNC, occupied READY, scheduled closure/reopening and a full
 configuration round trip.
@@ -307,14 +308,14 @@ Both firmware targets must build and clangd must report zero source errors.
 
 Physical acceptance remains required for encrypted 1108-byte delivery, actual sample
 timing, sensor calibration, configuration round trips, reset durability, seat/timer wake,
-and power/radio measurements. MQTT and systemd deployment, battery hardware, actual
-occupied light sleep are deferred. Validate the test schedule, radio restart, discovery after resets and
+and power/radio measurements. Pi deployment of the MQTT bridge service has not been
+performed; battery hardware and actual occupied light sleep are deferred. Validate the test schedule, radio restart, discovery after resets and
 missed windows, movement loss reporting, and power consumption on the actual boards.
 
 Before sending a command, the bridge challenges the sensor and bounds the lease from the
 probe's send time. The full probe round trip therefore reduces the usable lease, including
-radio and USB delays. Sensor, gateway and bridge must all support READY_PROBE and
-READY_PROOF. Command deadlines are rechecked after database work and before each USB
+radio and serial delays. Sensor, gateway and bridge must all support READY_PROBE and
+READY_PROOF. Command deadlines are rechecked after database work and before each serial
 write. If expiry interrupts a partial line, the bridge reconnects; it does not finish the
 expired command. Bytes already submitted to the serial driver cannot be recalled.
 Routine READY refreshes preserve pending proof responses; vacancy, policy changes and
@@ -325,6 +326,6 @@ worker. Both nodes request an emergency reboot after 15 seconds outstanding; sen
 waits for durable state, settled seat debounce and a final pin check. Eight permanently
 missing callbacks also request a reboot rather than reuse a quarantined slot. Failed
 storage postpones sensor reboot, and RAM movement can be lost across reset. HELLO uses a
-cached radio snapshot so USB handling does not take a stuck worker's Wi-Fi locks.
+cached radio snapshot so serial handling does not take a stuck worker's Wi-Fi locks.
 See [the bench guide](RADIO_WINDOWS_BENCH.md) for reset dependencies, diagnostic firmware,
 repeatable fault tests and remaining hardware acceptance work.
