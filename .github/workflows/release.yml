@@ -21,11 +21,13 @@ jobs:
     runs-on: ubuntu-26.04
     env:
       TAG: ${{ inputs.tag || github.ref_name }}
-      GH_TOKEN: ${{ github.token }}
     steps:
+      # The write token stays out of .git/config and out of the test and build steps;
+      # only the two gh steps below receive it.
       - uses: actions/checkout@v5
         with:
           ref: refs/tags/${{ env.TAG }}
+          persist-credentials: false
 
       - name: Check the tag matches the package version
         run: python3 tools/release_version.py "$TAG"
@@ -38,12 +40,16 @@ jobs:
         run: uv build --wheel
 
       - name: Create the release if it does not exist
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           gh release view "$TAG" > /dev/null 2>&1 ||
             gh release create "$TAG" --verify-tag --title "$TAG" --generate-notes
 
       # FocusGuard's lockfile pins the wheel hash, so an attached asset is never replaced.
       - name: Attach the wheel
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           existing=$(gh release view "$TAG" --json assets -q '.assets[].name')
           for wheel in dist/*.whl; do

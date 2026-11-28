@@ -12,6 +12,8 @@ runs:
 
     - name: Install uv
       uses: astral-sh/setup-uv@v7
+      with:
+        version: "0.9.17"
 
     # Pinned to the maintainer's versions so formatting never drifts with the runner.
     - name: Install formatters

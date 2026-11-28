@@ -10,8 +10,9 @@
   being skipped.
 - **firmware** builds the `sensor` and `gateway` images with PlatformIO.
 
-The runner image and tool versions are pinned: `ubuntu-26.04`, clang-format 23.1.5 and
-ruff 0.17.6, in `.github/actions/setup-checks/action.yml`. Upgrade them on purpose,
+The runner image and tool versions are pinned: `ubuntu-26.04`, uv 0.9.17, clang-format
+23.1.5 and ruff 0.17.6 in `.github/actions/setup-checks/action.yml`, and PlatformIO 6.2.0
+in `ci.yml`. Upgrade them on purpose,
 together with your local tools, so CI and the pre-commit hook format code the same way.
 
 ## Cutting a release

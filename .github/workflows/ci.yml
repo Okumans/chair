@@ -32,6 +32,6 @@ jobs:
           path: ~/.platformio
           key: platformio-${{ hashFiles('platformio.ini') }}
       - name: Install PlatformIO
-        run: pip install platformio
+        run: pip install platformio==6.2.0
       - name: Build sensor and gateway firmware
         run: pio run -e sensor -e gateway
