@@ -23,7 +23,7 @@ help:
 	@echo -e "  \033[36mmake monitor\033[0m [PORT=...]           Open serial monitor (115200 baud)"
 	@echo -e "  \033[36mmake lsp\033[0m     [ENV=...]   Regenerate compile_commands.json for Neovim"
 	@echo -e "  \033[36mmake format\033[0m              Format C/C++ and Python files"
-	@echo -e "  \033[36mmake check\033[0m               Check formatting, Python lint and native tests"
+	@echo -e "  \033[36mmake check\033[0m               Check formatting, Python lint, strict types and tests"
 	@echo -e "  \033[36mmake setup-hooks\033[0m         Install the staged-file pre-commit checks"
 	@echo -e "  \033[36mmake clean\033[0m               Clean PlatformIO build output"
 	@echo -e ""
@@ -93,12 +93,12 @@ lint:
 
 typecheck:
 	uv run --locked pyright
-	uv run --locked pyright --verifytypes chair_mqtt --ignoreexternal
+	PYTHONPATH=. uv run --locked pyright --verifytypes chair_mqtt --ignoreexternal
 
 test:
 	uv run --locked python -m unittest discover -s tests -v
 
-check: format-check lint test
+check: format-check lint typecheck test
 
 setup-hooks:
 	git config --local core.hooksPath .githooks

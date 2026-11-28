@@ -278,7 +278,7 @@ class Store:
         if not path or str(path) == ":memory:":
             raise ValueError("a durable SQLite file path is required")
 
-        self.db = sqlite3.connect(path)
+        self.db: sqlite3.Connection = sqlite3.connect(path)
         self.db.row_factory = sqlite3.Row
         version = self.db.execute("PRAGMA user_version").fetchone()[0]
         existing = self.db.execute(
@@ -518,12 +518,13 @@ class Bridge:
         wall_clock: Callable[[], float] | None = None,
     ) -> None:
         """Bind durable storage to explicit node identities and allocate a bridge boot identity."""
-        self.store, self.mapping = store, mapping
-        self.monotonic_clock = monotonic_clock or time.monotonic
-        self.wall_clock = wall_clock or time.time
+        self.store: Store = store
+        self.mapping: Mapping[str, str] = mapping
+        self.monotonic_clock: Callable[[], float] = monotonic_clock or time.monotonic
+        self.wall_clock: Callable[[], float] = wall_clock or time.time
         self.command_dispatch: CommandDispatch | None = None
-        self.boot = f"{secrets.randbits(64) or 1:016x}"
-        self.seq = 0
+        self.boot: str = f"{secrets.randbits(64) or 1:016x}"
+        self.seq: int = 0
         self.acks: dict[tuple[str, str, int], JsonObject] = {}
         self.available: dict[str, Availability] = {}
         self.ready_hints: dict[str, TelemetryIdentity] = {}
@@ -535,7 +536,7 @@ class Bridge:
         self.last_telemetry: dict[tuple[str, str], int] = {}
         self.radio_pending: int | None = None
         self.radio_at: float = 0
-        self.request = secrets.randbelow(UINT32_MAX)
+        self.request: int = secrets.randbelow(UINT32_MAX)
         self.hello_request: int | None = None
 
     def reset(self) -> JsonObject:

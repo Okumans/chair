@@ -61,23 +61,26 @@ class Coordinator:
             [JsonObject, CommandDisposition], object
         ] = lambda _request, _disposition: None,
     ) -> None:
-        self.store, self.client, self.monotonic = store, client, monotonic
-        self.wall_clock = wall_clock
-        self.token_is_current, self.on_command = token_is_current, on_command
-        self.connected = False
-        self.ready = False
-        self.draining = False
+        self.store: MqttStore = store
+        self.client: mqtt.Client = client
+        self.monotonic: Callable[[], float] = monotonic
+        self.wall_clock: Callable[[], float] = wall_clock
+        self.token_is_current: Callable[[int], bool] = token_is_current
+        self.on_command: Callable[[JsonObject, CommandDisposition], object] = on_command
+        self.connected: bool = False
+        self.ready: bool = False
+        self.draining: bool = False
         self.fatal: str | None = None
-        self.reconnect_required = False
-        self.generation = 0
+        self.reconnect_required: bool = False
+        self.generation: int = 0
         self.subscriptions: set[int | None] = set()
-        self.subscription_deadline = 0.0
+        self.subscription_deadline: float = 0.0
         self.flights: dict[int, Flight] = {}
         self.retry_until: dict[tuple[str, str], float] = {}
         self.pending_incoming: list[_Incoming] = []
-        self.first_connection = True
-        self.next_cleanup = 0.0
-        self.storage_ok = True
+        self.first_connection: bool = True
+        self.next_cleanup: float = 0.0
+        self.storage_ok: bool = True
         self._last_status: (
             tuple[tuple[bool, bool, bool, bool, bool], tuple[int, int, int, int]] | None
         ) = None

@@ -78,7 +78,8 @@ class GatewayLink:
     """Run one transport through the bridge's protocol worker on its own thread."""
 
     def __init__(self, bridge: GatewayBridge, transport: GatewayTransport) -> None:
-        self.bridge, self.transport = bridge, transport
+        self.bridge: GatewayBridge = bridge
+        self.transport: GatewayTransport = transport
         self._stop = threading.Event()
         self._thread = threading.Thread(
             target=self._run, name="chair-gateway", daemon=True

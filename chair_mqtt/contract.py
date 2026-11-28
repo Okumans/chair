@@ -259,7 +259,7 @@ def validate(
     return target, value
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--topic", required=True)
     parser.add_argument("--payload", type=Path, required=True)

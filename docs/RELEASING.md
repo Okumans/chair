@@ -5,7 +5,8 @@
 `.github/workflows/ci.yml` runs on every push and pull request:
 
 - **check** runs `make check`, the same command as the pre-commit hook: clang-format,
-  ruff, the shell syntax check and all tests, including the native C++ tests.
+  ruff, the shell syntax check, strict pyright and `--verifytypes` (`make typecheck`),
+  and all tests, including the native C++ tests.
   `mosquitto` and `openssl` are installed, so the broker and TLS tests run instead of
   being skipped.
 - **firmware** builds the `sensor` and `gateway` images with PlatformIO.
