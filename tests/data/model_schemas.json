@@ -1,0 +1,2870 @@
+{
+  "BridgeConfig": {
+    "additionalProperties": false,
+    "description": "One sensor and one bridge, with an explicitly supplied durable database.",
+    "properties": {
+      "bridge_id": {
+        "title": "Bridge Id",
+        "type": "string"
+      },
+      "consumer_id": {
+        "title": "Consumer Id",
+        "type": "string"
+      },
+      "database_path": {
+        "format": "path",
+        "title": "Database Path",
+        "type": "string"
+      },
+      "node_id": {
+        "title": "Node Id",
+        "type": "string"
+      },
+      "sensor_mac": {
+        "title": "Sensor Mac",
+        "type": "string"
+      }
+    },
+    "required": [
+      "node_id",
+      "sensor_mac",
+      "bridge_id",
+      "consumer_id",
+      "database_path"
+    ],
+    "title": "BridgeConfig",
+    "type": "object"
+  },
+  "BridgeHealth": {
+    "additionalProperties": false,
+    "description": "Current Pi bridge connection, storage, and publication health.",
+    "properties": {
+      "clock_trusted": {
+        "title": "Clock Trusted",
+        "type": "boolean"
+      },
+      "fatal": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Fatal"
+      },
+      "foreign_receipts": {
+        "title": "Foreign Receipts",
+        "type": "integer"
+      },
+      "gateway_connected": {
+        "title": "Gateway Connected",
+        "type": "boolean"
+      },
+      "gateway_ready": {
+        "title": "Gateway Ready",
+        "type": "boolean"
+      },
+      "mqtt_best_effort_dropped": {
+        "title": "Mqtt Best Effort Dropped",
+        "type": "integer"
+      },
+      "mqtt_connected": {
+        "title": "Mqtt Connected",
+        "type": "boolean"
+      },
+      "notifications_dropped": {
+        "title": "Notifications Dropped",
+        "type": "integer"
+      },
+      "pending_publications": {
+        "title": "Pending Publications",
+        "type": "integer"
+      },
+      "quarantined_publications": {
+        "title": "Quarantined Publications",
+        "type": "integer"
+      },
+      "reconnect_required": {
+        "title": "Reconnect Required",
+        "type": "boolean"
+      },
+      "storage_ok": {
+        "title": "Storage Ok",
+        "type": "boolean"
+      },
+      "subscriptions_ready": {
+        "title": "Subscriptions Ready",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "mqtt_connected",
+      "subscriptions_ready",
+      "gateway_connected",
+      "gateway_ready",
+      "storage_ok",
+      "clock_trusted",
+      "pending_publications",
+      "quarantined_publications",
+      "mqtt_best_effort_dropped",
+      "notifications_dropped",
+      "foreign_receipts",
+      "reconnect_required",
+      "fatal"
+    ],
+    "title": "BridgeHealth",
+    "type": "object"
+  },
+  "BridgeStatus": {
+    "additionalProperties": false,
+    "description": "Bridge availability and optional health details reported over MQTT.",
+    "properties": {
+      "bridge_id": {
+        "title": "Bridge Id",
+        "type": "string"
+      },
+      "gateway_connected": {
+        "anyOf": [
+          {
+            "type": "boolean"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Gateway Connected"
+      },
+      "gateway_ready": {
+        "anyOf": [
+          {
+            "type": "boolean"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Gateway Ready"
+      },
+      "instance_id": {
+        "title": "Instance Id",
+        "type": "string"
+      },
+      "mqtt_best_effort_dropped": {
+        "anyOf": [
+          {
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Mqtt Best Effort Dropped"
+      },
+      "observed_at_ms": {
+        "anyOf": [
+          {
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Observed At Ms"
+      },
+      "overdue_receipts": {
+        "anyOf": [
+          {
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Overdue Receipts"
+      },
+      "pending_publications": {
+        "anyOf": [
+          {
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Pending Publications"
+      },
+      "quarantined_publications": {
+        "anyOf": [
+          {
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Quarantined Publications"
+      },
+      "reason": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Reason"
+      },
+      "schema_version": {
+        "const": 1,
+        "title": "Schema Version",
+        "type": "integer"
+      },
+      "status": {
+        "enum": [
+          "online",
+          "offline"
+        ],
+        "title": "Status",
+        "type": "string"
+      },
+      "storage_ok": {
+        "anyOf": [
+          {
+            "type": "boolean"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Storage Ok"
+      },
+      "subscriptions_ready": {
+        "anyOf": [
+          {
+            "type": "boolean"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Subscriptions Ready"
+      },
+      "type": {
+        "const": "BRIDGE_STATUS",
+        "title": "Type",
+        "type": "string"
+      }
+    },
+    "required": [
+      "schema_version",
+      "type",
+      "bridge_id",
+      "instance_id",
+      "status",
+      "reason",
+      "observed_at_ms"
+    ],
+    "title": "BridgeStatus",
+    "type": "object"
+  },
+  "BrokerConfig": {
+    "additionalProperties": false,
+    "description": "The MQTT 5 broker that the library connects to and owns a session with.\n\nTLS verifies the broker certificate and host name before CONNECT, using\n``ca_file`` or, when it is omitted, the system trust store. ``plaintext``\ndisables TLS and is accepted only for a loopback host.",
+    "properties": {
+      "ca_file": {
+        "anyOf": [
+          {
+            "format": "path",
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Ca File"
+      },
+      "client_id": {
+        "maxLength": 64,
+        "minLength": 1,
+        "title": "Client Id",
+        "type": "string"
+      },
+      "host": {
+        "minLength": 1,
+        "title": "Host",
+        "type": "string"
+      },
+      "password": {
+        "anyOf": [
+          {
+            "format": "password",
+            "type": "string",
+            "writeOnly": true
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Password"
+      },
+      "plaintext": {
+        "default": false,
+        "title": "Plaintext",
+        "type": "boolean"
+      },
+      "port": {
+        "default": 8883,
+        "maximum": 65535,
+        "minimum": 1,
+        "title": "Port",
+        "type": "integer"
+      },
+      "username": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Username"
+      }
+    },
+    "required": [
+      "host",
+      "client_id"
+    ],
+    "title": "BrokerConfig",
+    "type": "object"
+  },
+  "ChairConfiguration": {
+    "additionalProperties": false,
+    "description": "A complete sensor configuration to be submitted through ChairClient.",
+    "properties": {
+      "heartbeat_s": {
+        "maximum": 4294967295,
+        "minimum": 1,
+        "title": "Heartbeat S",
+        "type": "integer"
+      },
+      "movement_batch_s": {
+        "maximum": 4294967295,
+        "minimum": 1,
+        "title": "Movement Batch S",
+        "type": "integer"
+      },
+      "movement_enabled": {
+        "title": "Movement Enabled",
+        "type": "boolean"
+      },
+      "radio_interval_s": {
+        "maximum": 4294967295,
+        "minimum": 1,
+        "title": "Radio Interval S",
+        "type": "integer"
+      },
+      "radio_motion_tail_s": {
+        "maximum": 4294967295,
+        "minimum": 1,
+        "title": "Radio Motion Tail S",
+        "type": "integer"
+      },
+      "radio_open_s": {
+        "maximum": 4294967295,
+        "minimum": 1,
+        "title": "Radio Open S",
+        "type": "integer"
+      },
+      "radio_windows_enabled": {
+        "title": "Radio Windows Enabled",
+        "type": "boolean"
+      },
+      "revision": {
+        "maximum": 4294967295,
+        "minimum": 0,
+        "title": "Revision",
+        "type": "integer"
+      }
+    },
+    "required": [
+      "revision",
+      "heartbeat_s",
+      "movement_batch_s",
+      "movement_enabled",
+      "radio_windows_enabled",
+      "radio_interval_s",
+      "radio_open_s",
+      "radio_motion_tail_s"
+    ],
+    "title": "ChairConfiguration",
+    "type": "object"
+  },
+  "ClientConfig": {
+    "additionalProperties": false,
+    "description": "Backend/controller identities; the broker is configured by BrokerConfig.",
+    "properties": {
+      "bridge_id": {
+        "title": "Bridge Id",
+        "type": "string"
+      },
+      "consumer_id": {
+        "title": "Consumer Id",
+        "type": "string"
+      },
+      "node_id": {
+        "title": "Node Id",
+        "type": "string"
+      }
+    },
+    "required": [
+      "node_id",
+      "bridge_id",
+      "consumer_id"
+    ],
+    "title": "ClientConfig",
+    "type": "object"
+  },
+  "CommandError": {
+    "additionalProperties": false,
+    "description": "A bridge admission error, optionally associated with a command ID.",
+    "properties": {
+      "bridge_id": {
+        "title": "Bridge Id",
+        "type": "string"
+      },
+      "command_id": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Command Id"
+      },
+      "error_id": {
+        "title": "Error Id",
+        "type": "string"
+      },
+      "reason": {
+        "title": "Reason",
+        "type": "string"
+      },
+      "received_at_ms": {
+        "anyOf": [
+          {
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Received At Ms"
+      },
+      "retryable": {
+        "title": "Retryable",
+        "type": "boolean"
+      },
+      "schema_version": {
+        "const": 1,
+        "title": "Schema Version",
+        "type": "integer"
+      }
+    },
+    "required": [
+      "schema_version",
+      "bridge_id",
+      "error_id",
+      "command_id",
+      "reason",
+      "retryable",
+      "received_at_ms"
+    ],
+    "title": "CommandError",
+    "type": "object"
+  },
+  "CommandNotice": {
+    "$defs": {
+      "ConfigRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "expires_at_ms": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "title": "Expires At Ms",
+            "type": "integer"
+          },
+          "message": {
+            "$ref": "#/$defs/ConfigSet"
+          },
+          "schema_version": {
+            "const": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "schema_version",
+          "expires_at_ms",
+          "message"
+        ],
+        "title": "ConfigRequest",
+        "type": "object"
+      },
+      "ConfigSet": {
+        "additionalProperties": false,
+        "description": "MQTT command template; firmware-assigned transport identity is absent.",
+        "properties": {
+          "command_id": {
+            "title": "Command Id",
+            "type": "string"
+          },
+          "heartbeat_s": {
+            "maximum": 4294967295,
+            "minimum": 1,
+            "title": "Heartbeat S",
+            "type": "integer"
+          },
+          "movement_batch_s": {
+            "maximum": 4294967295,
+            "minimum": 1,
+            "title": "Movement Batch S",
+            "type": "integer"
+          },
+          "movement_enabled": {
+            "title": "Movement Enabled",
+            "type": "boolean"
+          },
+          "node_id": {
+            "title": "Node Id",
+            "type": "string"
+          },
+          "radio_interval_s": {
+            "maximum": 4294967295,
+            "minimum": 1,
+            "title": "Radio Interval S",
+            "type": "integer"
+          },
+          "radio_motion_tail_s": {
+            "maximum": 4294967295,
+            "minimum": 1,
+            "title": "Radio Motion Tail S",
+            "type": "integer"
+          },
+          "radio_open_s": {
+            "maximum": 4294967295,
+            "minimum": 1,
+            "title": "Radio Open S",
+            "type": "integer"
+          },
+          "radio_windows_enabled": {
+            "title": "Radio Windows Enabled",
+            "type": "boolean"
+          },
+          "revision": {
+            "maximum": 4294967295,
+            "minimum": 0,
+            "title": "Revision",
+            "type": "integer"
+          },
+          "type": {
+            "const": "CONFIG_SET",
+            "title": "Type",
+            "type": "string"
+          },
+          "version": {
+            "const": 2,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version",
+          "type",
+          "node_id",
+          "command_id",
+          "revision",
+          "heartbeat_s",
+          "movement_batch_s",
+          "movement_enabled",
+          "radio_windows_enabled",
+          "radio_interval_s",
+          "radio_open_s",
+          "radio_motion_tail_s"
+        ],
+        "title": "ConfigSet",
+        "type": "object"
+      }
+    },
+    "additionalProperties": false,
+    "description": "Notification of a committed command; the library still manages dispatch.",
+    "properties": {
+      "disposition": {
+        "enum": [
+          "queued",
+          "expired",
+          "duplicate"
+        ],
+        "title": "Disposition",
+        "type": "string"
+      },
+      "request": {
+        "$ref": "#/$defs/ConfigRequest"
+      }
+    },
+    "required": [
+      "request",
+      "disposition"
+    ],
+    "title": "CommandNotice",
+    "type": "object"
+  },
+  "CommandReceipt": {
+    "additionalProperties": false,
+    "description": "A sensor acknowledgement or outcome for a configuration command.",
+    "properties": {
+      "boot_id": {
+        "title": "Boot Id",
+        "type": "string"
+      },
+      "command_id": {
+        "title": "Command Id",
+        "type": "string"
+      },
+      "node_id": {
+        "title": "Node Id",
+        "type": "string"
+      },
+      "seq": {
+        "maximum": 4294967295,
+        "minimum": 1,
+        "title": "Seq",
+        "type": "integer"
+      },
+      "status": {
+        "enum": [
+          "received",
+          "applied",
+          "already_applied",
+          "revision_conflict",
+          "stale_revision",
+          "busy",
+          "command_conflict"
+        ],
+        "title": "Status",
+        "type": "string"
+      },
+      "type": {
+        "const": "COMMAND_RECEIPT",
+        "default": "COMMAND_RECEIPT",
+        "title": "Type",
+        "type": "string"
+      },
+      "version": {
+        "const": 2,
+        "default": 2,
+        "title": "Version",
+        "type": "integer"
+      }
+    },
+    "required": [
+      "node_id",
+      "boot_id",
+      "seq",
+      "command_id",
+      "status"
+    ],
+    "title": "CommandReceipt",
+    "type": "object"
+  },
+  "CommandResult": {
+    "additionalProperties": false,
+    "description": "The sensor's result for a previously received configuration command.",
+    "properties": {
+      "battery_mv": {
+        "anyOf": [
+          {
+            "maximum": 65534,
+            "minimum": 0,
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Battery Mv"
+      },
+      "boot_id": {
+        "title": "Boot Id",
+        "type": "string"
+      },
+      "command_id": {
+        "title": "Command Id",
+        "type": "string"
+      },
+      "config_revision": {
+        "maximum": 4294967295,
+        "minimum": 0,
+        "title": "Config Revision",
+        "type": "integer"
+      },
+      "health_flags": {
+        "maximum": 3,
+        "minimum": 0,
+        "title": "Health Flags",
+        "type": "integer"
+      },
+      "node_id": {
+        "title": "Node Id",
+        "type": "string"
+      },
+      "occupied": {
+        "title": "Occupied",
+        "type": "boolean"
+      },
+      "seq": {
+        "maximum": 4294967295,
+        "minimum": 1,
+        "title": "Seq",
+        "type": "integer"
+      },
+      "status": {
+        "enum": [
+          "applied",
+          "already_applied",
+          "revision_conflict",
+          "stale_revision",
+          "busy",
+          "command_conflict"
+        ],
+        "title": "Status",
+        "type": "string"
+      },
+      "type": {
+        "const": "COMMAND_RESULT",
+        "default": "COMMAND_RESULT",
+        "title": "Type",
+        "type": "string"
+      },
+      "uptime_ms": {
+        "maximum": 4294967295,
+        "minimum": 0,
+        "title": "Uptime Ms",
+        "type": "integer"
+      },
+      "version": {
+        "const": 2,
+        "default": 2,
+        "title": "Version",
+        "type": "integer"
+      }
+    },
+    "required": [
+      "node_id",
+      "boot_id",
+      "seq",
+      "uptime_ms",
+      "occupied",
+      "battery_mv",
+      "config_revision",
+      "health_flags",
+      "command_id",
+      "status"
+    ],
+    "title": "CommandResult",
+    "type": "object"
+  },
+  "CommandState": {
+    "$defs": {
+      "CommandResult": {
+        "additionalProperties": false,
+        "description": "The sensor's result for a previously received configuration command.",
+        "properties": {
+          "battery_mv": {
+            "anyOf": [
+              {
+                "maximum": 65534,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Battery Mv"
+          },
+          "boot_id": {
+            "title": "Boot Id",
+            "type": "string"
+          },
+          "command_id": {
+            "title": "Command Id",
+            "type": "string"
+          },
+          "config_revision": {
+            "maximum": 4294967295,
+            "minimum": 0,
+            "title": "Config Revision",
+            "type": "integer"
+          },
+          "health_flags": {
+            "maximum": 3,
+            "minimum": 0,
+            "title": "Health Flags",
+            "type": "integer"
+          },
+          "node_id": {
+            "title": "Node Id",
+            "type": "string"
+          },
+          "occupied": {
+            "title": "Occupied",
+            "type": "boolean"
+          },
+          "seq": {
+            "maximum": 4294967295,
+            "minimum": 1,
+            "title": "Seq",
+            "type": "integer"
+          },
+          "status": {
+            "enum": [
+              "applied",
+              "already_applied",
+              "revision_conflict",
+              "stale_revision",
+              "busy",
+              "command_conflict"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "type": {
+            "const": "COMMAND_RESULT",
+            "default": "COMMAND_RESULT",
+            "title": "Type",
+            "type": "string"
+          },
+          "uptime_ms": {
+            "maximum": 4294967295,
+            "minimum": 0,
+            "title": "Uptime Ms",
+            "type": "integer"
+          },
+          "version": {
+            "const": 2,
+            "default": 2,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "node_id",
+          "boot_id",
+          "seq",
+          "uptime_ms",
+          "occupied",
+          "battery_mv",
+          "config_revision",
+          "health_flags",
+          "command_id",
+          "status"
+        ],
+        "title": "CommandResult",
+        "type": "object"
+      },
+      "CommandUpdate": {
+        "additionalProperties": false,
+        "description": "A bridge command report, including any late sensor result.",
+        "properties": {
+          "bridge_id": {
+            "title": "Bridge Id",
+            "type": "string"
+          },
+          "command_id": {
+            "title": "Command Id",
+            "type": "string"
+          },
+          "expires_at_ms": {
+            "title": "Expires At Ms",
+            "type": "integer"
+          },
+          "late_result": {
+            "title": "Late Result",
+            "type": "boolean"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/CommandResult"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "publication_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Publication Id"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "report_seq": {
+            "title": "Report Seq",
+            "type": "integer"
+          },
+          "requested_revision": {
+            "title": "Requested Revision",
+            "type": "integer"
+          },
+          "schema_version": {
+            "const": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "status": {
+            "enum": [
+              "queued",
+              "delivered",
+              "applied",
+              "rejected",
+              "expired"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "type": {
+            "const": "COMMAND_STATUS",
+            "title": "Type",
+            "type": "string"
+          },
+          "updated_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At Ms"
+          }
+        },
+        "required": [
+          "schema_version",
+          "type",
+          "bridge_id",
+          "publication_id",
+          "command_id",
+          "report_seq",
+          "status",
+          "requested_revision",
+          "expires_at_ms",
+          "updated_at_ms",
+          "late_result",
+          "reason",
+          "message"
+        ],
+        "title": "CommandUpdate",
+        "type": "object"
+      }
+    },
+    "additionalProperties": false,
+    "description": "Latest locally stored command state and, when available, its report.",
+    "properties": {
+      "admitted": {
+        "title": "Admitted",
+        "type": "boolean"
+      },
+      "command_id": {
+        "title": "Command Id",
+        "type": "string"
+      },
+      "report": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/CommandUpdate"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "report_seq": {
+        "title": "Report Seq",
+        "type": "integer"
+      },
+      "status": {
+        "anyOf": [
+          {
+            "enum": [
+              "queued",
+              "delivered",
+              "applied",
+              "rejected",
+              "expired",
+              "admission_unknown"
+            ],
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Status"
+      }
+    },
+    "required": [
+      "command_id",
+      "admitted",
+      "status",
+      "report_seq",
+      "report"
+    ],
+    "title": "CommandState",
+    "type": "object"
+  },
+  "CommandUpdate": {
+    "$defs": {
+      "CommandResult": {
+        "additionalProperties": false,
+        "description": "The sensor's result for a previously received configuration command.",
+        "properties": {
+          "battery_mv": {
+            "anyOf": [
+              {
+                "maximum": 65534,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Battery Mv"
+          },
+          "boot_id": {
+            "title": "Boot Id",
+            "type": "string"
+          },
+          "command_id": {
+            "title": "Command Id",
+            "type": "string"
+          },
+          "config_revision": {
+            "maximum": 4294967295,
+            "minimum": 0,
+            "title": "Config Revision",
+            "type": "integer"
+          },
+          "health_flags": {
+            "maximum": 3,
+            "minimum": 0,
+            "title": "Health Flags",
+            "type": "integer"
+          },
+          "node_id": {
+            "title": "Node Id",
+            "type": "string"
+          },
+          "occupied": {
+            "title": "Occupied",
+            "type": "boolean"
+          },
+          "seq": {
+            "maximum": 4294967295,
+            "minimum": 1,
+            "title": "Seq",
+            "type": "integer"
+          },
+          "status": {
+            "enum": [
+              "applied",
+              "already_applied",
+              "revision_conflict",
+              "stale_revision",
+              "busy",
+              "command_conflict"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "type": {
+            "const": "COMMAND_RESULT",
+            "default": "COMMAND_RESULT",
+            "title": "Type",
+            "type": "string"
+          },
+          "uptime_ms": {
+            "maximum": 4294967295,
+            "minimum": 0,
+            "title": "Uptime Ms",
+            "type": "integer"
+          },
+          "version": {
+            "const": 2,
+            "default": 2,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "node_id",
+          "boot_id",
+          "seq",
+          "uptime_ms",
+          "occupied",
+          "battery_mv",
+          "config_revision",
+          "health_flags",
+          "command_id",
+          "status"
+        ],
+        "title": "CommandResult",
+        "type": "object"
+      }
+    },
+    "additionalProperties": false,
+    "description": "A bridge command report, including any late sensor result.",
+    "properties": {
+      "bridge_id": {
+        "title": "Bridge Id",
+        "type": "string"
+      },
+      "command_id": {
+        "title": "Command Id",
+        "type": "string"
+      },
+      "expires_at_ms": {
+        "title": "Expires At Ms",
+        "type": "integer"
+      },
+      "late_result": {
+        "title": "Late Result",
+        "type": "boolean"
+      },
+      "message": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/CommandResult"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "publication_id": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Publication Id"
+      },
+      "reason": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Reason"
+      },
+      "report_seq": {
+        "title": "Report Seq",
+        "type": "integer"
+      },
+      "requested_revision": {
+        "title": "Requested Revision",
+        "type": "integer"
+      },
+      "schema_version": {
+        "const": 1,
+        "title": "Schema Version",
+        "type": "integer"
+      },
+      "status": {
+        "enum": [
+          "queued",
+          "delivered",
+          "applied",
+          "rejected",
+          "expired"
+        ],
+        "title": "Status",
+        "type": "string"
+      },
+      "type": {
+        "const": "COMMAND_STATUS",
+        "title": "Type",
+        "type": "string"
+      },
+      "updated_at_ms": {
+        "anyOf": [
+          {
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Updated At Ms"
+      }
+    },
+    "required": [
+      "schema_version",
+      "type",
+      "bridge_id",
+      "publication_id",
+      "command_id",
+      "report_seq",
+      "status",
+      "requested_revision",
+      "expires_at_ms",
+      "updated_at_ms",
+      "late_result",
+      "reason",
+      "message"
+    ],
+    "title": "CommandUpdate",
+    "type": "object"
+  },
+  "ConfigRequest": {
+    "$defs": {
+      "ConfigSet": {
+        "additionalProperties": false,
+        "description": "MQTT command template; firmware-assigned transport identity is absent.",
+        "properties": {
+          "command_id": {
+            "title": "Command Id",
+            "type": "string"
+          },
+          "heartbeat_s": {
+            "maximum": 4294967295,
+            "minimum": 1,
+            "title": "Heartbeat S",
+            "type": "integer"
+          },
+          "movement_batch_s": {
+            "maximum": 4294967295,
+            "minimum": 1,
+            "title": "Movement Batch S",
+            "type": "integer"
+          },
+          "movement_enabled": {
+            "title": "Movement Enabled",
+            "type": "boolean"
+          },
+          "node_id": {
+            "title": "Node Id",
+            "type": "string"
+          },
+          "radio_interval_s": {
+            "maximum": 4294967295,
+            "minimum": 1,
+            "title": "Radio Interval S",
+            "type": "integer"
+          },
+          "radio_motion_tail_s": {
+            "maximum": 4294967295,
+            "minimum": 1,
+            "title": "Radio Motion Tail S",
+            "type": "integer"
+          },
+          "radio_open_s": {
+            "maximum": 4294967295,
+            "minimum": 1,
+            "title": "Radio Open S",
+            "type": "integer"
+          },
+          "radio_windows_enabled": {
+            "title": "Radio Windows Enabled",
+            "type": "boolean"
+          },
+          "revision": {
+            "maximum": 4294967295,
+            "minimum": 0,
+            "title": "Revision",
+            "type": "integer"
+          },
+          "type": {
+            "const": "CONFIG_SET",
+            "title": "Type",
+            "type": "string"
+          },
+          "version": {
+            "const": 2,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version",
+          "type",
+          "node_id",
+          "command_id",
+          "revision",
+          "heartbeat_s",
+          "movement_batch_s",
+          "movement_enabled",
+          "radio_windows_enabled",
+          "radio_interval_s",
+          "radio_open_s",
+          "radio_motion_tail_s"
+        ],
+        "title": "ConfigSet",
+        "type": "object"
+      }
+    },
+    "additionalProperties": false,
+    "properties": {
+      "expires_at_ms": {
+        "maximum": 9007199254740991,
+        "minimum": 0,
+        "title": "Expires At Ms",
+        "type": "integer"
+      },
+      "message": {
+        "$ref": "#/$defs/ConfigSet"
+      },
+      "schema_version": {
+        "const": 1,
+        "title": "Schema Version",
+        "type": "integer"
+      }
+    },
+    "required": [
+      "schema_version",
+      "expires_at_ms",
+      "message"
+    ],
+    "title": "ConfigRequest",
+    "type": "object"
+  },
+  "ConfigSet": {
+    "additionalProperties": false,
+    "description": "MQTT command template; firmware-assigned transport identity is absent.",
+    "properties": {
+      "command_id": {
+        "title": "Command Id",
+        "type": "string"
+      },
+      "heartbeat_s": {
+        "maximum": 4294967295,
+        "minimum": 1,
+        "title": "Heartbeat S",
+        "type": "integer"
+      },
+      "movement_batch_s": {
+        "maximum": 4294967295,
+        "minimum": 1,
+        "title": "Movement Batch S",
+        "type": "integer"
+      },
+      "movement_enabled": {
+        "title": "Movement Enabled",
+        "type": "boolean"
+      },
+      "node_id": {
+        "title": "Node Id",
+        "type": "string"
+      },
+      "radio_interval_s": {
+        "maximum": 4294967295,
+        "minimum": 1,
+        "title": "Radio Interval S",
+        "type": "integer"
+      },
+      "radio_motion_tail_s": {
+        "maximum": 4294967295,
+        "minimum": 1,
+        "title": "Radio Motion Tail S",
+        "type": "integer"
+      },
+      "radio_open_s": {
+        "maximum": 4294967295,
+        "minimum": 1,
+        "title": "Radio Open S",
+        "type": "integer"
+      },
+      "radio_windows_enabled": {
+        "title": "Radio Windows Enabled",
+        "type": "boolean"
+      },
+      "revision": {
+        "maximum": 4294967295,
+        "minimum": 0,
+        "title": "Revision",
+        "type": "integer"
+      },
+      "type": {
+        "const": "CONFIG_SET",
+        "title": "Type",
+        "type": "string"
+      },
+      "version": {
+        "const": 2,
+        "title": "Version",
+        "type": "integer"
+      }
+    },
+    "required": [
+      "version",
+      "type",
+      "node_id",
+      "command_id",
+      "revision",
+      "heartbeat_s",
+      "movement_batch_s",
+      "movement_enabled",
+      "radio_windows_enabled",
+      "radio_interval_s",
+      "radio_open_s",
+      "radio_motion_tail_s"
+    ],
+    "title": "ConfigSet",
+    "type": "object"
+  },
+  "EventAck": {
+    "additionalProperties": false,
+    "description": "The EVENT_ACK a sensor needs before it discards a reliable event.",
+    "properties": {
+      "ack_boot_id": {
+        "title": "Ack Boot Id",
+        "type": "string"
+      },
+      "ack_seq": {
+        "maximum": 4294967295,
+        "minimum": 1,
+        "title": "Ack Seq",
+        "type": "integer"
+      },
+      "boot_id": {
+        "title": "Boot Id",
+        "type": "string"
+      },
+      "node_id": {
+        "title": "Node Id",
+        "type": "string"
+      },
+      "seq": {
+        "maximum": 4294967295,
+        "minimum": 1,
+        "title": "Seq",
+        "type": "integer"
+      },
+      "type": {
+        "const": "EVENT_ACK",
+        "title": "Type",
+        "type": "string"
+      },
+      "version": {
+        "const": 2,
+        "title": "Version",
+        "type": "integer"
+      }
+    },
+    "required": [
+      "version",
+      "type",
+      "node_id",
+      "boot_id",
+      "seq",
+      "ack_boot_id",
+      "ack_seq"
+    ],
+    "title": "EventAck",
+    "type": "object"
+  },
+  "MovementBatch": {
+    "$defs": {
+      "MovementSample": {
+        "additionalProperties": false,
+        "description": "One raw accelerometer and gyroscope sample within a movement batch.",
+        "properties": {
+          "ax": {
+            "maximum": 32767,
+            "minimum": -32768,
+            "title": "Ax",
+            "type": "integer"
+          },
+          "ay": {
+            "maximum": 32767,
+            "minimum": -32768,
+            "title": "Ay",
+            "type": "integer"
+          },
+          "az": {
+            "maximum": 32767,
+            "minimum": -32768,
+            "title": "Az",
+            "type": "integer"
+          },
+          "gx": {
+            "maximum": 32767,
+            "minimum": -32768,
+            "title": "Gx",
+            "type": "integer"
+          },
+          "gy": {
+            "maximum": 32767,
+            "minimum": -32768,
+            "title": "Gy",
+            "type": "integer"
+          },
+          "gz": {
+            "maximum": 32767,
+            "minimum": -32768,
+            "title": "Gz",
+            "type": "integer"
+          },
+          "offset_ms": {
+            "maximum": 65535,
+            "minimum": 0,
+            "title": "Offset Ms",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "offset_ms",
+          "ax",
+          "ay",
+          "az",
+          "gx",
+          "gy",
+          "gz"
+        ],
+        "title": "MovementSample",
+        "type": "object"
+      }
+    },
+    "additionalProperties": false,
+    "description": "A best-effort movement batch with ordered raw sensor samples.",
+    "properties": {
+      "batch_start_ms": {
+        "maximum": 4294967295,
+        "minimum": 0,
+        "title": "Batch Start Ms",
+        "type": "integer"
+      },
+      "battery_mv": {
+        "anyOf": [
+          {
+            "maximum": 65534,
+            "minimum": 0,
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Battery Mv"
+      },
+      "boot_id": {
+        "title": "Boot Id",
+        "type": "string"
+      },
+      "config_revision": {
+        "maximum": 4294967295,
+        "minimum": 0,
+        "title": "Config Revision",
+        "type": "integer"
+      },
+      "duration_ms": {
+        "maximum": 4294967295,
+        "minimum": 0,
+        "title": "Duration Ms",
+        "type": "integer"
+      },
+      "end_reason": {
+        "enum": [
+          "interval",
+          "capacity",
+          "stopped",
+          "vacant",
+          "disabled"
+        ],
+        "title": "End Reason",
+        "type": "string"
+      },
+      "health_flags": {
+        "maximum": 3,
+        "minimum": 0,
+        "title": "Health Flags",
+        "type": "integer"
+      },
+      "node_id": {
+        "title": "Node Id",
+        "type": "string"
+      },
+      "occupied": {
+        "title": "Occupied",
+        "type": "boolean"
+      },
+      "samples": {
+        "items": {
+          "$ref": "#/$defs/MovementSample"
+        },
+        "maxItems": 75,
+        "title": "Samples",
+        "type": "array"
+      },
+      "seq": {
+        "maximum": 4294967295,
+        "minimum": 1,
+        "title": "Seq",
+        "type": "integer"
+      },
+      "type": {
+        "const": "MOVEMENT_BATCH",
+        "default": "MOVEMENT_BATCH",
+        "title": "Type",
+        "type": "string"
+      },
+      "uptime_ms": {
+        "maximum": 4294967295,
+        "minimum": 0,
+        "title": "Uptime Ms",
+        "type": "integer"
+      },
+      "version": {
+        "const": 2,
+        "default": 2,
+        "title": "Version",
+        "type": "integer"
+      }
+    },
+    "required": [
+      "node_id",
+      "boot_id",
+      "seq",
+      "uptime_ms",
+      "occupied",
+      "battery_mv",
+      "config_revision",
+      "health_flags",
+      "batch_start_ms",
+      "duration_ms",
+      "end_reason",
+      "samples"
+    ],
+    "title": "MovementBatch",
+    "type": "object"
+  },
+  "MovementLoss": {
+    "additionalProperties": false,
+    "description": "A sensor report of movement batches lost before transmission.",
+    "properties": {
+      "battery_mv": {
+        "anyOf": [
+          {
+            "maximum": 65534,
+            "minimum": 0,
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Battery Mv"
+      },
+      "boot_id": {
+        "title": "Boot Id",
+        "type": "string"
+      },
+      "config_revision": {
+        "maximum": 4294967295,
+        "minimum": 0,
+        "title": "Config Revision",
+        "type": "integer"
+      },
+      "dropped_batches": {
+        "maximum": 4294967295,
+        "minimum": 1,
+        "title": "Dropped Batches",
+        "type": "integer"
+      },
+      "health_flags": {
+        "maximum": 3,
+        "minimum": 0,
+        "title": "Health Flags",
+        "type": "integer"
+      },
+      "node_id": {
+        "title": "Node Id",
+        "type": "string"
+      },
+      "occupied": {
+        "title": "Occupied",
+        "type": "boolean"
+      },
+      "seq": {
+        "maximum": 4294967295,
+        "minimum": 1,
+        "title": "Seq",
+        "type": "integer"
+      },
+      "type": {
+        "const": "MOVEMENT_LOSS",
+        "default": "MOVEMENT_LOSS",
+        "title": "Type",
+        "type": "string"
+      },
+      "uptime_ms": {
+        "maximum": 4294967295,
+        "minimum": 0,
+        "title": "Uptime Ms",
+        "type": "integer"
+      },
+      "version": {
+        "const": 2,
+        "default": 2,
+        "title": "Version",
+        "type": "integer"
+      }
+    },
+    "required": [
+      "node_id",
+      "boot_id",
+      "seq",
+      "uptime_ms",
+      "occupied",
+      "battery_mv",
+      "config_revision",
+      "health_flags",
+      "dropped_batches"
+    ],
+    "title": "MovementLoss",
+    "type": "object"
+  },
+  "MovementSample": {
+    "additionalProperties": false,
+    "description": "One raw accelerometer and gyroscope sample within a movement batch.",
+    "properties": {
+      "ax": {
+        "maximum": 32767,
+        "minimum": -32768,
+        "title": "Ax",
+        "type": "integer"
+      },
+      "ay": {
+        "maximum": 32767,
+        "minimum": -32768,
+        "title": "Ay",
+        "type": "integer"
+      },
+      "az": {
+        "maximum": 32767,
+        "minimum": -32768,
+        "title": "Az",
+        "type": "integer"
+      },
+      "gx": {
+        "maximum": 32767,
+        "minimum": -32768,
+        "title": "Gx",
+        "type": "integer"
+      },
+      "gy": {
+        "maximum": 32767,
+        "minimum": -32768,
+        "title": "Gy",
+        "type": "integer"
+      },
+      "gz": {
+        "maximum": 32767,
+        "minimum": -32768,
+        "title": "Gz",
+        "type": "integer"
+      },
+      "offset_ms": {
+        "maximum": 65535,
+        "minimum": 0,
+        "title": "Offset Ms",
+        "type": "integer"
+      }
+    },
+    "required": [
+      "offset_ms",
+      "ax",
+      "ay",
+      "az",
+      "gx",
+      "gy",
+      "gz"
+    ],
+    "title": "MovementSample",
+    "type": "object"
+  },
+  "PublishResult": {
+    "$defs": {
+      "EventAck": {
+        "additionalProperties": false,
+        "description": "The EVENT_ACK a sensor needs before it discards a reliable event.",
+        "properties": {
+          "ack_boot_id": {
+            "title": "Ack Boot Id",
+            "type": "string"
+          },
+          "ack_seq": {
+            "maximum": 4294967295,
+            "minimum": 1,
+            "title": "Ack Seq",
+            "type": "integer"
+          },
+          "boot_id": {
+            "title": "Boot Id",
+            "type": "string"
+          },
+          "node_id": {
+            "title": "Node Id",
+            "type": "string"
+          },
+          "seq": {
+            "maximum": 4294967295,
+            "minimum": 1,
+            "title": "Seq",
+            "type": "integer"
+          },
+          "type": {
+            "const": "EVENT_ACK",
+            "title": "Type",
+            "type": "string"
+          },
+          "version": {
+            "const": 2,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version",
+          "type",
+          "node_id",
+          "boot_id",
+          "seq",
+          "ack_boot_id",
+          "ack_seq"
+        ],
+        "title": "EventAck",
+        "type": "object"
+      }
+    },
+    "additionalProperties": false,
+    "description": "Outcome of ``ChairBridge.publish`` for one sensor message.\n\n``accepted`` and ``duplicate`` messages are durably stored. A reliable\nevent, including a retransmitted duplicate, carries the ``ack`` the caller\nmust deliver to the sensor; ``ignored`` explains the drop in ``reason``.",
+    "properties": {
+      "ack": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/EventAck"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null
+      },
+      "reason": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Reason"
+      },
+      "status": {
+        "enum": [
+          "accepted",
+          "duplicate",
+          "ignored"
+        ],
+        "title": "Status",
+        "type": "string"
+      }
+    },
+    "required": [
+      "status"
+    ],
+    "title": "PublishResult",
+    "type": "object"
+  },
+  "RadioReady": {
+    "additionalProperties": false,
+    "description": "A sensor radio-window readiness announcement.",
+    "properties": {
+      "battery_mv": {
+        "anyOf": [
+          {
+            "maximum": 65534,
+            "minimum": 0,
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Battery Mv"
+      },
+      "boot_id": {
+        "title": "Boot Id",
+        "type": "string"
+      },
+      "config_revision": {
+        "maximum": 4294967295,
+        "minimum": 0,
+        "title": "Config Revision",
+        "type": "integer"
+      },
+      "health_flags": {
+        "maximum": 3,
+        "minimum": 0,
+        "title": "Health Flags",
+        "type": "integer"
+      },
+      "listen_remaining_ms": {
+        "anyOf": [
+          {
+            "maximum": 4294967294,
+            "minimum": 0,
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Listen Remaining Ms"
+      },
+      "node_id": {
+        "title": "Node Id",
+        "type": "string"
+      },
+      "occupied": {
+        "title": "Occupied",
+        "type": "boolean"
+      },
+      "reason": {
+        "enum": [
+          "seat_occupied",
+          "movement_started",
+          "scheduled"
+        ],
+        "title": "Reason",
+        "type": "string"
+      },
+      "seq": {
+        "maximum": 4294967295,
+        "minimum": 1,
+        "title": "Seq",
+        "type": "integer"
+      },
+      "type": {
+        "const": "READY",
+        "default": "READY",
+        "title": "Type",
+        "type": "string"
+      },
+      "uptime_ms": {
+        "maximum": 4294967295,
+        "minimum": 0,
+        "title": "Uptime Ms",
+        "type": "integer"
+      },
+      "version": {
+        "const": 2,
+        "default": 2,
+        "title": "Version",
+        "type": "integer"
+      }
+    },
+    "required": [
+      "node_id",
+      "boot_id",
+      "seq",
+      "uptime_ms",
+      "occupied",
+      "battery_mv",
+      "config_revision",
+      "health_flags",
+      "reason",
+      "listen_remaining_ms"
+    ],
+    "title": "RadioReady",
+    "type": "object"
+  },
+  "SeatEvent": {
+    "additionalProperties": false,
+    "description": "An occupancy, heartbeat, or low-battery sensor event.",
+    "properties": {
+      "battery_mv": {
+        "anyOf": [
+          {
+            "maximum": 65534,
+            "minimum": 0,
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Battery Mv"
+      },
+      "boot_id": {
+        "title": "Boot Id",
+        "type": "string"
+      },
+      "config_revision": {
+        "maximum": 4294967295,
+        "minimum": 0,
+        "title": "Config Revision",
+        "type": "integer"
+      },
+      "health_flags": {
+        "maximum": 3,
+        "minimum": 0,
+        "title": "Health Flags",
+        "type": "integer"
+      },
+      "node_id": {
+        "title": "Node Id",
+        "type": "string"
+      },
+      "occupied": {
+        "title": "Occupied",
+        "type": "boolean"
+      },
+      "seq": {
+        "maximum": 4294967295,
+        "minimum": 1,
+        "title": "Seq",
+        "type": "integer"
+      },
+      "type": {
+        "enum": [
+          "OCCUPIED",
+          "VACATED",
+          "HEARTBEAT",
+          "BATTERY_LOW"
+        ],
+        "title": "Type",
+        "type": "string"
+      },
+      "uptime_ms": {
+        "maximum": 4294967295,
+        "minimum": 0,
+        "title": "Uptime Ms",
+        "type": "integer"
+      },
+      "version": {
+        "const": 2,
+        "default": 2,
+        "title": "Version",
+        "type": "integer"
+      }
+    },
+    "required": [
+      "node_id",
+      "boot_id",
+      "seq",
+      "uptime_ms",
+      "occupied",
+      "battery_mv",
+      "config_revision",
+      "health_flags",
+      "type"
+    ],
+    "title": "SeatEvent",
+    "type": "object"
+  },
+  "SensorEvent": {
+    "$defs": {
+      "CommandResult": {
+        "additionalProperties": false,
+        "description": "The sensor's result for a previously received configuration command.",
+        "properties": {
+          "battery_mv": {
+            "anyOf": [
+              {
+                "maximum": 65534,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Battery Mv"
+          },
+          "boot_id": {
+            "title": "Boot Id",
+            "type": "string"
+          },
+          "command_id": {
+            "title": "Command Id",
+            "type": "string"
+          },
+          "config_revision": {
+            "maximum": 4294967295,
+            "minimum": 0,
+            "title": "Config Revision",
+            "type": "integer"
+          },
+          "health_flags": {
+            "maximum": 3,
+            "minimum": 0,
+            "title": "Health Flags",
+            "type": "integer"
+          },
+          "node_id": {
+            "title": "Node Id",
+            "type": "string"
+          },
+          "occupied": {
+            "title": "Occupied",
+            "type": "boolean"
+          },
+          "seq": {
+            "maximum": 4294967295,
+            "minimum": 1,
+            "title": "Seq",
+            "type": "integer"
+          },
+          "status": {
+            "enum": [
+              "applied",
+              "already_applied",
+              "revision_conflict",
+              "stale_revision",
+              "busy",
+              "command_conflict"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "type": {
+            "const": "COMMAND_RESULT",
+            "default": "COMMAND_RESULT",
+            "title": "Type",
+            "type": "string"
+          },
+          "uptime_ms": {
+            "maximum": 4294967295,
+            "minimum": 0,
+            "title": "Uptime Ms",
+            "type": "integer"
+          },
+          "version": {
+            "const": 2,
+            "default": 2,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "node_id",
+          "boot_id",
+          "seq",
+          "uptime_ms",
+          "occupied",
+          "battery_mv",
+          "config_revision",
+          "health_flags",
+          "command_id",
+          "status"
+        ],
+        "title": "CommandResult",
+        "type": "object"
+      },
+      "SeatEvent": {
+        "additionalProperties": false,
+        "description": "An occupancy, heartbeat, or low-battery sensor event.",
+        "properties": {
+          "battery_mv": {
+            "anyOf": [
+              {
+                "maximum": 65534,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Battery Mv"
+          },
+          "boot_id": {
+            "title": "Boot Id",
+            "type": "string"
+          },
+          "config_revision": {
+            "maximum": 4294967295,
+            "minimum": 0,
+            "title": "Config Revision",
+            "type": "integer"
+          },
+          "health_flags": {
+            "maximum": 3,
+            "minimum": 0,
+            "title": "Health Flags",
+            "type": "integer"
+          },
+          "node_id": {
+            "title": "Node Id",
+            "type": "string"
+          },
+          "occupied": {
+            "title": "Occupied",
+            "type": "boolean"
+          },
+          "seq": {
+            "maximum": 4294967295,
+            "minimum": 1,
+            "title": "Seq",
+            "type": "integer"
+          },
+          "type": {
+            "enum": [
+              "OCCUPIED",
+              "VACATED",
+              "HEARTBEAT",
+              "BATTERY_LOW"
+            ],
+            "title": "Type",
+            "type": "string"
+          },
+          "uptime_ms": {
+            "maximum": 4294967295,
+            "minimum": 0,
+            "title": "Uptime Ms",
+            "type": "integer"
+          },
+          "version": {
+            "const": 2,
+            "default": 2,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "node_id",
+          "boot_id",
+          "seq",
+          "uptime_ms",
+          "occupied",
+          "battery_mv",
+          "config_revision",
+          "health_flags",
+          "type"
+        ],
+        "title": "SeatEvent",
+        "type": "object"
+      },
+      "StateSync": {
+        "additionalProperties": false,
+        "description": "A sensor's current state and persistent boot generation.",
+        "properties": {
+          "battery_mv": {
+            "anyOf": [
+              {
+                "maximum": 65534,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Battery Mv"
+          },
+          "boot_generation": {
+            "title": "Boot Generation",
+            "type": "string"
+          },
+          "boot_id": {
+            "title": "Boot Id",
+            "type": "string"
+          },
+          "config_revision": {
+            "maximum": 4294967295,
+            "minimum": 0,
+            "title": "Config Revision",
+            "type": "integer"
+          },
+          "health_flags": {
+            "maximum": 3,
+            "minimum": 0,
+            "title": "Health Flags",
+            "type": "integer"
+          },
+          "node_id": {
+            "title": "Node Id",
+            "type": "string"
+          },
+          "occupied": {
+            "title": "Occupied",
+            "type": "boolean"
+          },
+          "seq": {
+            "maximum": 4294967295,
+            "minimum": 1,
+            "title": "Seq",
+            "type": "integer"
+          },
+          "type": {
+            "const": "STATE_SYNC",
+            "default": "STATE_SYNC",
+            "title": "Type",
+            "type": "string"
+          },
+          "uptime_ms": {
+            "maximum": 4294967295,
+            "minimum": 0,
+            "title": "Uptime Ms",
+            "type": "integer"
+          },
+          "version": {
+            "const": 2,
+            "default": 2,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "node_id",
+          "boot_id",
+          "seq",
+          "uptime_ms",
+          "occupied",
+          "battery_mv",
+          "config_revision",
+          "health_flags",
+          "boot_generation"
+        ],
+        "title": "StateSync",
+        "type": "object"
+      }
+    },
+    "additionalProperties": false,
+    "description": "A reliable sensor publication; ``message`` contains its typed ESP data.",
+    "properties": {
+      "boot_generation": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Boot Generation"
+      },
+      "bridge_id": {
+        "title": "Bridge Id",
+        "type": "string"
+      },
+      "message": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/StateSync"
+          },
+          {
+            "$ref": "#/$defs/SeatEvent"
+          },
+          {
+            "$ref": "#/$defs/CommandResult"
+          }
+        ],
+        "title": "Message"
+      },
+      "publication_id": {
+        "title": "Publication Id",
+        "type": "string"
+      },
+      "received_at_ms": {
+        "anyOf": [
+          {
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Received At Ms"
+      },
+      "schema_version": {
+        "const": 1,
+        "title": "Schema Version",
+        "type": "integer"
+      },
+      "source_mac": {
+        "title": "Source Mac",
+        "type": "string"
+      }
+    },
+    "required": [
+      "schema_version",
+      "bridge_id",
+      "publication_id",
+      "source_mac",
+      "received_at_ms",
+      "boot_generation",
+      "message"
+    ],
+    "title": "SensorEvent",
+    "type": "object"
+  },
+  "SensorState": {
+    "$defs": {
+      "CommandResult": {
+        "additionalProperties": false,
+        "description": "The sensor's result for a previously received configuration command.",
+        "properties": {
+          "battery_mv": {
+            "anyOf": [
+              {
+                "maximum": 65534,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Battery Mv"
+          },
+          "boot_id": {
+            "title": "Boot Id",
+            "type": "string"
+          },
+          "command_id": {
+            "title": "Command Id",
+            "type": "string"
+          },
+          "config_revision": {
+            "maximum": 4294967295,
+            "minimum": 0,
+            "title": "Config Revision",
+            "type": "integer"
+          },
+          "health_flags": {
+            "maximum": 3,
+            "minimum": 0,
+            "title": "Health Flags",
+            "type": "integer"
+          },
+          "node_id": {
+            "title": "Node Id",
+            "type": "string"
+          },
+          "occupied": {
+            "title": "Occupied",
+            "type": "boolean"
+          },
+          "seq": {
+            "maximum": 4294967295,
+            "minimum": 1,
+            "title": "Seq",
+            "type": "integer"
+          },
+          "status": {
+            "enum": [
+              "applied",
+              "already_applied",
+              "revision_conflict",
+              "stale_revision",
+              "busy",
+              "command_conflict"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "type": {
+            "const": "COMMAND_RESULT",
+            "default": "COMMAND_RESULT",
+            "title": "Type",
+            "type": "string"
+          },
+          "uptime_ms": {
+            "maximum": 4294967295,
+            "minimum": 0,
+            "title": "Uptime Ms",
+            "type": "integer"
+          },
+          "version": {
+            "const": 2,
+            "default": 2,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "node_id",
+          "boot_id",
+          "seq",
+          "uptime_ms",
+          "occupied",
+          "battery_mv",
+          "config_revision",
+          "health_flags",
+          "command_id",
+          "status"
+        ],
+        "title": "CommandResult",
+        "type": "object"
+      },
+      "SeatEvent": {
+        "additionalProperties": false,
+        "description": "An occupancy, heartbeat, or low-battery sensor event.",
+        "properties": {
+          "battery_mv": {
+            "anyOf": [
+              {
+                "maximum": 65534,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Battery Mv"
+          },
+          "boot_id": {
+            "title": "Boot Id",
+            "type": "string"
+          },
+          "config_revision": {
+            "maximum": 4294967295,
+            "minimum": 0,
+            "title": "Config Revision",
+            "type": "integer"
+          },
+          "health_flags": {
+            "maximum": 3,
+            "minimum": 0,
+            "title": "Health Flags",
+            "type": "integer"
+          },
+          "node_id": {
+            "title": "Node Id",
+            "type": "string"
+          },
+          "occupied": {
+            "title": "Occupied",
+            "type": "boolean"
+          },
+          "seq": {
+            "maximum": 4294967295,
+            "minimum": 1,
+            "title": "Seq",
+            "type": "integer"
+          },
+          "type": {
+            "enum": [
+              "OCCUPIED",
+              "VACATED",
+              "HEARTBEAT",
+              "BATTERY_LOW"
+            ],
+            "title": "Type",
+            "type": "string"
+          },
+          "uptime_ms": {
+            "maximum": 4294967295,
+            "minimum": 0,
+            "title": "Uptime Ms",
+            "type": "integer"
+          },
+          "version": {
+            "const": 2,
+            "default": 2,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "node_id",
+          "boot_id",
+          "seq",
+          "uptime_ms",
+          "occupied",
+          "battery_mv",
+          "config_revision",
+          "health_flags",
+          "type"
+        ],
+        "title": "SeatEvent",
+        "type": "object"
+      },
+      "StateSync": {
+        "additionalProperties": false,
+        "description": "A sensor's current state and persistent boot generation.",
+        "properties": {
+          "battery_mv": {
+            "anyOf": [
+              {
+                "maximum": 65534,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Battery Mv"
+          },
+          "boot_generation": {
+            "title": "Boot Generation",
+            "type": "string"
+          },
+          "boot_id": {
+            "title": "Boot Id",
+            "type": "string"
+          },
+          "config_revision": {
+            "maximum": 4294967295,
+            "minimum": 0,
+            "title": "Config Revision",
+            "type": "integer"
+          },
+          "health_flags": {
+            "maximum": 3,
+            "minimum": 0,
+            "title": "Health Flags",
+            "type": "integer"
+          },
+          "node_id": {
+            "title": "Node Id",
+            "type": "string"
+          },
+          "occupied": {
+            "title": "Occupied",
+            "type": "boolean"
+          },
+          "seq": {
+            "maximum": 4294967295,
+            "minimum": 1,
+            "title": "Seq",
+            "type": "integer"
+          },
+          "type": {
+            "const": "STATE_SYNC",
+            "default": "STATE_SYNC",
+            "title": "Type",
+            "type": "string"
+          },
+          "uptime_ms": {
+            "maximum": 4294967295,
+            "minimum": 0,
+            "title": "Uptime Ms",
+            "type": "integer"
+          },
+          "version": {
+            "const": 2,
+            "default": 2,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "node_id",
+          "boot_id",
+          "seq",
+          "uptime_ms",
+          "occupied",
+          "battery_mv",
+          "config_revision",
+          "health_flags",
+          "boot_generation"
+        ],
+        "title": "StateSync",
+        "type": "object"
+      }
+    },
+    "additionalProperties": false,
+    "description": "Last known sensor state; its publication ID is always ``None``.",
+    "properties": {
+      "boot_generation": {
+        "title": "Boot Generation",
+        "type": "string"
+      },
+      "bridge_id": {
+        "title": "Bridge Id",
+        "type": "string"
+      },
+      "message": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/StateSync"
+          },
+          {
+            "$ref": "#/$defs/SeatEvent"
+          },
+          {
+            "$ref": "#/$defs/CommandResult"
+          }
+        ],
+        "title": "Message"
+      },
+      "publication_id": {
+        "title": "Publication Id",
+        "type": "null"
+      },
+      "received_at_ms": {
+        "anyOf": [
+          {
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Received At Ms"
+      },
+      "schema_version": {
+        "const": 1,
+        "title": "Schema Version",
+        "type": "integer"
+      },
+      "source_mac": {
+        "title": "Source Mac",
+        "type": "string"
+      }
+    },
+    "required": [
+      "schema_version",
+      "bridge_id",
+      "publication_id",
+      "source_mac",
+      "received_at_ms",
+      "boot_generation",
+      "message"
+    ],
+    "title": "SensorState",
+    "type": "object"
+  },
+  "StateSync": {
+    "additionalProperties": false,
+    "description": "A sensor's current state and persistent boot generation.",
+    "properties": {
+      "battery_mv": {
+        "anyOf": [
+          {
+            "maximum": 65534,
+            "minimum": 0,
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Battery Mv"
+      },
+      "boot_generation": {
+        "title": "Boot Generation",
+        "type": "string"
+      },
+      "boot_id": {
+        "title": "Boot Id",
+        "type": "string"
+      },
+      "config_revision": {
+        "maximum": 4294967295,
+        "minimum": 0,
+        "title": "Config Revision",
+        "type": "integer"
+      },
+      "health_flags": {
+        "maximum": 3,
+        "minimum": 0,
+        "title": "Health Flags",
+        "type": "integer"
+      },
+      "node_id": {
+        "title": "Node Id",
+        "type": "string"
+      },
+      "occupied": {
+        "title": "Occupied",
+        "type": "boolean"
+      },
+      "seq": {
+        "maximum": 4294967295,
+        "minimum": 1,
+        "title": "Seq",
+        "type": "integer"
+      },
+      "type": {
+        "const": "STATE_SYNC",
+        "default": "STATE_SYNC",
+        "title": "Type",
+        "type": "string"
+      },
+      "uptime_ms": {
+        "maximum": 4294967295,
+        "minimum": 0,
+        "title": "Uptime Ms",
+        "type": "integer"
+      },
+      "version": {
+        "const": 2,
+        "default": 2,
+        "title": "Version",
+        "type": "integer"
+      }
+    },
+    "required": [
+      "node_id",
+      "boot_id",
+      "seq",
+      "uptime_ms",
+      "occupied",
+      "battery_mv",
+      "config_revision",
+      "health_flags",
+      "boot_generation"
+    ],
+    "title": "StateSync",
+    "type": "object"
+  }
+}

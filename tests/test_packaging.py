@@ -1,9 +1,14 @@
+import json
 import subprocess
 import tempfile
 import tomllib
 import unittest
 import zipfile
 from pathlib import Path
+
+from pydantic import BaseModel
+
+import chair_mqtt
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -38,6 +43,19 @@ class PackagingTests(unittest.TestCase):
         self.assertEqual(pyright["pythonVersion"], "3.11")
         self.assertEqual(pyright["typeCheckingMode"], "strict")
         self.assertIn("tests", pyright["exclude"])
+
+    def test_model_schema_unchanged(self):
+        """Typing must not change validation: compare every exported model's schema."""
+        expected = json.loads((ROOT / "tests/data/model_schemas.json").read_text())
+        actual = {}
+        for name in chair_mqtt.__all__:
+            value = getattr(chair_mqtt, name)
+            if isinstance(value, type) and issubclass(value, BaseModel):
+                actual[name] = value.model_json_schema()
+        self.assertEqual(sorted(actual), sorted(expected))
+        for name, schema in expected.items():
+            with self.subTest(model=name):
+                self.assertEqual(actual[name], schema)
 
 
 if __name__ == "__main__":
