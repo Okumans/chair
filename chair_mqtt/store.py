@@ -245,7 +245,7 @@ class MqttStore(Store):
             if version == SCHEMA_VERSION:
                 self.db.execute(f"PRAGMA user_version={MQTT_SCHEMA_VERSION}")
 
-    def _millis(self, seconds: object) -> int | None:
+    def millis(self, seconds: object) -> int | None:
         if not self.clock_trusted():
             return None
         if not isinstance(seconds, (int, float)) or not math.isfinite(seconds):
@@ -273,7 +273,7 @@ class MqttStore(Store):
             "source_mac": self.mapping[known_str(node)],
             "received_at_ms": metadata[0]
             if metadata is not None
-            else self._millis(received_at),
+            else self.millis(received_at),
             "boot_generation": f"{row[0]:016x}" if row else None,
             "message": message,
         }
@@ -347,9 +347,9 @@ class MqttStore(Store):
         topic = f"smartchair/v1/nodes/{node}/state"
         payload = compact(self._envelope(message, row["received_at"], None))
         validate(topic, payload, qos=1, retain=True, expected_node=node)
-        self._queue_projection(topic, payload)
+        self.queue_projection(topic, payload)
 
-    def _queue_projection(
+    def queue_projection(
         self, topic: str, payload: bytes, *, force: bool = False
     ) -> None:
         """Queue or coalesce a projection without exceeding its separate pool."""
@@ -432,7 +432,7 @@ class MqttStore(Store):
             "status": status,
             "requested_revision": json.loads(row["config"])["revision"],
             "expires_at_ms": row["expires_ms"],
-            "updated_at_ms": self._millis(now),
+            "updated_at_ms": self.millis(now),
             "late_result": late_result,
             "reason": None,
             "message": message,
@@ -457,7 +457,7 @@ class MqttStore(Store):
             (seq, projection, command_id),
         )
         if row["retention_state"] == "active":
-            self._queue_projection(prefix + "/status", projection)
+            self.queue_projection(prefix + "/status", projection)
         if status in TERMINAL:
             if row["terminal_order"] is None:
                 order = self.db.execute(
@@ -465,7 +465,7 @@ class MqttStore(Store):
                 ).fetchone()[0]
                 self.db.execute(
                     "UPDATE mqtt_commands SET terminal_ms=?,terminal_order=? WHERE id=?",
-                    (self._millis(now), order, command_id),
+                    (self.millis(now), order, command_id),
                 )
             self.db.execute(
                 "UPDATE mqtt_commands SET reserved=0 WHERE id=?", (command_id,)
@@ -562,7 +562,7 @@ class MqttStore(Store):
                         (command_id, status_topic, existing["report"]),
                     )
                 else:
-                    self._queue_projection(status_topic, existing["report"], force=True)
+                    self.queue_projection(status_topic, existing["report"], force=True)
                 return "duplicate"
             if self.db.execute(
                 "SELECT 1 FROM commands WHERE id=?", (command_id,)
@@ -570,7 +570,7 @@ class MqttStore(Store):
                 raise CommandAdmissionError("command_id_conflict")
             if self.wall_clock is not None:
                 now = max(now, self.wall_clock())
-            now_ms = self._millis(now)
+            now_ms = self.millis(now)
             if now_ms is None:
                 raise CommandAdmissionError("clock_untrusted", retryable=True)
             if expires > now_ms + 86400000:
@@ -616,7 +616,7 @@ class MqttStore(Store):
             "command_id": command_id,
             "reason": reason,
             "retryable": retryable,
-            "received_at_ms": self._millis(now),
+            "received_at_ms": self.millis(now),
         }
         payload = compact(value)
         validate(topic, payload, qos=1, retain=False, expected_node=node)
@@ -712,7 +712,7 @@ class MqttStore(Store):
 
     def schedule_retention(self, now: float) -> int:
         """Persist expiry and capacity cleanup without removing broker state early."""
-        now_ms = self._millis(now)
+        now_ms = self.millis(now)
         with self.db:
             if now_ms is not None:
                 self.db.execute(
@@ -740,7 +740,7 @@ class MqttStore(Store):
                     "UPDATE mqtt_commands SET retention_state='pending' WHERE id=? AND retention_state='active'",
                     (command_id,),
                 )
-                self._queue_projection(topic, b"")
+                self.queue_projection(topic, b"")
         return len(due)
 
     def _after_expire(self, commands: list[sqlite3.Row], now: float) -> None:
@@ -749,7 +749,7 @@ class MqttStore(Store):
 
     def pending(self, now: float, monotonic: float | None = None) -> list[sqlite3.Row]:
         """Fence dispatch without trusted UTC and apply exact/monotonic deadlines."""
-        now_ms = self._millis(now)
+        now_ms = self.millis(now)
         if now_ms is None:
             return []
         monotonic = self.monotonic_clock() if monotonic is None else monotonic
@@ -801,7 +801,7 @@ class MqttStore(Store):
                         message["node_id"],
                         message["boot_id"],
                         message["seq"],
-                        self._millis(received_at),
+                        self.millis(received_at),
                     ),
                 )
                 self._queue_event(message, received_at)
