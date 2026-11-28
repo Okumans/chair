@@ -28,6 +28,25 @@ runs:
         git config --global user.name "chair-ci"
         git config --global user.email "chair-ci@users.noreply.github.com"
 
+    # The broker tests start a private Mosquitto from a temporary config; fail early, with
+    # its own error output, if this runner cannot do that.
+    - name: Check a private Mosquitto starts
+      shell: bash
+      run: |
+        dir=$(mktemp -d)
+        printf 'listener 18830 127.0.0.1\nallow_anonymous true\npersistence false\n' > "$dir/mosquitto.conf"
+        mosquitto -v -c "$dir/mosquitto.conf" > "$dir/broker.log" 2>&1 &
+        broker=$!
+        for _ in $(seq 50); do
+          if (exec 3<>/dev/tcp/127.0.0.1/18830) 2>/dev/null; then kill "$broker"; exit 0; fi
+          sleep 0.1
+        done
+        echo "::error::private Mosquitto did not start"
+        cat "$dir/broker.log"
+        ls -l "$(command -v mosquitto)"
+        sudo aa-status 2>/dev/null | grep -i mosquitto || true
+        exit 1
+
     - name: Show toolchain
       shell: bash
       run: |
