@@ -482,9 +482,11 @@ UUID can return a historical outcome without rolling back newer settings; do not
 treat that outcome as full current-configuration readback. Actual result JSON
 does not gain a new `revision` field.
 
-An unknown command's authentic COMMAND_RESULT is still a reliable sensor fact
-and must be stored/forwarded/ACKed. Record `unmatched_command_result` locally;
-do not invent an accepted request, deadline or canonical command-status row.
+An unknown command's authentic COMMAND_RESULT is still a reliable sensor fact.
+The bridge commits it to its local event store, ACKs it and publishes it on
+`N/events` like any other reliable event; that stored event is the only local
+record. It does not invent an accepted request, deadline or command-status
+topic. A backend recognizes such a result by a `command_id` it never sent.
 
 ### Retained command-status cleanup
 
