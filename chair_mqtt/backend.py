@@ -52,13 +52,11 @@ class BackendLedger:
         if db.execute("PRAGMA journal_mode=WAL").fetchone()[0] != "wal":
             raise ValueError("backend SQLite WAL is unavailable")
         db.execute("PRAGMA synchronous=FULL")
-        self.db, self.node_id, self.bridge_id, self.consumer_id, self.on_fact = (
-            db,
-            node_id,
-            bridge_id,
-            consumer_id,
-            on_fact,
-        )
+        self.db: sqlite3.Connection = db
+        self.node_id: str = node_id
+        self.bridge_id: str = bridge_id
+        self.consumer_id: str = consumer_id
+        self.on_fact: _FactCallback | None = on_fact
         with self._transaction():
             self.db.execute(
                 "CREATE TABLE IF NOT EXISTS chair_mqtt_backend_config (singleton INTEGER PRIMARY KEY CHECK(singleton=1), node TEXT NOT NULL, bridge TEXT NOT NULL, consumer TEXT NOT NULL)"

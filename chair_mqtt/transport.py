@@ -36,8 +36,8 @@ class Lines:
 
     def __init__(self) -> None:
         """Start a new bounded serial input accumulator."""
-        self.pending = bytearray()
-        self.discarding = False
+        self.pending: bytearray = bytearray()
+        self.discarding: bool = False
 
     def feed(self, data: bytes) -> list[bytes]:
         """Return completed lines while retaining partial input and discarding oversized lines."""

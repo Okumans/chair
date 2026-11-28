@@ -34,7 +34,8 @@ class ControllerLedger:
         if db.execute("PRAGMA journal_mode=WAL").fetchone()[0] != "wal":
             raise ValueError("controller SQLite WAL is unavailable")
         db.execute("PRAGMA synchronous=FULL")
-        self.db, self.node_id = db, node_id
+        self.db: sqlite3.Connection = db
+        self.node_id: str = node_id
         with self._transaction():
             db.execute(
                 "CREATE TABLE IF NOT EXISTS chair_mqtt_controller_config (singleton INTEGER PRIMARY KEY CHECK(singleton=1), node TEXT NOT NULL)"

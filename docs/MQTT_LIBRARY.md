@@ -80,6 +80,14 @@ never redelivered and a command update is committed before its handlers run.
 Additional async decorators are `on_state`, `on_movement_loss`,
 `on_bridge_status`, and `on_command_error`.
 
+## Typing
+
+The `chair-mqtt` distribution ships a `py.typed` marker and is checked in strict
+pyright mode with 100% public-API type completeness. `chair_mqtt` also exports
+the async callback type aliases `EventHandler`, `StateHandler`, `MovementHandler`,
+`MovementLossHandler`, `CommandUpdateHandler`, `BridgeStatusHandler`, and
+`CommandErrorHandler` alongside `ChairClient`.
+
 `BrokerConfig` describes the broker: `host`, `port` (default 8883), a stable
 `client_id`, and optional `ca_file`, `username` and `password`. TLS checks the
 broker certificate against `ca_file`, or the system trust store when it is

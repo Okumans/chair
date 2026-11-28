@@ -95,10 +95,12 @@ class ChairBridge:
         if gateway is not None and not callable(getattr(gateway, "open", None)):
             raise TypeError("gateway must be a GatewayTransport")
         # The application explicitly assumes the Pi's UTC clock is trustworthy.
-        self.config, self.broker, self.clock_trusted = config, broker, lambda: True
+        self.config: BridgeConfig = config
+        self.broker: BrokerConfig = broker
+        self.clock_trusted: Callable[[], bool] = lambda: True
         self._transport = gateway
         self._link: GatewayLink | None = None
-        self.instance_id = str(uuid.uuid4())
+        self.instance_id: str = str(uuid.uuid4())
         self._events: queue.Queue[_Event] = queue.Queue(maxsize=128)
         self._notifications: queue.Queue[CommandNotice] = queue.Queue(maxsize=128)
         self._notification_drops = 0

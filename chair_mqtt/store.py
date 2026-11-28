@@ -56,7 +56,8 @@ class CommandAdmissionError(ValueError):
 
     def __init__(self, reason: str, *, retryable: bool = False) -> None:
         super().__init__(reason)
-        self.reason, self.retryable = reason, retryable
+        self.reason: str = reason
+        self.retryable: bool = retryable
 
 
 def compact(value: object) -> bytes:
@@ -148,14 +149,17 @@ class MqttStore(Store):
                 raise ValueError("invalid sensor MAC") from error
             if len(address) != 6 or not any(address) or address[0] & 1:
                 raise ValueError("invalid sensor MAC")
-        self.path = Path(path)
-        self.bridge_id, self.consumer_id = bridge_id, consumer_id
-        self.mapping = {node: mac.lower() for node, mac in mapping.items()}
-        self.clock_trusted = clock_trusted
-        self.monotonic_clock = monotonic_clock
-        self.wall_clock = wall_clock
+        self.path: Path = Path(path)
+        self.bridge_id: str = bridge_id
+        self.consumer_id: str = consumer_id
+        self.mapping: dict[str, str] = {
+            node: mac.lower() for node, mac in mapping.items()
+        }
+        self.clock_trusted: Callable[[], bool] = clock_trusted
+        self.monotonic_clock: Callable[[], float] = monotonic_clock
+        self.wall_clock: Callable[[], float] | None = wall_clock
         self.best_effort: deque[tuple[str, bytes]] = deque()
-        self.best_effort_dropped = 0
+        self.best_effort_dropped: int = 0
         self._command_deadlines: dict[str, float] = {}
         self._warned_foreign_receipt = False
         if _written_by_protocol_bridge(path):
