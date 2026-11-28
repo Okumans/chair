@@ -72,6 +72,7 @@ are separate; see [development checks](docs/SETUP.md#development-checks).
 - [Protocol specification](docs/PROTOCOL_SPEC.md): message formats, state transitions and delivery rules.
 - [MQTT library](docs/MQTT_LIBRARY.md): backend client, broker connection settings and usage.
 - [MQTT bridge service](docs/MQTT_BRIDGE_SERVICE.md): Pi service configuration and deployment.
+- [Releasing and CI](docs/RELEASING.md): checks on every push, and wheels attached to tagged releases.
 - The confirmed radio-window design covers wire v2, state-machine integration and implementation
   acceptance. [Radio windows specification](docs/RADIO_WINDOWS_SPEC.md)
 
