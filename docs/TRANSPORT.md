@@ -278,6 +278,28 @@ protocol gateway/chair now reject incoming bytes that are not valid provisioned 
 frames. This console is useful for hello, malformed-input testing and manually encoded
 protocol frames; arbitrary text is no longer forwarded as a normal received message.
 
+### MQTT test console
+
+To exercise the whole path (broker, Pi bridge, gateway and chair), run the MQTT test
+console against a **test** bridge. It acts as that bridge's backend through
+`ChairClient`, so its receipts complete deliveries for `--consumer`; never point it at a
+bridge whose real backend uses the same consumer ID.
+
+```sh
+uv run tools/mqtt_console.py --host localhost --plaintext --bridge pi-01 --consumer backend-01
+```
+
+Every setting is an argument (`--port`, `--ca-file`, `--node` and `--db` are optional);
+broker credentials come from `CHAIR_MQTT_USERNAME` and `CHAIR_MQTT_PASSWORD`. The MQTT
+client ID is generated on each run. Events, state, movement, command updates and bridge
+status print as one JSON line each on stdout; messages go to stderr.
+
+`/config radio_interval_s=60 …` sends a complete configuration and follows it to its
+result. MQTT has no configuration readback, so unnamed fields come from the last
+configuration this console sent, or the firmware defaults; the revision is the last seen
+`config_revision` plus one unless `revision=` is given. `/state` and `/status` reprint the
+last state and bridge status, `/help` lists the keys, and `/quit` or Ctrl+D exits.
+
 Hello readiness is local initialization evidence. The existing 8.5 dBm transmit cap is
 retained from bench bring-up. Match channel, peer MACs and key fingerprints on both
 boards when diagnosing radio issues. This code does not claim physical delivery.

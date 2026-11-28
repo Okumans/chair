@@ -58,7 +58,7 @@ are separate; see [development checks](docs/SETUP.md#development-checks).
 | `gateway/` | S3 gateway entry point |
 | `shared/` | Wire codec, state engine, persistence, ESP-NOW and USB/UART serial transport |
 | `chair_mqtt/` | Python protocol bridge, serial bench console and MQTT library |
-| `tools/` | Bench console and radio-window scripts, and MAC-only firmware |
+| `tools/` | Serial bench console, MQTT test console, radio-window scripts and MAC-only firmware |
 | `tests/` | Python integration tests, native C++ tests and hardware fakes |
 | `third_party/glaze/` | Vendored C++ JSON dependency |
 
