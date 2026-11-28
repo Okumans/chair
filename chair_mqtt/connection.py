@@ -2,8 +2,15 @@
 
 import socket
 import ssl
+from typing import TYPE_CHECKING
 
 import paho.mqtt.client as mqtt
+from paho.mqtt.enums import CallbackAPIVersion
+from paho.mqtt.packettypes import PacketTypes
+from paho.mqtt.properties import Properties
+
+if TYPE_CHECKING:
+    from .models import BrokerConfig
 
 SESSION_EXPIRY_S = 86400
 KEEPALIVE_S = 30
@@ -15,7 +22,7 @@ RECONNECT_DELAY_S = (1, 30)
 RECOVERY_INTERVAL_S = 30.0
 
 
-def create_client(broker):
+def create_client(broker: "BrokerConfig") -> mqtt.Client:
     """Return a disconnected client with manual ACKs and verified TLS configured.
 
     ``ssl.create_default_context`` requires a trusted certificate and a matching
@@ -23,14 +30,14 @@ def create_client(broker):
     or credentials are sent.
     """
     client = mqtt.Client(
-        mqtt.CallbackAPIVersion.VERSION2,
+        CallbackAPIVersion.VERSION2,
         client_id=broker.client_id,
         protocol=mqtt.MQTTv5,
         manual_ack=True,
     )
     if not broker.plaintext:
         cafile = None if broker.ca_file is None else str(broker.ca_file)
-        client.tls_set_context(ssl.create_default_context(cafile=cafile))
+        client.tls_set_context(ssl.create_default_context(cafile=cafile))  # pyright: ignore[reportUnknownMemberType]  # paho's optional ssl import
     if broker.username is not None:
         password = broker.password
         client.username_pw_set(
@@ -40,9 +47,9 @@ def create_client(broker):
     return client
 
 
-def connect(client, broker):
+def connect(client: mqtt.Client, broker: "BrokerConfig") -> None:
     """Connect in Paho's network thread; it retries until the broker is reachable."""
-    properties = mqtt.Properties(mqtt.PacketTypes.CONNECT)
+    properties = Properties(PacketTypes.CONNECT)
     properties.SessionExpiryInterval = SESSION_EXPIRY_S
     properties.ReceiveMaximum = RECEIVE_MAXIMUM
     properties.MaximumPacketSize = MAXIMUM_PACKET_SIZE
@@ -56,7 +63,7 @@ def connect(client, broker):
     client.loop_start()
 
 
-def abort(client):
+def abort(client: mqtt.Client) -> None:
     """Drop the connection without DISCONNECT, so the broker keeps the session.
 
     The broker redelivers unacknowledged messages and publishes any Will; Paho's
@@ -65,12 +72,12 @@ def abort(client):
     sock = client.socket()
     if sock is not None:
         try:
-            sock.shutdown(socket.SHUT_RDWR)
+            sock.shutdown(socket.SHUT_RDWR)  # pyright: ignore[reportAttributeAccessIssue, reportUnknownMemberType]  # paho types its TCP/TLS socket as a minimal protocol
         except OSError:
             pass
 
 
-def close(client, *, graceful):
+def close(client: mqtt.Client, *, graceful: bool) -> None:
     """Disconnect (or abort) and wait for Paho's network thread to finish."""
     if graceful:
         client.disconnect()
